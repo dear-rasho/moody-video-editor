@@ -647,7 +647,6 @@ function drawCroppedFrame() {
   const ctx = getPreviewCtx(canvas);
   if (!ctx) return;
 
-  // Crop only applies to a video source for now.
   if (!video || video.readyState < 2 || !video.videoWidth) return;
 
   const sw = video.videoWidth;
@@ -659,8 +658,25 @@ function drawCroppedFrame() {
   const srcH = sh * (1 - (state.top  + state.bottom) / 100);
   if (srcW <= 0 || srcH <= 0) return;
 
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(video, sx, sy, srcW, srcH, 0, 0, canvas.width, canvas.height);
+  // Clear + black background
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Contain-fit the CROPPED region into the canvas
+  const croppedAR = srcW / srcH;
+  const canvasAR  = canvas.width / canvas.height;
+  let dw, dh;
+  if (croppedAR > canvasAR) {
+    dw = canvas.width;
+    dh = canvas.width / croppedAR;
+  } else {
+    dh = canvas.height;
+    dw = canvas.height * croppedAR;
+  }
+  const dx = (canvas.width - dw) / 2;
+  const dy = (canvas.height - dh) / 2;
+
+  ctx.drawImage(video, sx, sy, srcW, srcH, dx, dy, dw, dh);
 }
 
 // ─── Cleanup when panel is removed ────────────────────────────

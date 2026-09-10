@@ -1,7 +1,9 @@
 // ================================================================
-//  js/features/colorWheel.js  –  3 Color Wheels Panel
-//  Shadows, Midtones, Highlights – Direct render
+//  js/features/colorWheel.js
+//  3 Color Wheels Panel (Shadows / Midtones / Highlights) + HDR.
+//  Contain-fit preserved via window.__previewContainRect.
 // ================================================================
+
 export const featureKey = 'colorWheel';
 
 const state = {
@@ -17,7 +19,19 @@ let wheelRefs = {};
 let hdrSlider, hdrDisplay;
 let resizeObserver;
 
-// ─── Router open() ──────────────────────────────────────────────
+// ─── Contain-fit draw helper ───────────────────────────────────
+function drawVideoContained(ctx, video, canvas) {
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  const rectFn = window.__previewContainRect;
+  const r = rectFn
+    ? rectFn(video.videoWidth, video.videoHeight, canvas.width, canvas.height)
+    : { x: 0, y: 0, w: canvas.width, h: canvas.height };
+  try {
+    ctx.drawImage(video, r.x, r.y, r.w, r.h);
+  } catch (_) {}
+}
+
 export function open({ router, item }) {
   router.openLevel('colorWheel', [], {
     title: 'Color Wheels',
@@ -26,7 +40,6 @@ export function open({ router, item }) {
   });
 }
 
-// ─── Router renderTo() ──────────────────────────────────────────
 export function renderTo(container, titleElement) {
   container.replaceChildren();
   container.style.cssText =
@@ -36,7 +49,6 @@ export function renderTo(container, titleElement) {
   wrapper.style.cssText =
     'display:flex;flex-direction:column;gap:14px;align-items:center;width:100%;max-width:600px;margin:0 auto;';
 
-  // ─── 3 Wheels Grid ──────────────────────────────────────────────
   const grid = document.createElement('div');
   grid.style.cssText =
     'display:flex;flex-wrap:wrap;gap:14px;justify-content:center;width:100%;';
@@ -49,7 +61,6 @@ export function renderTo(container, titleElement) {
     item.style.cssText =
       'display:flex;flex-direction:column;align-items:center;gap:4px;flex:1 0 130px;max-width:170px;min-width:110px;';
 
-    // Label + Reset
     const topRow = document.createElement('div');
     topRow.style.cssText =
       'display:flex;align-items:center;justify-content:space-between;width:100%;padding:0 4px;';
@@ -76,7 +87,6 @@ export function renderTo(container, titleElement) {
     });
     topRow.append(label, resetBtn);
 
-    // Wheel
     const wheelWrap = document.createElement('div');
     wheelWrap.style.cssText = `
       width: 130px; height: 130px; border-radius: 50%; position: relative;
@@ -100,7 +110,6 @@ export function renderTo(container, titleElement) {
     puck.appendChild(dot);
     wheelWrap.appendChild(puck);
 
-    // Intensity slider
     const intRow = document.createElement('div');
     intRow.style.cssText =
       'display:flex;align-items:center;gap:6px;width:100%;padding:2px 0;';
@@ -118,10 +127,8 @@ export function renderTo(container, titleElement) {
     item.append(topRow, wheelWrap, intRow);
     grid.appendChild(item);
 
-    // Store refs
     wheelRefs[key] = { wheel: wheelWrap, puck, intSlider, intDisplay };
 
-    // ─── Wheel Drag ──────────────────────────────────────────────
     function getCoords(e) {
       const rect = wheelWrap.getBoundingClientRect();
       const cx = e.touches ? e.touches[0].clientX : e.clientX;
@@ -132,10 +139,8 @@ export function renderTo(container, titleElement) {
     function handlePick(e) {
       e.preventDefault();
       const { x, y, w, h } = getCoords(e);
-      const cx = w / 2,
-        cy = h / 2;
-      const dx = x - cx,
-        dy = y - cy;
+      const cx = w / 2, cy = h / 2;
+      const dx = x - cx, dy = y - cy;
       const radius = Math.min(w, h) / 2;
       let dist = Math.sqrt(dx * dx + dy * dy);
       const clampedDist = Math.min(dist, radius);
@@ -162,8 +167,7 @@ export function renderTo(container, titleElement) {
     });
     wheelWrap.addEventListener('touchstart', (e) => {
       handlePick(e);
-      const onMove = (ev) => { ev.preventDefault();
-        handlePick(ev); };
+      const onMove = (ev) => { ev.preventDefault(); handlePick(ev); };
       const onUp = () => {
         document.removeEventListener('touchmove', onMove);
         document.removeEventListener('touchend', onUp);
@@ -182,7 +186,6 @@ export function renderTo(container, titleElement) {
 
   wrapper.appendChild(grid);
 
-  // ─── HDR White ──────────────────────────────────────────────────
   const hdrRow = document.createElement('div');
   hdrRow.style.cssText =
     'display:flex;align-items:center;gap:10px;width:100%;max-width:400px;padding:6px 0 2px;border-top:1px solid var(--border);margin-top:2px;';
@@ -203,14 +206,12 @@ export function renderTo(container, titleElement) {
 
   container.appendChild(wrapper);
 
-  // ─── Events ──────────────────────────────────────────────────────
   hdrSlider.addEventListener('input', () => {
     state.hdrWhite = parseFloat(hdrSlider.value);
     hdrDisplay.textContent = Math.round(state.hdrWhite);
     applyColorWheels();
   });
 
-  // ─── Resize puck positions ──────────────────────────────────────
   function updateAllPucks() {
     toneKeys.forEach(k => {
       const t = state.tones[k];
@@ -224,7 +225,6 @@ export function renderTo(container, titleElement) {
     });
   }, 100);
 
-  // ─── Initial render ─────────────────────────────────────────────
   toneKeys.forEach(k => {
     const t = state.tones[k];
     updatePuck(k, t.h, t.s);
@@ -236,7 +236,6 @@ export function renderTo(container, titleElement) {
   });
   applyColorWheels();
 
-  // ─── Helpers ─────────────────────────────────────────────────────
   function updatePuck(toneKey, hue, sat) {
     const ref = wheelRefs[toneKey];
     if (!ref) return;
@@ -256,23 +255,22 @@ export function renderTo(container, titleElement) {
   function applyColorWheels() {
     const canvas = document.querySelector('#preview-canvas');
     if (!canvas) return;
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) return;
 
     const video = document.querySelector('#preview-video');
     const temp = document.createElement('canvas');
     temp.width = canvas.width;
     temp.height = canvas.height;
-    const tCtx = temp.getContext('2d');
-    if (video && video.readyState >= 2) {
-      tCtx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const tCtx = temp.getContext('2d', { willReadFrequently: true });
+    if (video && video.readyState >= 2 && video.videoWidth > 0) {
+      drawVideoContained(tCtx, video, canvas);
     } else {
       tCtx.drawImage(canvas, 0, 0);
     }
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(temp, 0, 0);
 
-    // HDR
     const hdr = state.hdrWhite / 100;
     if (hdr !== 1.0) {
       ctx.globalCompositeOperation = 'color-dodge';
@@ -283,16 +281,12 @@ export function renderTo(container, titleElement) {
       ctx.globalAlpha = 1.0;
     }
 
-    // Tone grading
     const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const data = imgData.data;
     for (let i = 0; i < data.length; i += 4) {
-      let r = data[i],
-        g = data[i + 1],
-        b = data[i + 2];
+      let r = data[i], g = data[i + 1], b = data[i + 2];
       const brightness = (r + g + b) / 3 / 255;
 
-      // Shadows
       const sT = state.tones.shadows;
       if (sT.intensity > 0 && !(sT.h === 0 && sT.s === 0)) {
         const w = Math.max(0, 1 - brightness * 2);
@@ -304,7 +298,6 @@ export function renderTo(container, titleElement) {
           b += (tb - b) * blend;
         }
       }
-      // Midtones
       const mT = state.tones.midtones;
       if (mT.intensity > 0 && !(mT.h === 0 && mT.s === 0)) {
         const w = 1 - Math.abs(brightness - 0.5) * 2;
@@ -316,7 +309,6 @@ export function renderTo(container, titleElement) {
           b += (tb - b) * blend;
         }
       }
-      // Highlights
       const hT = state.tones.highlights;
       if (hT.intensity > 0 && !(hT.h === 0 && hT.s === 0)) {
         const w = Math.max(0, brightness * 2 - 1);
@@ -345,6 +337,5 @@ export function renderTo(container, titleElement) {
     return [Math.round(f(0) * 255), Math.round(f(8) * 255), Math.round(f(4) * 255)];
   }
 
-  // Cleanup
   return () => { if (resizeObserver) resizeObserver.disconnect(); };
 }

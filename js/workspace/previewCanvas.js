@@ -1,10 +1,9 @@
 // ================================================================
 //  js/workspace/previewCanvas.js
 //  Preview canvas is the DISPLAY SURFACE.
-//  Video element is ALWAYS hidden (opacity 0 + !important) so no
-//  other module can accidentally reveal it.
-//  Video stays in-viewport (never off-screen) so browsers keep
-//  decoding frames for drawImage.
+//  Video element is ALWAYS hidden.
+//  Video/image drawn with CONTAIN-fit (letterboxed).
+//  Exposes window.__previewContainRect for other modules.
 // ================================================================
 
 export function initPreviewCanvas({ canvas, video, empty }) {
@@ -18,7 +17,6 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     };
   }
 
-  // ─── Single cached 2D context ─────────────────────────────
   let ctx = null;
   function getCtx() {
     if (ctx) return ctx;
@@ -30,7 +28,6 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     return ctx;
   }
 
-  // ─── Match canvas internal size to CSS box ────────────────
   function syncCanvasSize() {
     const rect = canvas.getBoundingClientRect();
     const w = Math.max(1, Math.round(rect.width));
@@ -41,20 +38,58 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     }
   }
 
-  // ─── Draw current video frame to canvas ───────────────────
+  // ─── Contain-fit rect (preserve src AR, center inside dst) ─
+  function containRect(srcW, srcH, dstW, dstH) {
+    if (!srcW || !srcH) return { x: 0, y: 0, w: dstW, h: dstH };
+    const srcAR = srcW / srcH;
+    const dstAR = dstW / dstH;
+    let w, h;
+    if (srcAR > dstAR) {
+      w = dstW;
+      h = dstW / srcAR;
+    } else {
+      h = dstH;
+      w = dstH * srcAR;
+    }
+    const x = (dstW - w) / 2;
+    const y = (dstH - h) / 2;
+    return { x, y, w, h };
+  }
+
+  // expose for feature modules
+  window.__previewContainRect = containRect;
+
   function drawVideoFrame() {
     if (!video.videoWidth || !video.videoHeight) return;
     if (video.readyState < 2) return;
     syncCanvasSize();
     const c = getCtx();
     if (!c) return;
+
     c.clearRect(0, 0, canvas.width, canvas.height);
+    const r = containRect(
+      video.videoWidth, video.videoHeight,
+      canvas.width, canvas.height
+    );
     try {
-      c.drawImage(video, 0, 0, canvas.width, canvas.height);
-    } catch (_) { /* ignore */ }
+      c.drawImage(video, r.x, r.y, r.w, r.h);
+    } catch (_) {}
   }
 
-  // ─── Playback draw loop ───────────────────────────────────
+  function drawImageContained(image) {
+    syncCanvasSize();
+    const c = getCtx();
+    if (!c) return;
+
+    c.clearRect(0, 0, canvas.width, canvas.height);
+    const r = containRect(
+      image.naturalWidth || image.width,
+      image.naturalHeight || image.height,
+      canvas.width, canvas.height
+    );
+    c.drawImage(image, r.x, r.y, r.w, r.h);
+  }
+
   let rafId = null;
   function startLoop() {
     if (rafId) return;
@@ -73,15 +108,8 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     rafId = null;
   }
 
-  // ═══════════════════════════════════════════════════════════
-  //  VIDEO IS ALWAYS HIDDEN
-  //  Use !important so nothing (chromakey / anything else) can
-  //  accidentally reveal it.
-  //  IMPORTANT: keep it in-viewport (never -9999px) so browsers
-  //  don't deprioritize decoding — otherwise drawImage fails.
-  // ═══════════════════════════════════════════════════════════
   function hideVideo() {
-    video.classList.remove('is-hidden'); // avoid display:none
+    video.classList.remove('is-hidden');
     video.style.setProperty('position', 'absolute', 'important');
     video.style.setProperty('left', '0', 'important');
     video.style.setProperty('top', '0', 'important');
@@ -96,7 +124,6 @@ export function initPreviewCanvas({ canvas, video, empty }) {
   }
   hideVideo();
 
-  // ─── Video events ─────────────────────────────────────────
   video.addEventListener('loadedmetadata', drawVideoFrame);
   video.addEventListener('loadeddata', drawVideoFrame);
   video.addEventListener('seeked', drawVideoFrame);
@@ -111,7 +138,6 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     stopLoop();
   });
 
-  // ─── Resize observer ──────────────────────────────────────
   if (typeof ResizeObserver !== 'undefined') {
     new ResizeObserver(() => {
       syncCanvasSize();
@@ -120,7 +146,6 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     }).observe(canvas);
   }
 
-  // ─── Public: setMedia ─────────────────────────────────────
   function setMedia(item) {
     if (!item) return;
     const type = item.type || '';
@@ -140,23 +165,7 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     if (type.startsWith('image/')) {
       const image = new Image();
       image.onload = () => {
-        syncCanvasSize();
-        const c = getCtx();
-        if (!c) return;
-        c.clearRect(0, 0, canvas.width, canvas.height);
-        const scale = Math.min(
-          canvas.width / image.width,
-          canvas.height / image.height
-        );
-        const width  = image.width  * scale;
-        const height = image.height * scale;
-        c.drawImage(
-          image,
-          (canvas.width  - width)  / 2,
-          (canvas.height - height) / 2,
-          width,
-          height
-        );
+        drawImageContained(image);
         canvas.hidden = false;
         empty.hidden = true;
       };
@@ -165,7 +174,6 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     }
   }
 
-  // ─── Public: clear ────────────────────────────────────────
   function clear() {
     stopLoop();
     video.pause();
@@ -180,7 +188,6 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     canvas.style.opacity = '';
   }
 
-  // ─── Public: setVisible (V1 toggle) ───────────────────────
   function setVisible(visible) {
     if (visible) {
       canvas.style.visibility = '';
@@ -191,12 +198,10 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     }
   }
 
-  // ─── Public: redraw ───────────────────────────────────────
   function redraw() {
     drawVideoFrame();
   }
 
-  // ─── Init ─────────────────────────────────────────────────
   syncCanvasSize();
   hideVideo();
 

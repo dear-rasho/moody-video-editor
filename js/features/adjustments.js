@@ -1,13 +1,12 @@
 // ================================================================
 //  js/features/adjustments.js
 //  Self-contained Adjustments Panel
-//  Sliders: -100 .. +100, default 0
-//  Per-pixel canvas processing
+//  21 sliders (-100..+100, default 0) with per-pixel canvas processing.
+//  Contain-fit preserved via window.__previewContainRect.
 // ================================================================
 
 export const featureKey = 'adjustments';
 
-// ─── Adjustment definitions ─────────────────────────────────────
 const ADJUSTMENTS = [
   { key: 'brightness',  label: 'Brightness'  },
   { key: 'contrast',    label: 'Contrast'    },
@@ -32,14 +31,25 @@ const ADJUSTMENTS = [
   { key: 'skinTones',   label: 'Skin Tones'  }
 ];
 
-// ─── Module state ───────────────────────────────────────────────
 const state = {};
 ADJUSTMENTS.forEach(a => { state[a.key] = 0; });
 
 let sliderRefs = {};
 let rafPending = false;
 
-// ─── Router entry ───────────────────────────────────────────────
+// ─── Contain-fit draw helper ───────────────────────────────────
+function drawVideoContained(ctx, video, canvas) {
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  const rectFn = window.__previewContainRect;
+  const r = rectFn
+    ? rectFn(video.videoWidth, video.videoHeight, canvas.width, canvas.height)
+    : { x: 0, y: 0, w: canvas.width, h: canvas.height };
+  try {
+    ctx.drawImage(video, r.x, r.y, r.w, r.h);
+  } catch (_) {}
+}
+
 export function open({ router }) {
   router.openLevel('adjustments', [], {
     title: 'Adjustments',
@@ -48,7 +58,6 @@ export function open({ router }) {
   });
 }
 
-// ─── Render panel ───────────────────────────────────────────────
 export function renderTo(container) {
   container.replaceChildren();
   container.style.cssText =
@@ -63,7 +72,6 @@ export function renderTo(container) {
       'display:flex;flex-direction:column;gap:6px;padding:10px 12px;' +
       'background:var(--surface-2);border:1px solid var(--border);border-radius:10px;';
 
-    // ---- Header: name (left) + value + reset (right) ----
     const header = document.createElement('div');
     header.style.cssText =
       'display:flex;align-items:center;justify-content:space-between;gap:8px;';
@@ -104,7 +112,6 @@ export function renderTo(container) {
     right.append(valueDisplay, resetBtn);
     header.append(label, right);
 
-    // ---- Slider ----
     const slider = document.createElement('input');
     slider.type = 'range';
     slider.min = -100;
@@ -128,7 +135,6 @@ export function renderTo(container) {
   });
 }
 
-// ─── Throttled apply via rAF ────────────────────────────────────
 function scheduleApply() {
   if (rafPending) return;
   rafPending = true;
@@ -138,29 +144,26 @@ function scheduleApply() {
   });
 }
 
-// ─── Core pixel processing ──────────────────────────────────────
 function applyAdjustments() {
   const canvas = document.querySelector('#preview-canvas');
   const video  = document.querySelector('#preview-video');
   if (!canvas) return;
-  const ctx = canvas.getContext('2d');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) return;
 
-  // 1) Grab fresh source frame
   const temp = document.createElement('canvas');
   temp.width  = canvas.width;
   temp.height = canvas.height;
-  const tCtx = temp.getContext('2d');
+  const tCtx = temp.getContext('2d', { willReadFrequently: true });
 
   if (video && video.readyState >= 2 && video.videoWidth > 0) {
-    tCtx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    drawVideoContained(tCtx, video, canvas);
   } else {
     tCtx.drawImage(canvas, 0, 0);
   }
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.drawImage(temp, 0, 0);
 
-  // 2) Skip if nothing active
   const anyActive = ADJUSTMENTS.some(a => state[a.key] !== 0);
   if (!anyActive) return;
 
@@ -171,7 +174,6 @@ function applyAdjustments() {
   const s = state;
   const clamp = (v) => v < 0 ? 0 : v > 255 ? 255 : v;
 
-  // Precompute normalized amounts
   const brightnessAmt = s.brightness / 100;
   const contrastAmt   = s.contrast   / 100;
   const exposureAmt   = Math.pow(2, s.exposure / 100);
@@ -209,72 +211,42 @@ function applyAdjustments() {
 
     const lum = 0.299 * r + 0.587 * g + 0.114 * b;
 
-    // ---- Brightness ----
-    if (brightnessAmt !== 0) {
-      const add = brightnessAmt * 110;
-      r += add; g += add; b += add;
-    }
-
-    // ---- Exposure ----
-    if (exposureAmt !== 1) {
-      r *= exposureAmt; g *= exposureAmt; b *= exposureAmt;
-    }
-
-    // ---- Contrast ----
+    if (brightnessAmt !== 0) { const add = brightnessAmt * 110; r += add; g += add; b += add; }
+    if (exposureAmt !== 1) { r *= exposureAmt; g *= exposureAmt; b *= exposureAmt; }
     if (contrastAmt !== 0) {
       const f = 1 + contrastAmt;
-      r = (r - 128) * f + 128;
-      g = (g - 128) * f + 128;
-      b = (b - 128) * f + 128;
+      r = (r - 128) * f + 128; g = (g - 128) * f + 128; b = (b - 128) * f + 128;
     }
-
-    // ---- Whites (bright pixels only) ----
     if (whitesAmt !== 0) {
       const wt = Math.max(0, (lum - 128) / 127);
       const add = whitesAmt * wt * 110;
       r += add; g += add; b += add;
     }
-
-    // ---- Blacks (dark pixels only) ----
     if (blacksAmt !== 0) {
       const wt = Math.max(0, (128 - lum) / 128);
       const add = -blacksAmt * wt * 110;
       r += add; g += add; b += add;
     }
-
-    // ---- Shadows ----
     if (shadowsAmt !== 0) {
       const wt = Math.max(0, (128 - lum) / 128);
       const add = shadowsAmt * wt * 90;
       r += add; g += add; b += add;
     }
-
-    // ---- Highlights ----
     if (highlightsAmt !== 0) {
       const wt = Math.max(0, (lum - 128) / 127);
       const add = highlightsAmt * wt * 90;
       r += add; g += add; b += add;
     }
-
-    // ---- Clarity (mid-tone contrast) ----
     if (clarityAmt !== 0) {
       const wt = 1 - Math.abs(lum - 128) / 128;
       const f = 1 + clarityAmt * wt * 0.7;
-      r = (r - 128) * f + 128;
-      g = (g - 128) * f + 128;
-      b = (b - 128) * f + 128;
+      r = (r - 128) * f + 128; g = (g - 128) * f + 128; b = (b - 128) * f + 128;
     }
-
-    // ---- Saturation ----
     if (saturationAmt !== 0) {
       const gray = 0.299 * r + 0.587 * g + 0.114 * b;
       const f = 1 + saturationAmt;
-      r = gray + (r - gray) * f;
-      g = gray + (g - gray) * f;
-      b = gray + (b - gray) * f;
+      r = gray + (r - gray) * f; g = gray + (g - gray) * f; b = gray + (b - gray) * f;
     }
-
-    // ---- Vibrance (protects already-saturated colors) ----
     if (vibranceAmt !== 0) {
       const maxC = Math.max(r, g, b);
       const minC = Math.min(r, g, b);
@@ -285,120 +257,57 @@ function applyAdjustments() {
       g = gray + (g - gray) * (1 + boost);
       b = gray + (b - gray) * (1 + boost);
     }
-
-    // ---- Temperature (warm + / cool -) ----
-    if (temperatureAmt !== 0) {
-      r += temperatureAmt * 35;
-      b -= temperatureAmt * 35;
-    }
-
-    // ---- Tint (magenta + / green -) ----
-    if (tintAmt !== 0) {
-      g -= tintAmt * 28;
-      r += tintAmt * 12;
-      b += tintAmt * 12;
-    }
+    if (temperatureAmt !== 0) { r += temperatureAmt * 35; b -= temperatureAmt * 35; }
+    if (tintAmt !== 0) { g -= tintAmt * 28; r += tintAmt * 12; b += tintAmt * 12; }
 
     r = clamp(r); g = clamp(g); b = clamp(b);
 
-    // ================================================================
-    //  Color-specific (hue-masked) adjustments
-    //  Only affects pixels belonging to that hue region.
-    // ================================================================
     if (anyColorAdj) {
       const hsl   = rgbToHsl(r, g, b);
-      const hue   = hsl.h;      // 0..360
-      const sat   = hsl.s;      // 0..1
-      const light = hsl.l;      // 0..1
+      const hue   = hsl.h;
+      const sat   = hsl.s;
+      const light = hsl.l;
 
-      // Reds — hue near 0 / 360
       if (redsAmt !== 0) {
         let wt = hueWeight(hue, 345, 360);
         if (!wt) wt = hueWeight(hue, 0, 25);
-        if (wt > 0) {
-          const k = redsAmt * wt;
-          r += k * 70;
-          g -= k * 18;
-          b -= k * 18;
-        }
+        if (wt > 0) { const k = redsAmt * wt; r += k * 70; g -= k * 18; b -= k * 18; }
       }
-
-      // Yellows — 40..75
       if (yellowsAmt !== 0) {
         const wt = hueWeight(hue, 40, 75);
-        if (wt > 0) {
-          const k = yellowsAmt * wt;
-          r += k * 50;
-          g += k * 50;
-          b -= k * 30;
-        }
+        if (wt > 0) { const k = yellowsAmt * wt; r += k * 50; g += k * 50; b -= k * 30; }
       }
-
-      // Greens — 80..170
       if (greensAmt !== 0) {
         const wt = hueWeight(hue, 80, 170);
-        if (wt > 0) {
-          const k = greensAmt * wt;
-          g += k * 70;
-          r -= k * 18;
-          b -= k * 18;
-        }
+        if (wt > 0) { const k = greensAmt * wt; g += k * 70; r -= k * 18; b -= k * 18; }
       }
-
-      // Blues — 180..260
       if (bluesAmt !== 0) {
         const wt = hueWeight(hue, 180, 260);
-        if (wt > 0) {
-          const k = bluesAmt * wt;
-          b += k * 70;
-          r -= k * 18;
-          g -= k * 12;
-        }
+        if (wt > 0) { const k = bluesAmt * wt; b += k * 70; r -= k * 18; g -= k * 12; }
       }
-
-      // Purples — 260..330
       if (purplesAmt !== 0) {
         const wt = hueWeight(hue, 260, 330);
-        if (wt > 0) {
-          const k = purplesAmt * wt;
-          r += k * 45;
-          b += k * 45;
-          g -= k * 22;
-        }
+        if (wt > 0) { const k = purplesAmt * wt; r += k * 45; b += k * 45; g -= k * 22; }
       }
-
-      // Skin Tones — hue 10..45, moderate sat/light
       if (skinAmt !== 0) {
         if (hue >= 10 && hue <= 45 && sat >= 0.12 && sat <= 0.7 &&
             light >= 0.2 && light <= 0.9) {
           const center = 27;
           const half = 18;
           const wt = Math.max(0, 1 - Math.abs(hue - center) / half);
-          if (wt > 0) {
-            const k = skinAmt * wt;
-            r += k * 40;
-            g += k * 16;
-            b -= k * 10;
-          }
+          if (wt > 0) { const k = skinAmt * wt; r += k * 40; g += k * 16; b -= k * 10; }
         }
       }
     }
 
-    // ---- Sharpen (light local contrast boost) ----
     if (sharpenAmt !== 0) {
       const f = 1 + sharpenAmt * 0.18;
-      r = (r - 128) * f + 128;
-      g = (g - 128) * f + 128;
-      b = (b - 128) * f + 128;
+      r = (r - 128) * f + 128; g = (g - 128) * f + 128; b = (b - 128) * f + 128;
     }
-
-    // ---- Noise (grain) ----
     if (noiseAmt !== 0) {
       const grain = (Math.random() - 0.5) * noiseAmt * 45;
       r += grain; g += grain; b += grain;
     }
-
-    // ---- Vignette ----
     if (vignetteAmt !== 0) {
       const dx = px - cx;
       const dy = py - cy;
@@ -415,7 +324,6 @@ function applyAdjustments() {
   ctx.putImageData(imgData, 0, 0);
 }
 
-// ─── Helpers ────────────────────────────────────────────────────
 function rgbToHsl(r, g, b) {
   r /= 255; g /= 255; b /= 255;
   const max = Math.max(r, g, b);

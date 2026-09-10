@@ -9,7 +9,6 @@
 
 export const featureKey = 'chromakey';
 
-// ─── State ──────────────────────────────────────────────────────
 const state = {
   keyColor: null,
   similarity: 30,
@@ -24,7 +23,19 @@ let rafPending = false;
 let loupeEl = null;
 let hoverColor = null;
 
-// ─── Cached canvas context ─────────────────────────────────────
+// ─── Contain-fit draw helper ───────────────────────────────────
+function drawVideoContained(ctx, video, canvas) {
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  const rectFn = window.__previewContainRect;
+  const r = rectFn
+    ? rectFn(video.videoWidth, video.videoHeight, canvas.width, canvas.height)
+    : { x: 0, y: 0, w: canvas.width, h: canvas.height };
+  try {
+    ctx.drawImage(video, r.x, r.y, r.w, r.h);
+  } catch (_) {}
+}
+
 let _cachedCtx = null;
 let _cachedCanvas = null;
 function getPreviewCtx(canvas) {
@@ -40,7 +51,6 @@ function getPreviewCtx(canvas) {
   return _cachedCtx;
 }
 
-// ─── Inject CSS once ────────────────────────────────────────────
 const CSS_ID = 'chromakey-styles';
 function injectStyles() {
   if (document.getElementById(CSS_ID)) return;
@@ -97,7 +107,6 @@ function injectStyles() {
       line-height: 1.3;
       opacity: 0.7;
     }
-
     .ck-color-row {
       display: flex;
       align-items: center;
@@ -158,7 +167,6 @@ function injectStyles() {
       0%, 100% { opacity: 1; }
       50% { opacity: 0.6; }
     }
-
     .ck-intensity-row {
       display: flex;
       flex-direction: column;
@@ -169,20 +177,9 @@ function injectStyles() {
       border-radius: 10px;
       margin-top: 4px;
     }
-    .ck-intensity-row .ck-label {
-      font-size: 13px;
-      font-weight: 700;
-    }
-    .ck-intensity-row .ck-value {
-      font-size: 13px;
-      font-weight: 700;
-      color: var(--accent);
-    }
-    .ck-intensity-row .ck-slider {
-      height: 5px;
-    }
-
-    /* ─── Live loupe that follows the cursor over the video ─── */
+    .ck-intensity-row .ck-label { font-size: 13px; font-weight: 700; }
+    .ck-intensity-row .ck-value { font-size: 13px; font-weight: 700; color: var(--accent); }
+    .ck-intensity-row .ck-slider { height: 5px; }
     .ck-loupe {
       position: fixed;
       width: 78px;
@@ -200,14 +197,8 @@ function injectStyles() {
       transform: translate(14px, 14px);
       transition: opacity 0.08s linear;
     }
-    .ck-loupe.hidden {
-      opacity: 0;
-    }
-    .ck-loupe-color {
-      width: 100%;
-      height: 100%;
-      border-radius: 50%;
-    }
+    .ck-loupe.hidden { opacity: 0; }
+    .ck-loupe-color { width: 100%; height: 100%; border-radius: 50%; }
     .ck-loupe-text {
       position: absolute;
       bottom: -22px;
@@ -223,16 +214,11 @@ function injectStyles() {
       font-variant-numeric: tabular-nums;
       letter-spacing: 0.03em;
     }
-
-    /* When in pick mode, canvas cursor */
-    .ck-picking {
-      cursor: crosshair !important;
-    }
+    .ck-picking { cursor: crosshair !important; }
   `;
   document.head.appendChild(style);
 }
 
-// ─── Router entry ───────────────────────────────────────────────
 export function open({ router }) {
   router.openLevel('chromakey', [], {
     title: 'Chroma Key',
@@ -241,7 +227,6 @@ export function open({ router }) {
   });
 }
 
-// ─── Render panel ───────────────────────────────────────────────
 export function renderTo(container) {
   injectStyles();
   container.replaceChildren();
@@ -249,10 +234,8 @@ export function renderTo(container) {
   const panel = document.createElement('div');
   panel.className = 'ck-panel';
   container.appendChild(panel);
-
   panelRefs = {};
 
-  // ─── Color row ───────────────────────────────────────────────
   const colorRow = document.createElement('div');
   colorRow.className = 'ck-color-row';
 
@@ -275,16 +258,13 @@ export function renderTo(container) {
   pickBtn.type = 'button';
   pickBtn.className = 'ck-pick-btn';
   pickBtn.textContent = '🎯 Pick';
-  pickBtn.setAttribute('aria-label', 'Pick key color from preview');
 
   const clearBtn = document.createElement('button');
   clearBtn.type = 'button';
   clearBtn.className = 'ck-clear-btn';
   clearBtn.textContent = '✕';
-  clearBtn.setAttribute('aria-label', 'Clear chroma key');
 
   pickBtn.addEventListener('click', () => togglePickMode(!state.pickMode));
-
   clearBtn.addEventListener('click', () => {
     state.keyColor = null;
     updateSwatchUI(null);
@@ -300,7 +280,6 @@ export function renderTo(container) {
   panelRefs.colorValue = colorValue;
   panelRefs.pickBtn = pickBtn;
 
-  // ─── 3 Premiere-style sliders ────────────────────────────────
   const sliderDefs = [
     { key: 'similarity', label: 'Similarity',       hint: 'Colors close to key color are removed' },
     { key: 'smoothness', label: 'Smoothness',       hint: 'Softens the edge around removed area' },
@@ -326,9 +305,7 @@ export function renderTo(container) {
 
     const slider = document.createElement('input');
     slider.type = 'range';
-    slider.min = 0;
-    slider.max = 100;
-    slider.step = 1;
+    slider.min = 0; slider.max = 100; slider.step = 1;
     slider.value = state[def.key];
     slider.className = 'ck-slider';
 
@@ -348,7 +325,6 @@ export function renderTo(container) {
     panelRefs[def.key] = { slider, value };
   });
 
-  // ─── Intensity ───────────────────────────────────────────────
   const intensityRow = document.createElement('div');
   intensityRow.className = 'ck-intensity-row';
 
@@ -367,9 +343,7 @@ export function renderTo(container) {
 
   const intSlider = document.createElement('input');
   intSlider.type = 'range';
-  intSlider.min = 0;
-  intSlider.max = 100;
-  intSlider.step = 1;
+  intSlider.min = 0; intSlider.max = 100; intSlider.step = 1;
   intSlider.value = state.intensity;
   intSlider.className = 'ck-slider';
 
@@ -385,7 +359,6 @@ export function renderTo(container) {
 
   panelRefs.intensity = { slider: intSlider, value: intValue };
 
-  // ─── Restore state on reopen ─────────────────────────────────
   updateSwatchUI(state.keyColor);
   updatePickButtonUI();
 
@@ -395,12 +368,9 @@ export function renderTo(container) {
   }
 }
 
-// ─── Swatch / button UI ─────────────────────────────────────────
 function updateSwatchUI(rgb) {
   if (!panelRefs.swatch) return;
-  panelRefs.swatch.style.background = rgb
-    ? `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`
-    : '';
+  panelRefs.swatch.style.background = rgb ? `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})` : '';
   if (panelRefs.colorValue) {
     panelRefs.colorValue.textContent = rgb
       ? `RGB(${rgb.r}, ${rgb.g}, ${rgb.b})`
@@ -419,9 +389,6 @@ function updatePickButtonUI() {
   }
 }
 
-// ================================================================
-//  Pick mode — hover shows loupe, click picks color
-// ================================================================
 function togglePickMode(on) {
   state.pickMode = on;
   updatePickButtonUI();
@@ -435,7 +402,6 @@ function togglePickMode(on) {
     canvas.addEventListener('mousemove', onHover);
     canvas.addEventListener('mouseleave', onLeave);
     canvas.addEventListener('click', onClick, true);
-    // Touch support
     canvas.addEventListener('touchstart', onTouchStart, { passive: false });
     canvas.addEventListener('touchmove', onTouchMove, { passive: false });
     canvas.addEventListener('touchend', onTouchEnd, { passive: false });
@@ -451,7 +417,6 @@ function togglePickMode(on) {
   }
 }
 
-// ─── Screen → canvas pixel mapping ──────────────────────────────
 function clientToPixel(canvas, clientX, clientY) {
   const rect = canvas.getBoundingClientRect();
   const scaleX = canvas.width / (rect.width || 1);
@@ -473,7 +438,6 @@ function readPixel(canvas, px, py) {
   }
 }
 
-// ─── Hover handlers ─────────────────────────────────────────────
 function onHover(e) {
   if (!state.pickMode) return;
   const canvas = e.currentTarget;
@@ -485,27 +449,19 @@ function onHover(e) {
   showLoupe(e.clientX, e.clientY, c);
 }
 
-function onLeave() {
-  hideLoupe();
-  hoverColor = null;
-}
+function onLeave() { hideLoupe(); hoverColor = null; }
 
-// ─── Click handler (pick!) ──────────────────────────────────────
 function onClick(e) {
   if (!state.pickMode) return;
-  e.preventDefault();
-  e.stopPropagation();
-
+  e.preventDefault(); e.stopPropagation();
   const canvas = e.currentTarget;
   const p = clientToPixel(canvas, e.clientX, e.clientY);
   if (!p) return;
   const c = readPixel(canvas, p.px, p.py);
   if (!c) return;
-
   applyKeyColor(c);
 }
 
-// ─── Touch handlers ─────────────────────────────────────────────
 function onTouchStart(e) {
   if (!state.pickMode) return;
   e.preventDefault();
@@ -535,12 +491,9 @@ function onTouchMove(e) {
 function onTouchEnd(e) {
   if (!state.pickMode) return;
   e.preventDefault();
-  if (hoverColor) {
-    applyKeyColor(hoverColor);
-  }
+  if (hoverColor) applyKeyColor(hoverColor);
 }
 
-// ─── Commit a picked color as key ───────────────────────────────
 function applyKeyColor(rgb) {
   state.keyColor = { ...rgb };
   updateSwatchUI(state.keyColor);
@@ -549,18 +502,14 @@ function applyKeyColor(rgb) {
   scheduleApply();
 }
 
-// ─── Loupe ──────────────────────────────────────────────────────
 function ensureLoupe() {
   if (loupeEl) return loupeEl;
   loupeEl = document.createElement('div');
   loupeEl.className = 'ck-loupe hidden';
-
   const colorDiv = document.createElement('div');
   colorDiv.className = 'ck-loupe-color';
-
   const textDiv = document.createElement('div');
   textDiv.className = 'ck-loupe-text';
-
   loupeEl.append(colorDiv, textDiv);
   document.body.appendChild(loupeEl);
   return loupeEl;
@@ -571,17 +520,12 @@ function showLoupe(clientX, clientY, rgb) {
   el.classList.remove('hidden');
   el.style.left = clientX + 'px';
   el.style.top = clientY + 'px';
-  el.querySelector('.ck-loupe-color').style.background =
-    `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`;
-  el.querySelector('.ck-loupe-text').textContent =
-    `${rgb.r}, ${rgb.g}, ${rgb.b}`;
+  el.querySelector('.ck-loupe-color').style.background = `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`;
+  el.querySelector('.ck-loupe-text').textContent = `${rgb.r}, ${rgb.g}, ${rgb.b}`;
 }
 
-function hideLoupe() {
-  if (loupeEl) loupeEl.classList.add('hidden');
-}
+function hideLoupe() { if (loupeEl) loupeEl.classList.add('hidden'); }
 
-// ─── Frame refresh helpers ──────────────────────────────────────
 function refreshCanvas() {
   const canvas = document.querySelector('#preview-canvas');
   const video = document.querySelector('#preview-video');
@@ -589,25 +533,16 @@ function refreshCanvas() {
   const ctx = getPreviewCtx(canvas);
   if (!ctx) return;
   if (video.readyState >= 2 && video.videoWidth > 0) {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    drawVideoContained(ctx, video, canvas);
   }
 }
 
-// ─── Hide video overlay when key is active ──────────────────────
 function updateVideoVisibility() {
   const video = document.querySelector('#preview-video');
   if (!video) return;
-  if (state.keyColor && state.intensity > 0) {
-    video.style.opacity = '0';
-    video.style.pointerEvents = 'none';
-  } else {
-    video.style.opacity = '';
-    video.style.pointerEvents = '';
-  }
+  // video stays hidden always (previewCanvas enforces it)
 }
 
-// ─── Throttled apply ────────────────────────────────────────────
 function scheduleApply() {
   if (rafPending) return;
   rafPending = true;
@@ -617,7 +552,6 @@ function scheduleApply() {
   });
 }
 
-// ─── Core chroma key processing ─────────────────────────────────
 function applyChromaKey() {
   const canvas = document.querySelector('#preview-canvas');
   const video = document.querySelector('#preview-video');
@@ -625,14 +559,13 @@ function applyChromaKey() {
   const ctx = getPreviewCtx(canvas);
   if (!ctx) return;
 
-  // Source frame
   const temp = document.createElement('canvas');
   temp.width = canvas.width;
   temp.height = canvas.height;
-  const tCtx = temp.getContext('2d');
+  const tCtx = temp.getContext('2d', { willReadFrequently: true });
 
   if (video && video.readyState >= 2 && video.videoWidth > 0) {
-    tCtx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    drawVideoContained(tCtx, video, canvas);
   } else {
     tCtx.drawImage(canvas, 0, 0);
   }
@@ -673,7 +606,6 @@ function applyChromaKey() {
       data[i + 3] = Math.round(data[i + 3] * (1 - removal));
     }
 
-    // Spill suppression
     if (spillAmt > 0 && data[i + 3] > 0) {
       if (dist < softEnd + 0.15) {
         const proximity = 1 - Math.min(1, dist / (softEnd + 0.15));
