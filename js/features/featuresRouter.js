@@ -104,6 +104,18 @@ const router = {
         });
       return;
     }
+        // ─── CHROMA KEY PANEL ──────────────────────────────────────
+    if (view.renderMode === 'chromaKeyPanel') {
+      import('./chromakey.js')
+        .then(mod => {
+          if (mod.renderTo) mod.renderTo(this.shelf, this.title);
+        })
+        .catch((err) => {
+          console.error('Chroma key load error:', err);
+          this.shelf.textContent = '⚠️ Load failed';
+        });
+      return;
+    }
     // ─── 2. ADJUSTMENT GRID ────────────────────────────────────
     if (view.level === 2 && view.multi === true && view.renderMode === 'adjustments') {
       this.renderAdjustmentGrid(view);

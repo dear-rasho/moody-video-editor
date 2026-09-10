@@ -1,27 +1,36 @@
-import * as music from './music.js';
-import * as effect from './effect.js';
-import * as filters from './filters.js';
-import * as overlays from './overlays.js';
-import * as text from './text.js';
-import * as textFonts from './textFonts.js';
-import * as stickers from './stickers.js';
-import * as motion from './motion.js';
-import * as split from './split.js';
-import * as deleteFeature from './delete.js';
-import * as crop from './crop.js';
-import * as duplicate from './duplicate.js';
-import * as freeze from './freeze.js';
-import * as volume from './volume.js';
-import * as fx from './fx.js';
-import * as speed from './speed.js';
-import * as chromakey from './chromakey.js';
-import * as reverse from './reverse.js';
-import * as ratio from './ratio.js';
-import * as adjustments from './adjustments.js';
+// ================================================================
+//  js/features/index.js
+//  Central registry for all feature modules.
+//  Each module must export:
+//    - featureKey : string
+//    - open({ router, item })
+//    - renderTo(container, title)  [optional — custom panels]
+// ================================================================
 
-// ===== COLOR WHEEL ADDED =====
-import * as colorWheel from './colorWheel.js';
+// ─── Named imports ─────────────────────────────────────────────
+import * as music          from './music.js';
+import * as effect         from './effect.js';
+import * as filters        from './filters.js';
+import * as overlays       from './overlays.js';
+import * as text           from './text.js';
+import * as textFonts      from './textFonts.js';
+import * as stickers       from './stickers.js';
+import * as motion         from './motion.js';
+import * as split          from './split.js';
+import * as deleteFeature  from './delete.js';
+import * as crop           from './crop.js';
+import * as duplicate      from './duplicate.js';
+import * as freeze         from './freeze.js';
+import * as volume         from './volume.js';
+import * as fx             from './fx.js';
+import * as speed          from './speed.js';
+import * as chromakey      from './chromakey.js';
+import * as reverse        from './reverse.js';
+import * as ratio          from './ratio.js';
+import * as adjustments    from './adjustments.js';
+import * as colorWheel     from './colorWheel.js';
 
+// ─── Re-exports ────────────────────────────────────────────────
 export {
   music,
   effect,
@@ -43,5 +52,5 @@ export {
   reverse,
   ratio,
   adjustments,
-  colorWheel   // ← EXPORTED
+  colorWheel
 };
