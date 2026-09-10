@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#121212">
+  <meta name="color-scheme" content="dark">
+  <title>My Offline Editor</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <main class="app-main" aria-label="Offline video editor">
+      <section id="dashboard-page" class="page dashboard-page" aria-labelledby="dashboard-title">
+        <header class="page-header">
+          <div>
+            <p class="eyebrow">OFFLINE VIDEO EDITOR</p>
+            <h1 id="dashboard-title">Projects</h1>
+          </div>
+          <button id="new-project-btn" class="icon-button primary" type="button" aria-label="Create new project">＋</button>
+        </header>
+
+        <section class="dashboard-section" aria-labelledby="recent-title">
+          <div class="section-heading"><h2 id="recent-title">Recent Projects</h2></div>
+          <div id="recent-projects-grid" class="recent-projects-grid" data-columns="2"></div>
+        </section>
+
+        <section class="dashboard-section" aria-labelledby="templates-title">
+          <div class="section-heading"><h2 id="templates-title">Templates</h2></div>
+          <div id="templates-shelf" class="templates-shelf" role="list"></div>
+        </section>
+      </section>
+
+      <section id="workspace-page" class="page workspace-page" aria-labelledby="workspace-title">
+        <header id="header-bar" class="workspace-header">
+          <button id="workspace-back" class="icon-button" type="button" aria-label="Back to dashboard">‹</button>
+          <h1 id="workspace-title">Editor</h1>
+          <button id="export-btn" class="action-button primary" type="button">Export</button>
+        </header>
+
+        <section class="monitor-window" aria-label="Preview monitor">
+          <div id="preview-canvas-wrap" class="preview-canvas-wrap">
+            <canvas id="preview-canvas" aria-label="Video preview canvas"></canvas>
+            <video id="preview-video" playsinline preload="metadata"></video>
+            <div id="preview-empty" class="preview-empty">Import media to begin</div>
+          </div>
+        </section>
+
+        <section id="control-bar" class="control-bar" aria-label="Playback controls">
+          <button id="play-btn" class="icon-button" type="button" aria-label="Play">▶</button>
+          <button id="delete-btn" class="icon-button" type="button" aria-label="Delete selected layer">▣</button>
+          <button id="undo-btn" class="icon-button" type="button" aria-label="Undo">↶</button>
+          <button id="redo-btn" class="icon-button" type="button" aria-label="Redo">↷</button>
+          <button id="media-picker-btn" class="action-button" type="button">＋ Media</button>
+          <div class="zoom-control">
+  <label for="zoom-slider" class="zoom-label">🔍</label>
+  <input type="range" id="zoom-slider" min="30" max="300" value="100" aria-label="Timeline zoom">
+  <span id="zoom-value" class="zoom-value">100%</span>
+</div>
+          <input id="media-file-input" type="file" accept="video/*,audio/*,image/*" multiple>
+          <audio id="preview-audio" preload="metadata"></audio>
+        </section>
+
+        <section class="timeline-section" aria-labelledby="timeline-title">
+          <div class="section-heading">
+  <h2 id="timeline-title">Timeline</h2>
+  <div id="timeline-time" class="timeline-time">00:00 / 00:00</div>
+</div>
+          <div id="timeline-viewport" class="timeline-viewport" tabindex="0" aria-label="Multi-layer timeline">
+            <div id="timeline-matrix" class="timeline-matrix">
+              <div id="timeline-playhead" class="timeline-playhead" aria-hidden="true"></div>
+              <div id="visual-tracks" class="visual-tracks" aria-label="Video image and text tracks"></div>
+              <div id="audio-tracks" class="audio-tracks" aria-label="Audio tracks"></div>
+            </div>
+          </div>
+        </section>
+
+        <section id="feature-shelf-box" class="feature-shelf-box" aria-label="Feature options">
+          <div class="feature-shelf-header">
+            <button id="feature-back-btn" class="icon-button" type="button" aria-label="Back one feature level">‹</button>
+            <h2 id="feature-level-title">Tools</h2>
+          </div>
+          <div id="feature-shelf" class="feature-shelf" role="navigation" aria-label="Feature options"></div>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <!-- ES6 module graph: one dedicated module per structural/view responsibility. -->
+  <script type="module" src="./js/app.js"></script>
+  
+</body>
+</html>
