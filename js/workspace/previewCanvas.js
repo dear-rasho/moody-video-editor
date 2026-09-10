@@ -1,10 +1,10 @@
 // ================================================================
 //  js/workspace/previewCanvas.js
-//  Preview canvas + hidden video element controller.
-//  - Single cached 2D context with willReadFrequently: true
-//    (prevents repeated warnings from chroma key / filters)
-//  - Handles video, image, and clear()
-//  - Exposes: setMedia(item), clear(), setVisible(bool)
+//  Preview canvas is the DISPLAY SURFACE.
+//  Video element is ALWAYS hidden (opacity 0 + !important) so no
+//  other module can accidentally reveal it.
+//  Video stays in-viewport (never off-screen) so browsers keep
+//  decoding frames for drawImage.
 // ================================================================
 
 export function initPreviewCanvas({ canvas, video, empty }) {
@@ -12,13 +12,13 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     return {
       setMedia() {},
       clear() {},
-      setVisible() {}
+      setVisible() {},
+      redraw() {},
+      getContext() { return null; }
     };
   }
 
-  // ─── Single cached 2D context ──────────────────────────────
-  // willReadFrequently = true  → browser optimizes repeated
-  // getImageData calls (chroma key, filters, adjustments).
+  // ─── Single cached 2D context ─────────────────────────────
   let ctx = null;
   function getCtx() {
     if (ctx) return ctx;
@@ -30,7 +30,7 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     return ctx;
   }
 
-  // ─── Match canvas internal size to its CSS box ─────────────
+  // ─── Match canvas internal size to CSS box ────────────────
   function syncCanvasSize() {
     const rect = canvas.getBoundingClientRect();
     const w = Math.max(1, Math.round(rect.width));
@@ -41,57 +41,102 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     }
   }
 
-  // ─── Video events ──────────────────────────────────────────
+  // ─── Draw current video frame to canvas ───────────────────
   function drawVideoFrame() {
     if (!video.videoWidth || !video.videoHeight) return;
+    if (video.readyState < 2) return;
     syncCanvasSize();
     const c = getCtx();
     if (!c) return;
     c.clearRect(0, 0, canvas.width, canvas.height);
-    c.drawImage(video, 0, 0, canvas.width, canvas.height);
+    try {
+      c.drawImage(video, 0, 0, canvas.width, canvas.height);
+    } catch (_) { /* ignore */ }
   }
 
-  video.addEventListener('loadedmetadata', () => {
+  // ─── Playback draw loop ───────────────────────────────────
+  let rafId = null;
+  function startLoop() {
+    if (rafId) return;
+    const loop = () => {
+      drawVideoFrame();
+      if (!video.paused && !video.ended) {
+        rafId = requestAnimationFrame(loop);
+      } else {
+        rafId = null;
+      }
+    };
+    rafId = requestAnimationFrame(loop);
+  }
+  function stopLoop() {
+    if (rafId) cancelAnimationFrame(rafId);
+    rafId = null;
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  //  VIDEO IS ALWAYS HIDDEN
+  //  Use !important so nothing (chromakey / anything else) can
+  //  accidentally reveal it.
+  //  IMPORTANT: keep it in-viewport (never -9999px) so browsers
+  //  don't deprioritize decoding — otherwise drawImage fails.
+  // ═══════════════════════════════════════════════════════════
+  function hideVideo() {
+    video.classList.remove('is-hidden'); // avoid display:none
+    video.style.setProperty('position', 'absolute', 'important');
+    video.style.setProperty('left', '0', 'important');
+    video.style.setProperty('top', '0', 'important');
+    video.style.setProperty('right', 'auto', 'important');
+    video.style.setProperty('bottom', 'auto', 'important');
+    video.style.setProperty('width', '1px', 'important');
+    video.style.setProperty('height', '1px', 'important');
+    video.style.setProperty('opacity', '0', 'important');
+    video.style.setProperty('visibility', 'visible', 'important');
+    video.style.setProperty('pointer-events', 'none', 'important');
+    video.style.setProperty('z-index', '-1', 'important');
+  }
+  hideVideo();
+
+  // ─── Video events ─────────────────────────────────────────
+  video.addEventListener('loadedmetadata', drawVideoFrame);
+  video.addEventListener('loadeddata', drawVideoFrame);
+  video.addEventListener('seeked', drawVideoFrame);
+  video.addEventListener('play', startLoop);
+  video.addEventListener('playing', startLoop);
+  video.addEventListener('pause', () => {
     drawVideoFrame();
+    stopLoop();
   });
-  video.addEventListener('seeked', () => {
+  video.addEventListener('ended', () => {
     drawVideoFrame();
-  });
-  video.addEventListener('loadeddata', () => {
-    drawVideoFrame();
+    stopLoop();
   });
 
-  // ─── Resize observer ───────────────────────────────────────
+  // ─── Resize observer ──────────────────────────────────────
   if (typeof ResizeObserver !== 'undefined') {
     new ResizeObserver(() => {
       syncCanvasSize();
+      if (video.paused || video.ended) return;
+      drawVideoFrame();
     }).observe(canvas);
   }
 
-  // ─── Public API ────────────────────────────────────────────
+  // ─── Public: setMedia ─────────────────────────────────────
   function setMedia(item) {
     if (!item) return;
-
     const type = item.type || '';
     empty.hidden = true;
 
-    // ── Video ──
     if (type.startsWith('video/')) {
       video.src = item.url;
       video.load();
-      video.classList.remove('is-hidden');
+      hideVideo();
       canvas.hidden = false;
-      // Draw first frame once metadata loads
       video.addEventListener('loadeddata', drawVideoFrame, { once: true });
       return;
     }
 
-    // ── Audio ── (no preview canvas drawing)
-    if (type.startsWith('audio/')) {
-      return;
-    }
+    if (type.startsWith('audio/')) return;
 
-    // ── Image ──
     if (type.startsWith('image/')) {
       const image = new Image();
       image.onload = () => {
@@ -113,7 +158,6 @@ export function initPreviewCanvas({ canvas, video, empty }) {
           height
         );
         canvas.hidden = false;
-        video.classList.add('is-hidden');
         empty.hidden = true;
       };
       image.src = item.url;
@@ -121,34 +165,46 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     }
   }
 
+  // ─── Public: clear ────────────────────────────────────────
   function clear() {
+    stopLoop();
     video.pause();
     video.removeAttribute('src');
     video.load();
+    hideVideo();
     const c = getCtx();
     if (c) c.clearRect(0, 0, canvas.width, canvas.height);
-    video.classList.add('is-hidden');
     empty.hidden = false;
     canvas.hidden = false;
+    canvas.style.visibility = '';
+    canvas.style.opacity = '';
   }
 
+  // ─── Public: setVisible (V1 toggle) ───────────────────────
   function setVisible(visible) {
     if (visible) {
-      canvas.style.opacity = '';
       canvas.style.visibility = '';
+      canvas.style.opacity = '';
     } else {
-      canvas.style.opacity = '0';
       canvas.style.visibility = 'hidden';
+      canvas.style.opacity = '0';
     }
   }
+
+  // ─── Public: redraw ───────────────────────────────────────
+  function redraw() {
+    drawVideoFrame();
+  }
+
+  // ─── Init ─────────────────────────────────────────────────
   syncCanvasSize();
-  video.classList.add('is-hidden');
+  hideVideo();
 
   return {
     setMedia,
     clear,
     setVisible,
-    // exposed for chroma key / filters if needed
+    redraw,
     getContext: getCtx
   };
 }
