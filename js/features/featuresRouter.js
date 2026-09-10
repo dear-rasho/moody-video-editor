@@ -80,6 +80,8 @@ const router = {
     this.shelf.style.cssText = '';
     this.shelf.replaceChildren();
 
+ 
+
     // ─── 1. COLOR WHEEL PANEL ──────────────────────────────────
     if (view.renderMode === 'colorwheel') {
       import('./colorWheel.js').then(mod => {
@@ -90,7 +92,18 @@ const router = {
       });
       return;
     }
-
+    // ─── ADJUSTMENTS PANEL ─────────────────────────────────────
+    if (view.renderMode === 'adjustmentsPanel') {
+      import('./adjustments.js')
+        .then(mod => {
+          if (mod.renderTo) mod.renderTo(this.shelf, this.title);
+        })
+        .catch((err) => {
+          console.error('Adjustments load error:', err);
+          this.shelf.textContent = '⚠️ Load failed';
+        });
+      return;
+    }
     // ─── 2. ADJUSTMENT GRID ────────────────────────────────────
     if (view.level === 2 && view.multi === true && view.renderMode === 'adjustments') {
       this.renderAdjustmentGrid(view);
