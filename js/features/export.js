@@ -1,7 +1,12 @@
 // ================================================================
 //  js/features/export.js
-//  Full-screen export settings panel + real export.
-//  Exposes openExportPanel() — app.js hooks the #export-btn.
+//  Full-screen export panel + real export.
+//
+//  Video export renders video into an off-screen canvas at the
+//  selected quality/ratio, using COVER-FIT so anything outside
+//  the target ratio is cropped out.
+//
+//  Audio export uses ONLY the audio layer element (#preview-audio).
 // ================================================================
 
 export const featureKey = 'export';
@@ -14,11 +19,11 @@ const FORMATS = [
 ];
 
 const QUALITY_TIERS = [
-  { key: '480p',  label: '480p (SD)',         ref: 480  },
-  { key: '720p',  label: '720p (HD)',         ref: 720  },
-  { key: '1080p', label: '1080p (Full HD)',   ref: 1080 },
-  { key: '2k',    label: '2K (QHD)',          ref: 1440 },
-  { key: '4k',    label: '4K (UHD)',          ref: 2160 }
+  { key: '480p',  label: '480p (SD)',       ref: 480  },
+  { key: '720p',  label: '720p (HD)',       ref: 720  },
+  { key: '1080p', label: '1080p (Full HD)', ref: 1080 },
+  { key: '2k',    label: '2K (QHD)',        ref: 1440 },
+  { key: '4k',    label: '4K (UHD)',        ref: 2160 }
 ];
 
 const FPS_OPTIONS = [24, 25, 30, 60];
@@ -35,7 +40,7 @@ let overlayEl = null;
 let isExporting = false;
 
 // ═══════════════════════════════════════════════════════════════
-//  HELPERS
+//  RATIO / RESOLUTION
 // ═══════════════════════════════════════════════════════════════
 function getTimelineRatio() {
   const r = window.__offlineEditorRatio;
@@ -49,7 +54,7 @@ function computeResolution(refMin, ratioW, ratioH) {
   const ar = ratioW / ratioH;
   let w, h;
   if (ar >= 1) { h = refMin; w = Math.round(refMin * ar); }
-  else { w = refMin; h = Math.round(refMin / ar); }
+  else         { w = refMin; h = Math.round(refMin / ar); }
   w = w + (w % 2);
   h = h + (h % 2);
   return { width: w, height: h };
@@ -57,7 +62,7 @@ function computeResolution(refMin, ratioW, ratioH) {
 
 function getQualityOptions() {
   const r = getTimelineRatio();
-  return QUALITY_TIERS.map(t => {
+  return QUALITY_TIERS.map(function (t) {
     const res = computeResolution(t.ref, r.w, r.h);
     return {
       key: t.key,
@@ -106,9 +111,7 @@ function gcd(a, b) {
   return a || 1;
 }
 
-function sleep(ms) {
-  return new Promise(function (r) { setTimeout(r, ms); });
-}
+function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
 // ═══════════════════════════════════════════════════════════════
 //  TOAST
@@ -139,6 +142,37 @@ function showToast(message, ok) {
     el.style.transform = 'translateX(-50%) translateY(8px)';
     setTimeout(function () { el.remove(); }, 300);
   }, 1800);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  COVER-FIT DRAW (crop overflow)
+// ═══════════════════════════════════════════════════════════════
+function drawCoverFit(ctx, videoEl, W, H) {
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+  if (!videoEl || videoEl.readyState < 2 || !videoEl.videoWidth) return;
+
+  const vw = videoEl.videoWidth;
+  const vh = videoEl.videoHeight;
+  const vAR = vw / vh;
+  const eAR = W / H;
+
+  let dw, dh, dx, dy;
+  if (vAR > eAR) {
+    // video wider than frame → fit height, crop left/right
+    dh = H;
+    dw = H * vAR;
+    dx = (W - dw) / 2;
+    dy = 0;
+  } else {
+    // video taller than frame → fit width, crop top/bottom
+    dw = W;
+    dh = W / vAR;
+    dx = 0;
+    dy = (H - dh) / 2;
+  }
+
+  try { ctx.drawImage(videoEl, dx, dy, dw, dh); } catch (_) {}
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -191,7 +225,7 @@ function injectStyles() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  PUBLIC API
+//  PUBLIC
 // ═══════════════════════════════════════════════════════════════
 export function openExportPanel() {
   if (overlayEl) return;
@@ -402,7 +436,7 @@ function buildAudioInfoField() {
   label.textContent = 'Audio Export';
   const help = document.createElement('div');
   help.className = 'exp-help';
-  help.textContent = 'Audio track will be exported as a compressed audio file. Video quality and frame rate do not apply.';
+  help.textContent = 'Exports ONLY the audio layer (A1, A2, …). Video and visual layers are ignored.';
   field.append(label, help);
   return field;
 }
@@ -415,7 +449,7 @@ function buildPngInfoField() {
   label.textContent = 'Frame Snapshot';
   const help = document.createElement('div');
   help.className = 'exp-help';
-  help.textContent = 'Exports a single frame from the current playhead position as a PNG image.';
+  help.textContent = 'Exports the current frame at the selected ratio and resolution.';
   field.append(label, help);
   return field;
 }
@@ -448,14 +482,14 @@ function buildRatioField() {
 
   const help = document.createElement('div');
   help.className = 'exp-help';
-  help.textContent = 'Ratio is taken from the timeline. To change it, use the Ratio tool.';
+  help.textContent = 'Export renders at this ratio — anything outside the frame is cropped out.';
 
   field.append(label, box, help);
   return field;
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  EXPORT
+//  EXPORT ACTIONS
 // ═══════════════════════════════════════════════════════════════
 function onExportClick() {
   if (isExporting) return;
@@ -466,11 +500,24 @@ function onExportClick() {
   return exportVideo(name + fmt.ext, fmt);
 }
 
+// ─── PNG ───────────────────────────────────────────────────────
 async function exportPng(filename) {
-  const canvas = document.querySelector('#preview-canvas');
-  if (!canvas) { showToast('No preview available', false); return; }
+  const videoEl = document.querySelector('#preview-video');
+  if (!videoEl || !videoEl.src) { showToast('Load a video first', false); return; }
+
+  const q = getCurrentQuality();
+  const W = q.width;
+  const H = q.height;
+
   showProgress(0, 'Capturing frame…');
   await sleep(60);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d', { alpha: false });
+  drawCoverFit(ctx, videoEl, W, H);
+
   try {
     const blob = await canvasToBlob(canvas, 'image/png');
     hideProgress();
@@ -494,17 +541,20 @@ function canvasToBlob(canvas, type) {
   });
 }
 
+// ─── AUDIO (audio layer only) ─────────────────────────────────
 async function exportAudio(filename) {
-  const videoEl = document.querySelector('#preview-video');
   const audioEl = document.querySelector('#preview-audio');
-  let sourceEl = null;
-  if (audioEl && audioEl.src) sourceEl = audioEl;
-  else if (videoEl && videoEl.src) sourceEl = videoEl;
-  if (!sourceEl) { showToast('No audio loaded', false); return; }
-  if (!sourceEl.captureStream) { showToast('Audio capture not supported', false); return; }
+  if (!audioEl || !audioEl.src) {
+    showToast('No audio layer found', false);
+    return;
+  }
+  if (!audioEl.captureStream) {
+    showToast('Audio capture not supported', false);
+    return;
+  }
 
-  const duration = Number.isFinite(sourceEl.duration) ? sourceEl.duration : 10;
-  const stream = sourceEl.captureStream();
+  const duration = Number.isFinite(audioEl.duration) ? audioEl.duration : 10;
+  const stream = audioEl.captureStream();
 
   let mime = '';
   if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) mime = 'audio/webm;codecs=opus';
@@ -519,15 +569,15 @@ async function exportAudio(filename) {
 
   showProgress(0, 'Recording audio…');
   const startedAt = performance.now();
-  sourceEl.currentTime = 0;
-  try { await sourceEl.play(); } catch (_) {}
+  try { audioEl.currentTime = 0; } catch (_) {}
+  try { await audioEl.play(); } catch (_) {}
   recorder.start(200);
 
   const tick = function () {
     const elapsed = (performance.now() - startedAt) / 1000;
     const progress = Math.min(1, elapsed / Math.max(0.5, duration));
     showProgress(progress, 'Recording audio… ' + Math.round(progress * 100) + '%');
-    if (sourceEl.ended || elapsed >= duration + 0.3) {
+    if (audioEl.ended || elapsed >= duration + 0.3) {
       if (recorder.state === 'recording') recorder.stop();
       return;
     }
@@ -536,7 +586,7 @@ async function exportAudio(filename) {
   requestAnimationFrame(tick);
 
   recorder.onstop = async function () {
-    try { sourceEl.pause(); } catch (_) {}
+    try { audioEl.pause(); } catch (_) {}
     const blob = new Blob(chunks, { type: mime || 'audio/webm' });
     hideProgress();
     const saved = await saveBlob(blob, filename);
@@ -544,23 +594,36 @@ async function exportAudio(filename) {
   };
 }
 
+// ─── VIDEO (ratio-cropped via off-screen canvas) ──────────────
 async function exportVideo(filename, fmt) {
-  const canvas = document.querySelector('#preview-canvas');
   const videoEl = document.querySelector('#preview-video');
-  if (!canvas || !videoEl) { showToast('No preview available', false); return; }
-  if (!videoEl.src) { showToast('Load a video first', false); return; }
-  if (!canvas.captureStream) { showToast('Canvas capture not supported', false); return; }
+  const audioEl = document.querySelector('#preview-audio');
 
-  const duration = Number.isFinite(videoEl.duration) ? videoEl.duration : 10;
-  const stream = canvas.captureStream(settings.fps);
+  if (!videoEl || !videoEl.src) { showToast('Load a video first', false); return; }
 
+  const q = getCurrentQuality();
+  const W = q.width;
+  const H = q.height;
+
+  // Off-screen canvas at target resolution
+  const exportCanvas = document.createElement('canvas');
+  exportCanvas.width = W;
+  exportCanvas.height = H;
+  const ectx = exportCanvas.getContext('2d', { alpha: false });
+
+  // Initial frame
+  drawCoverFit(ectx, videoEl, W, H);
+
+  // Stream from the export canvas
+  const fps = Number(settings.fps) || 30;
+  const stream = exportCanvas.captureStream(fps);
+
+  // Attach audio tracks (video's own audio + separate audio layer)
   let audioTracks = [];
   try {
-    if (videoEl.captureStream) audioTracks = videoEl.captureStream().getAudioTracks();
-    else if (videoEl.mozCaptureStream) audioTracks = videoEl.mozCaptureStream().getAudioTracks();
+    if (videoEl.captureStream) audioTracks = audioTracks.concat(videoEl.captureStream().getAudioTracks());
+    else if (videoEl.mozCaptureStream) audioTracks = audioTracks.concat(videoEl.mozCaptureStream().getAudioTracks());
   } catch (_) {}
-
-  const audioEl = document.querySelector('#preview-audio');
   if (audioEl && audioEl.src && audioEl.captureStream) {
     try { audioTracks = audioTracks.concat(audioEl.captureStream().getAudioTracks()); } catch (_) {}
   }
@@ -568,13 +631,17 @@ async function exportVideo(filename, fmt) {
     try { stream.addTrack(audioTracks[i]); } catch (_) {}
   }
 
+  // MIME
   let mime = '';
   const candidates = fmt.key === 'mov'
     ? ['video/quicktime', 'video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm']
     : ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
   for (let i = 0; i < candidates.length; i++) {
     if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported &&
-        MediaRecorder.isTypeSupported(candidates[i])) { mime = candidates[i]; break; }
+        MediaRecorder.isTypeSupported(candidates[i])) {
+      mime = candidates[i];
+      break;
+    }
   }
 
   const recorderOpts = {};
@@ -588,6 +655,7 @@ async function exportVideo(filename, fmt) {
   const chunks = [];
   recorder.ondataavailable = function (e) { if (e.data.size > 0) chunks.push(e.data); };
 
+  // Prepare video
   try { videoEl.pause(); } catch (_) {}
   try { videoEl.currentTime = 0; } catch (_) {}
   try { videoEl.playbackRate = 1; } catch (_) {}
@@ -599,10 +667,21 @@ async function exportVideo(filename, fmt) {
     setTimeout(resolve, 500);
   });
 
+  // Start continuous draw loop into export canvas
+  let drawRaf = null;
+  const drawLoop = function () {
+    drawCoverFit(ectx, videoEl, W, H);
+    drawRaf = requestAnimationFrame(drawLoop);
+  };
+  drawRaf = requestAnimationFrame(drawLoop);
+
+  // Record
   recorder.start(200);
   try { await videoEl.play(); } catch (_) {}
 
+  const duration = Number.isFinite(videoEl.duration) ? videoEl.duration : 10;
   const startedAt = performance.now();
+
   const tick = function () {
     const elapsed = (performance.now() - startedAt) / 1000;
     const progress = Math.min(1, elapsed / Math.max(0.5, duration));
@@ -616,6 +695,7 @@ async function exportVideo(filename, fmt) {
   requestAnimationFrame(tick);
 
   recorder.onstop = async function () {
+    if (drawRaf) { cancelAnimationFrame(drawRaf); drawRaf = null; }
     try { videoEl.pause(); } catch (_) {}
     const blob = new Blob(chunks, { type: mime || 'video/webm' });
     hideProgress();
