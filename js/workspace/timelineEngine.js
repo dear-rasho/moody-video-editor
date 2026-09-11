@@ -1,11 +1,7 @@
 // ================================================================
 //  js/workspace/timelineEngine.js
-//  Unlimited-layer timeline.
-//    • 3 visual + 3 audio layers default
-//    • Clip width = duration × pxPerSecond (exact ruler match)
-//    • Media placed at playhead time, auto-escalates to new layer
-//    • Listens for 'editor:timeline-changed' to re-render on
-//      external feature additions (text, stickers, etc.)
+//  Unlimited-layer timeline. Fires 'editor:timeline-changed' on
+//  every mutation so historyManager can snapshot.
 // ================================================================
 
 import {
@@ -48,6 +44,10 @@ export function initTimelineEngine(config) {
   const rulerContainer = document.createElement('div');
   rulerContainer.className = 'timeline-ruler';
   matrix.prepend(rulerContainer);
+
+  function notifyChanged() {
+    document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
+  }
 
   function blockScroll(block) {
     if (!viewport) return;
@@ -168,6 +168,7 @@ export function initTimelineEngine(config) {
         list.splice(trackIndex, 0, moved);
         draggedTrack = null;
         render();
+        notifyChanged();
         return;
       }
 
@@ -187,6 +188,7 @@ export function initTimelineEngine(config) {
         toTrack.push(movedClip);
         draggedClip = null;
         render();
+        notifyChanged();
       }
     });
 
@@ -223,7 +225,6 @@ export function initTimelineEngine(config) {
       name.appendChild(mute);
     }
 
-    // ─── Content — explicit width matches ruler's contentWidth exactly ───
     const content = document.createElement('div');
     content.className = 'track-content';
 
@@ -243,7 +244,6 @@ export function initTimelineEngine(config) {
       el.dataset.clipType = clip.type || '';
 
       const r = clipRange(clip);
-      // Exact width = duration × pxPerSecond  (ruler uses same formula)
       el.style.left  = (r.start * metrics.pxPerSecond) + 'px';
       el.style.width = (r.duration * metrics.pxPerSecond) + 'px';
 
@@ -394,18 +394,21 @@ export function initTimelineEngine(config) {
       }, atTime);
     }
     render();
+    notifyChanged();
   }
 
   function addVisualLayer() {
     ensureMinLayers(state.visual, DEFAULT_VISUAL_LAYERS);
     insertEmptyLayer(state.visual, state.visual.length);
     render();
+    notifyChanged();
   }
 
   function addAudioLayer() {
     ensureMinLayers(state.audio, DEFAULT_AUDIO_LAYERS);
     insertEmptyLayer(state.audio, state.audio.length);
     render();
+    notifyChanged();
   }
 
   const previewVideoEl = document.querySelector('#preview-video');
@@ -425,11 +428,11 @@ export function initTimelineEngine(config) {
     clips.splice(selected.clipIndex, 1);
     selected = null;
     render();
+    notifyChanged();
   }
 
   document.addEventListener('editor:delete-selected', deleteSelected);
 
-  // 🆕 Re-render when external features (text, stickers, etc.) change the timeline
   document.addEventListener('editor:timeline-changed', function () {
     render();
   });

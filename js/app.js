@@ -11,6 +11,8 @@ import { initTimelineEngine } from './workspace/timelineEngine.js';
 import { initTimelinePlayhead } from './workspace/timelinePlayhead.js';
 import { injectQuickLayerButtons } from './layers/layersManager.js';
 import { initKeyframeEngine } from './features/keyframeEngine.js';
+import { initHistory } from './workspace/historyManager.js';
+import { openExportPanel } from './features/export.js';
 
 import * as featureModules from './features/index.js';
 
@@ -57,6 +59,7 @@ function createProject() {
   if (timeline) timeline.render();
   if (timelinePlayhead) timelinePlayhead.setProgress(0, 0);
   if (previewHud) previewHud.refresh();
+  document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
   showPage('workspace');
 }
 
@@ -80,7 +83,6 @@ async function bootstrap() {
     empty: document.querySelector('#preview-empty')
   });
 
-  // 🆕 Global keyframe engine — runs during any playback
   initKeyframeEngine({
     video: document.querySelector('#preview-video')
   });
@@ -155,6 +157,12 @@ async function bootstrap() {
     }
   );
 
+  initHistory({
+    timeline: appState.timeline,
+    undoButton: document.querySelector('#undo-btn'),
+    redoButton: document.querySelector('#redo-btn')
+  });
+
   timelinePlayhead = initTimelinePlayhead({
     element: document.querySelector('#timeline-playhead'),
     matrix: document.querySelector('#timeline-matrix'),
@@ -187,6 +195,16 @@ async function bootstrap() {
   elements.workspaceBack.addEventListener('click', function () {
     showPage('dashboard');
   });
+
+  // 🆕 Export button → open settings panel
+  const exportBtn = document.querySelector('#export-btn');
+  if (exportBtn) {
+    exportBtn.addEventListener('click', function (e) {
+      e.preventDefault();
+      openExportPanel();
+    });
+  }
+
   showPage('dashboard');
 }
 

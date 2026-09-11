@@ -1,8 +1,6 @@
 // ================================================================
 //  js/layers/layersManager.js
-//  - State helpers (place / ensure / insert)
-//  - CSS: hides file input, absolute clips, V+/A+ btns, type colors
-//  - V+ / A+ button factory + injector
+//  Layer helpers, CSS injection, V+/A+ buttons.
 // ================================================================
 
 export const DEFAULT_VISUAL_LAYERS = 3;
@@ -15,23 +13,14 @@ export function injectLayerStyles() {
   const s = document.createElement('style');
   s.id = CSS_ID;
   s.textContent = [
-    // Hide ugly file input
     '#media-file-input{position:absolute!important;width:1px!important;height:1px!important;opacity:0!important;pointer-events:none!important;left:-9999px!important;}',
-
-    // Track content — kill min-width so explicit width applies
     '.track-content{position:relative!important;display:block!important;padding:0!important;min-width:0!important;}',
-
-    // Absolute clip positioning
-    '.clip.clip-absolute{position:absolute!important;top:5px;height:calc(100% - 10px);min-width:40px!important;box-sizing:border-box;}',
-
-    // ─── Clip colors by media type ───
+    '.clip.clip-absolute{position:absolute!important;top:5px;height:calc(100% - 10px);min-width:20px;box-sizing:border-box;}',
     '.clip[data-clip-type^="video/"]{background:#1e40af!important;border-color:#3b82f6!important;color:#fff!important;}',
     '.clip[data-clip-type^="image/"]{background:#ca8a04!important;border-color:#facc15!important;color:#111!important;}',
     '.clip[data-clip-type^="text/"]{background:#be185d!important;border-color:#ec4899!important;color:#fff!important;}',
     '.clip[data-clip-type^="audio/"]{background:#065f46!important;border-color:#10b981!important;color:#fff!important;}',
     '.clip[data-clip-type^="sticker/"]{background:#6d28d9!important;border-color:#a855f7!important;color:#fff!important;}',
-
-    // ─── V+ / A+ quick buttons ───
     '.quick-layer-buttons{display:flex;gap:6px;flex-shrink:0;}',
     '.quick-layer-btn{display:inline-flex;align-items:center;justify-content:center;gap:4px;min-width:52px;min-height:40px;padding:0 12px;background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:8px;font-size:12px;font-weight:700;letter-spacing:.06em;cursor:pointer;font-family:inherit;flex-shrink:0;}',
     '.quick-layer-btn:active{background:var(--surface-3);}',
@@ -102,7 +91,7 @@ export function ensureMinLayers(list, min) {
   while (list.length < min) list.push([]);
 }
 
-// ─── V+ / A+ button factory ────────────────────────────────────
+// ─── V+ / A+ buttons ───────────────────────────────────────────
 export function createQuickLayerButtons(opts) {
   injectLayerStyles();
 
