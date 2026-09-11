@@ -10,6 +10,7 @@ import { initPlaybackControls } from './workspace/playbackControls.js';
 import { initTimelineEngine } from './workspace/timelineEngine.js';
 import { initTimelinePlayhead } from './workspace/timelinePlayhead.js';
 import { injectQuickLayerButtons } from './layers/layersManager.js';
+import { initKeyframeEngine } from './features/keyframeEngine.js';
 
 import * as featureModules from './features/index.js';
 
@@ -77,6 +78,11 @@ async function bootstrap() {
     canvas: document.querySelector('#preview-canvas'),
     video: document.querySelector('#preview-video'),
     empty: document.querySelector('#preview-empty')
+  });
+
+  // 🆕 Global keyframe engine — runs during any playback
+  initKeyframeEngine({
+    video: document.querySelector('#preview-video')
   });
 
   previewHud = initPreviewHud({
