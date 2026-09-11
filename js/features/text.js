@@ -1,20 +1,16 @@
 // ================================================================
 //  js/features/text.js
 //  Self-contained Text feature with keyframes + easing + custom values.
-//  - Position / Scale / Rotation all support keyframes
-//  - Easing curves shelf is horizontally scrollable (fixed card size)
-//  - Outer panel scrolls only vertically
-//  - Alignment fixed (anchor-based transform)
-//  - Uses animations.js for preset animations
+//  Integrates with timelineEngine via placeClipAtTime + custom event.
 // ================================================================
 
 import { featuresRouter } from './featuresRouter.js';
 import { appState } from '../app.js';
 import { getAnimationList, applyAnimation } from './animations.js';
+import { placeClipAtTime } from '../layers/layersManager.js';
 
 export const featureKey = 'text';
 
-// ─── Fonts ─────────────────────────────────────────────────────
 const FONTS = [
   'Arial', 'Helvetica', 'Georgia', 'Times New Roman', 'Courier New',
   'Verdana', 'Tahoma', 'Trebuchet MS', 'Impact', 'Comic Sans MS',
@@ -22,7 +18,6 @@ const FONTS = [
   'Segoe UI', 'Roboto', 'Open Sans', 'Montserrat', 'Poppins', 'Lato'
 ];
 
-// ─── Options ───────────────────────────────────────────────────
 const OPTIONS = [
   { key: 'addText',    label: 'Add Text',   icon: '➕' },
   { key: 'fonts',      label: 'Fonts',      icon: '🔤' },
@@ -39,7 +34,6 @@ const OPTIONS = [
   { key: 'removeText', label: 'Remove',     icon: '🗑️' }
 ];
 
-// ─── Easing options ────────────────────────────────────────────
 const EASING_OPTIONS = [
   { key: 'linear',        label: 'Linear' },
   { key: 'easeIn',        label: 'Ease In' },
@@ -55,7 +49,6 @@ const EASING_OPTIONS = [
   { key: 'easeOutElastic',label: 'Elastic Out' }
 ];
 
-// ─── State ─────────────────────────────────────────────────────
 const ts = {
   content: '',
   fontFamily: 'Arial',
@@ -97,7 +90,6 @@ let overlayEl = null;
 let textLayerId = null;
 let previewRAF = null;
 
-// ─── Router self-install ───────────────────────────────────────
 (function installTextRenderer() {
   if (featuresRouter.__textInstalled) return;
   featuresRouter.__textInstalled = true;
@@ -116,14 +108,12 @@ let previewRAF = null;
   };
 })();
 
-// ─── CSS ───────────────────────────────────────────────────────
 const CSS_ID = 'text-styles';
 function injectStyles() {
   if (document.getElementById(CSS_ID)) return;
   const style = document.createElement('style');
   style.id = CSS_ID;
   style.textContent = `
-    /* ═══════════ OUTER PANEL — vertical scroll only ═══════════ */
     .tx-panel {
       display: flex;
       flex-direction: column;
@@ -139,7 +129,6 @@ function injectStyles() {
     }
     .tx-panel * { box-sizing: border-box; }
 
-    /* ═══════════ Options grid ═══════════ */
     .tx-options-grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(78px, 1fr));
@@ -180,7 +169,6 @@ function injectStyles() {
       text-align: center;
     }
 
-    /* ═══════════ Card ═══════════ */
     .tx-card {
       display: flex;
       flex-direction: column;
@@ -200,7 +188,6 @@ function injectStyles() {
       color: var(--muted);
     }
 
-    /* ═══════════ Add Text ═══════════ */
     .tx-textarea {
       width: 100%;
       min-height: 80px;
@@ -228,7 +215,6 @@ function injectStyles() {
     }
     .tx-apply-btn:active { opacity: 0.85; }
 
-    /* ═══════════ Fonts shelf ═══════════ */
     .tx-fonts-scroll {
       display: flex;
       gap: 8px;
@@ -262,7 +248,6 @@ function injectStyles() {
       background: var(--surface-2);
     }
 
-    /* ═══════════ Rows + sliders ═══════════ */
     .tx-row {
       display: flex;
       flex-direction: column;
@@ -311,7 +296,6 @@ function injectStyles() {
     }
     .tx-num:focus { border-color: var(--accent); }
 
-    /* ═══════════ Colors ═══════════ */
     .tx-color-row {
       display: flex;
       align-items: center;
@@ -343,7 +327,6 @@ function injectStyles() {
     }
     .tx-hex:focus { border-color: var(--accent); }
 
-    /* ═══════════ Chips ═══════════ */
     .tx-chips {
       display: flex;
       gap: 8px;
@@ -367,7 +350,6 @@ function injectStyles() {
       border-color: var(--accent);
     }
 
-    /* ═══════════ Alignment ═══════════ */
     .tx-align-row {
       display: flex;
       gap: 8px;
@@ -389,7 +371,6 @@ function injectStyles() {
       border-color: var(--accent);
     }
 
-    /* ═══════════ Keyframe section ═══════════ */
     .tx-kf-section {
       display: flex;
       flex-direction: column;
@@ -483,10 +464,6 @@ function injectStyles() {
       text-align: center;
     }
 
-    /* ═══════════════════════════════════════════════════════════
-       EASING CURVES — chota fixed-height scrollable shelf
-       Sirf yeh shelf horizontally scroll karti hai.
-       ═══════════════════════════════════════════════════════════ */
     .tx-ease-row {
       display: flex;
       flex-direction: column;
@@ -517,13 +494,6 @@ function injectStyles() {
       overscroll-behavior-x: contain;
       scrollbar-width: thin;
     }
-    .tx-ease-shelf::-webkit-scrollbar {
-      height: 5px;
-    }
-    .tx-ease-shelf::-webkit-scrollbar-thumb {
-      background: var(--border);
-      border-radius: 3px;
-    }
     .tx-ease-card {
       flex: 0 0 90px;
       width: 90px;
@@ -541,7 +511,6 @@ function injectStyles() {
       transition: border-color 0.12s ease, box-shadow 0.12s ease;
       font-family: inherit;
     }
-    .tx-ease-card:active { background: var(--surface-2); }
     .tx-ease-card.active {
       border-color: var(--accent);
       box-shadow: inset 0 0 0 1px var(--accent);
@@ -554,9 +523,6 @@ function injectStyles() {
       border-radius: 5px;
       background: var(--surface-2);
       flex-shrink: 0;
-    }
-    .tx-ease-card.active .tx-ease-card-curve {
-      background: var(--surface);
     }
     .tx-ease-card-name {
       font-size: 9px;
@@ -573,7 +539,6 @@ function injectStyles() {
       color: var(--text);
     }
 
-    /* ═══════════ Preview overlay ═══════════ */
     .tx-overlay {
       position: absolute;
       z-index: 45;
@@ -589,7 +554,6 @@ function injectStyles() {
   document.head.appendChild(style);
 }
 
-// ─── Router entry ──────────────────────────────────────────────
 export function open({ router }) {
   currentSubView = 'options';
   router.openLevel('text', [], {
@@ -657,7 +621,6 @@ function getCurrentContainer() {
   return document.querySelector('#feature-shelf');
 }
 
-// ─── Options ───────────────────────────────────────────────────
 function renderOptions(panel) {
   const grid = document.createElement('div');
   grid.className = 'tx-options-grid';
@@ -687,7 +650,6 @@ function renderOptions(panel) {
   panel.appendChild(grid);
 }
 
-// ─── Add Text ──────────────────────────────────────────────────
 function renderAddText(panel) {
   const card = document.createElement('div');
   card.className = 'tx-card';
@@ -721,7 +683,6 @@ function renderAddText(panel) {
   setTimeout(() => ta.focus(), 50);
 }
 
-// ─── Fonts ─────────────────────────────────────────────────────
 function renderFonts(panel) {
   const card = document.createElement('div');
   card.className = 'tx-card';
@@ -755,7 +716,6 @@ function renderFonts(panel) {
   panel.appendChild(card);
 }
 
-// ─── Stroke ────────────────────────────────────────────────────
 function renderStroke(panel) {
   const card = document.createElement('div');
   card.className = 'tx-card';
@@ -777,7 +737,6 @@ function renderStroke(panel) {
   panel.appendChild(card);
 }
 
-// ─── Color ─────────────────────────────────────────────────────
 function renderColor(panel) {
   const card = document.createElement('div');
   card.className = 'tx-card';
@@ -795,7 +754,6 @@ function renderColor(panel) {
   panel.appendChild(card);
 }
 
-// ─── Gradient ──────────────────────────────────────────────────
 function renderGradient(panel) {
   const card = document.createElement('div');
   card.className = 'tx-card';
@@ -841,7 +799,6 @@ function renderGradient(panel) {
   panel.appendChild(card);
 }
 
-// ─── Shadows ───────────────────────────────────────────────────
 function renderShadows(panel) {
   const card = document.createElement('div');
   card.className = 'tx-card';
@@ -879,7 +836,6 @@ function renderShadows(panel) {
   panel.appendChild(card);
 }
 
-// ─── Alignment ─────────────────────────────────────────────────
 function renderAlignment(panel) {
   const card = document.createElement('div');
   card.className = 'tx-card';
@@ -919,7 +875,6 @@ function renderAlignment(panel) {
   panel.appendChild(card);
 }
 
-// ─── Position ──────────────────────────────────────────────────
 function renderPosition(panel) {
   const card = document.createElement('div');
   card.className = 'tx-card';
@@ -953,7 +908,6 @@ function renderPosition(panel) {
   panel.appendChild(card);
 }
 
-// ─── Scale ─────────────────────────────────────────────────────
 function renderScale(panel) {
   const card = document.createElement('div');
   card.className = 'tx-card';
@@ -982,7 +936,6 @@ function renderScale(panel) {
   panel.appendChild(card);
 }
 
-// ─── Rotation ──────────────────────────────────────────────────
 function renderRotation(panel) {
   const card = document.createElement('div');
   card.className = 'tx-card';
@@ -1011,7 +964,6 @@ function renderRotation(panel) {
   panel.appendChild(card);
 }
 
-// ─── Opacity ───────────────────────────────────────────────────
 function renderOpacity(panel) {
   const card = document.createElement('div');
   card.className = 'tx-card';
@@ -1028,7 +980,6 @@ function renderOpacity(panel) {
   panel.appendChild(card);
 }
 
-// ─── Animations ────────────────────────────────────────────────
 function renderAnimations(panel) {
   const card = document.createElement('div');
   card.className = 'tx-card';
@@ -1070,9 +1021,6 @@ function renderAnimations(panel) {
   panel.appendChild(card);
 }
 
-// ================================================================
-//  Keyframe section
-// ================================================================
 function makeKeyframeSection({ kind, list, easeKey, capture, format, load }) {
   const section = document.createElement('div');
   section.className = 'tx-kf-section';
@@ -1158,16 +1106,11 @@ function makeKeyframeSection({ kind, list, easeKey, capture, format, load }) {
   }
 
   section.appendChild(listEl);
-
-  // ⬇ Easing shelf (small, scrollable horizontally)
   section.appendChild(makeEasingSelector(easeKey));
 
   return section;
 }
 
-// ================================================================
-//  Easing selector — chota fixed-height scrollable shelf
-// ================================================================
 function makeEasingSelector(easeKey) {
   const row = document.createElement('div');
   row.className = 'tx-ease-row';
@@ -1189,13 +1132,11 @@ function makeEasingSelector(easeKey) {
     card.dataset.ease = opt.key;
     if (ts[easeKey] === opt.key) card.classList.add('active');
 
-    // SVG curve preview
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.setAttribute('viewBox', '0 0 100 40');
     svg.setAttribute('preserveAspectRatio', 'none');
     svg.classList.add('tx-ease-card-curve');
 
-    // baseline
     const mid = document.createElementNS('http://www.w3.org/2000/svg', 'line');
     mid.setAttribute('x1', '0');   mid.setAttribute('y1', '20');
     mid.setAttribute('x2', '100'); mid.setAttribute('y2', '20');
@@ -1203,7 +1144,6 @@ function makeEasingSelector(easeKey) {
     mid.setAttribute('stroke-width', '0.6');
     svg.appendChild(mid);
 
-    // start/end dots
     const dotA = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
     dotA.setAttribute('cx', '4');   dotA.setAttribute('cy', '36');
     dotA.setAttribute('r', '1.8');
@@ -1214,7 +1154,6 @@ function makeEasingSelector(easeKey) {
     dotB.setAttribute('fill', 'var(--muted)');
     svg.append(dotA, dotB);
 
-    // curve path
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     path.setAttribute('fill', 'none');
     path.setAttribute('stroke', 'var(--accent)');
@@ -1242,7 +1181,6 @@ function makeEasingSelector(easeKey) {
 
   row.appendChild(shelf);
 
-  // Auto-scroll selected card into view (only the shelf scrolls)
   setTimeout(() => {
     const active = cards[ts[easeKey]];
     if (active && shelf.scrollWidth > shelf.clientWidth) {
@@ -1268,9 +1206,6 @@ function buildCurvePath(ease, w, h, pad) {
   return 'M ' + pts.join(' L ');
 }
 
-// ================================================================
-//  Easing math
-// ================================================================
 function getEasedValue(t, ease) {
   t = Math.max(0, Math.min(1, t));
   switch (ease) {
@@ -1319,9 +1254,6 @@ function refreshCurrentPanel() {
   if (c) renderCurrent(c);
 }
 
-// ================================================================
-//  Keyframe preview
-// ================================================================
 function previewKeyframes(kind) {
   const video = document.querySelector('#preview-video');
   if (!video) return;
@@ -1437,9 +1369,6 @@ function formatTime(s) {
   return s.toFixed(2) + 's';
 }
 
-// ================================================================
-//  Small UI helpers
-// ================================================================
 function makeSlider(label, min, max, step, value, onChange) {
   const row = document.createElement('div');
   row.className = 'tx-row';
@@ -1537,9 +1466,6 @@ function makeColorRow(label, value, onChange) {
   return row;
 }
 
-// ================================================================
-//  Preview overlay
-// ================================================================
 function commitTextToPreview() {
   if (!ts.content) { removeOverlay(); return; }
   const wrap = document.querySelector('#preview-canvas-wrap');
@@ -1621,12 +1547,15 @@ function removeOverlay() {
 }
 
 // ================================================================
-//  Timeline integration
+//  Timeline integration — uses layersManager (collision-aware)
 // ================================================================
 function commitTextToTimeline() {
   if (!ts.content) return;
-  if (!appState.timeline.visual[0]) appState.timeline.visual[0] = [];
-  const track = appState.timeline.visual[0];
+  if (!Array.isArray(appState.timeline.visual)) appState.timeline.visual = [];
+
+  const video = document.querySelector('#preview-video');
+  const atTime = (video && Number.isFinite(video.currentTime)) ? video.currentTime : 0;
+  const dur = 3;
 
   if (!textLayerId) textLayerId = 'tx-' + Date.now();
 
@@ -1635,54 +1564,29 @@ function commitTextToTimeline() {
     url: 'text://' + textLayerId,
     type: 'text/plain',
     __textId: textLayerId,
-    textState: { ...ts }
+    textState: Object.assign({}, ts),
+    startTime: atTime,
+    duration: dur
   };
 
-  const existingIdx = track.findIndex(c => c.__textId === textLayerId);
-  let clipIndex;
-  if (existingIdx >= 0) {
-    track[existingIdx] = { ...track[existingIdx], ...clipData };
-    clipIndex = existingIdx;
-  } else {
-    track.push(clipData);
-    clipIndex = track.length - 1;
+  // Update existing entry if one exists
+  let found = false;
+  for (let t = 0; t < appState.timeline.visual.length; t++) {
+    const track = appState.timeline.visual[t];
+    if (!Array.isArray(track)) continue;
+    const idx = track.findIndex(c => c && c.__textId === textLayerId);
+    if (idx >= 0) {
+      track[idx] = Object.assign({}, track[idx], clipData);
+      found = true;
+      break;
+    }
   }
 
-  syncTextClipDom(clipIndex);
-}
+  if (!found) {
+    placeClipAtTime(appState.timeline.visual, clipData, atTime);
+  }
 
-function syncTextClipDom(clipIndex) {
-  const trackEl = document.querySelector(
-    '.track[data-group="visual"][data-track-index="0"]'
-  );
-  if (!trackEl) return;
-  const content = trackEl.querySelector('.track-content');
-  if (!content) return;
-
-  content.querySelectorAll(`.clip[data-text-id="${textLayerId}"]`)
-    .forEach(el => el.remove());
-
-  const el = document.createElement('button');
-  el.type = 'button';
-  el.className = 'clip';
-  el.textContent = ts.content || 'Text';
-  el.dataset.track = 'V1';
-  el.dataset.clip = clipIndex;
-  el.dataset.textId = textLayerId;
-
-  el.addEventListener('mousedown', (e) => {
-    if (e.button !== 0) return;
-    document.querySelectorAll('.clip.selected').forEach(x => x.classList.remove('selected'));
-    el.classList.add('selected');
-    e.preventDefault();
-  });
-  el.addEventListener('click', (e) => {
-    e.stopPropagation();
-    document.querySelectorAll('.clip.selected').forEach(x => x.classList.remove('selected'));
-    el.classList.add('selected');
-  });
-
-  content.appendChild(el);
+  document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
 }
 
 function removeText() {
@@ -1690,15 +1594,14 @@ function removeText() {
   stopPreview();
   ts.content = '';
 
-  if (textLayerId && appState.timeline.visual[0]) {
-    const track = appState.timeline.visual[0];
-    const idx = track.findIndex(c => c.__textId === textLayerId);
-    if (idx >= 0) track.splice(idx, 1);
-  }
-
-  if (textLayerId) {
-    document.querySelectorAll(`.clip[data-text-id="${textLayerId}"]`)
-      .forEach(el => el.remove());
+  if (textLayerId && Array.isArray(appState.timeline.visual)) {
+    for (let t = 0; t < appState.timeline.visual.length; t++) {
+      const track = appState.timeline.visual[t];
+      if (!Array.isArray(track)) continue;
+      const idx = track.findIndex(c => c && c.__textId === textLayerId);
+      if (idx >= 0) { track.splice(idx, 1); break; }
+    }
+    document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
   }
   textLayerId = null;
 

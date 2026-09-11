@@ -1,22 +1,15 @@
 // ================================================================
 //  js/features/stickers.js
-//  Self-contained Stickers feature — everything in one scrollable panel.
-//
-//  Layout (top to bottom):
-//    1. Sticker Type shelf (10 categories, horizontal scroll)
-//    2. Sticker grid (tap to add)
-//    3. Position  → X, Y sliders + keyframes + easing curves
-//    4. Scale     → slider + keyframes + easing curves
-//    5. Rotation  → slider + keyframes + easing curves
-//    6. Remove button
+//  Self-contained Stickers feature with keyframes + easing.
+//  Integrates with timelineEngine via placeClipAtTime + custom event.
 // ================================================================
 
 import { featuresRouter } from './featuresRouter.js';
 import { appState } from '../app.js';
+import { placeClipAtTime } from '../layers/layersManager.js';
 
 export const featureKey = 'stickers';
 
-// ─── 10 Sticker Categories ─────────────────────────────────────
 const CATEGORIES = [
   { key: 'faces',   label: 'Faces',   icon: '😀',
     items: ['😀','😃','😄','😁','😆','😅','😂','🤣','😊','😍','😘','😎','🤩','🥳','😜','🤪','😇','🙃','😌','🥺'] },
@@ -40,7 +33,6 @@ const CATEGORIES = [
     items: ['🐶','🐱','🐭','🐹','🐰','🦊','🐻','🐼','🐨','🐯','🦁','🐮','🐷','🐸','🐵','🐔','🐧','🐦','🦄','🐝'] }
 ];
 
-// ─── Easing options ────────────────────────────────────────────
 const EASING_OPTIONS = [
   { key: 'linear',        label: 'Linear' },
   { key: 'easeIn',        label: 'Ease In' },
@@ -56,7 +48,6 @@ const EASING_OPTIONS = [
   { key: 'easeOutElastic',label: 'Elastic Out' }
 ];
 
-// ─── State ─────────────────────────────────────────────────────
 const st = {
   categoryKey: 'faces',
   sticker: {
@@ -79,7 +70,6 @@ let overlayEl = null;
 let baseFontSize = 96;
 let previewRAF = null;
 
-// ─── Router self-install ───────────────────────────────────────
 (function installStickersRenderer() {
   if (featuresRouter.__stickersInstalled) return;
   featuresRouter.__stickersInstalled = true;
@@ -98,7 +88,6 @@ let previewRAF = null;
   };
 })();
 
-// ─── CSS ───────────────────────────────────────────────────────
 const CSS_ID = 'stickers-styles';
 function injectStyles() {
   if (document.getElementById(CSS_ID)) return;
@@ -119,7 +108,6 @@ function injectStyles() {
       box-sizing: border-box;
     }
     .sk-panel * { box-sizing: border-box; }
-
     .sk-card {
       display: flex;
       flex-direction: column;
@@ -138,8 +126,6 @@ function injectStyles() {
       text-transform: uppercase;
       color: var(--muted);
     }
-
-    /* ─── Category shelf ─── */
     .sk-cat-shelf {
       display: flex;
       gap: 8px;
@@ -150,13 +136,6 @@ function injectStyles() {
       padding: 2px 2px 8px;
       scroll-snap-type: x proximity;
       -webkit-overflow-scrolling: touch;
-      overscroll-behavior-x: contain;
-      scrollbar-width: thin;
-    }
-    .sk-cat-shelf::-webkit-scrollbar { height: 5px; }
-    .sk-cat-shelf::-webkit-scrollbar-thumb {
-      background: var(--border);
-      border-radius: 3px;
     }
     .sk-cat-btn {
       flex: 0 0 auto;
@@ -173,9 +152,7 @@ function injectStyles() {
       gap: 4px;
       font-family: inherit;
       scroll-snap-align: start;
-      transition: all 0.12s ease;
     }
-    .sk-cat-btn:active { background: var(--surface-2); }
     .sk-cat-btn.active {
       border-color: var(--accent);
       box-shadow: inset 0 0 0 1px var(--accent);
@@ -189,8 +166,6 @@ function injectStyles() {
       white-space: nowrap;
     }
     .sk-cat-btn.active .sk-cat-label { color: var(--text); }
-
-    /* ─── Sticker grid ─── */
     .sk-grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(52px, 1fr));
@@ -210,17 +185,13 @@ function injectStyles() {
       cursor: pointer;
       font-family: inherit;
       color: var(--text);
-      transition: all 0.1s ease;
       padding: 0;
     }
-    .sk-item:active { background: var(--surface-3); transform: scale(0.94); }
     .sk-item.selected {
       border-color: var(--accent);
       box-shadow: inset 0 0 0 1px var(--accent);
       background: var(--surface-2);
     }
-
-    /* ─── Sliders ─── */
     .sk-row {
       display: flex;
       flex-direction: column;
@@ -267,9 +238,6 @@ function injectStyles() {
       font-family: inherit;
       flex-shrink: 0;
     }
-    .sk-num:focus { border-color: var(--accent); }
-
-    /* ─── Keyframes ─── */
     .sk-kf-section {
       display: flex;
       flex-direction: column;
@@ -316,7 +284,6 @@ function injectStyles() {
       gap: 4px;
       max-height: 140px;
       overflow-y: auto;
-      overflow-x: hidden;
       width: 100%;
       min-width: 0;
     }
@@ -363,8 +330,6 @@ function injectStyles() {
       padding: 4px;
       text-align: center;
     }
-
-    /* ─── Easing shelf ─── */
     .sk-ease-row {
       display: flex;
       flex-direction: column;
@@ -392,13 +357,6 @@ function injectStyles() {
       padding: 2px 2px 8px;
       scroll-snap-type: x proximity;
       -webkit-overflow-scrolling: touch;
-      overscroll-behavior-x: contain;
-      scrollbar-width: thin;
-    }
-    .sk-ease-shelf::-webkit-scrollbar { height: 5px; }
-    .sk-ease-shelf::-webkit-scrollbar-thumb {
-      background: var(--border);
-      border-radius: 3px;
     }
     .sk-ease-card {
       flex: 0 0 90px;
@@ -414,10 +372,8 @@ function injectStyles() {
       flex-direction: column;
       gap: 3px;
       scroll-snap-align: start;
-      transition: border-color 0.12s ease, box-shadow 0.12s ease;
       font-family: inherit;
     }
-    .sk-ease-card:active { background: var(--surface-2); }
     .sk-ease-card.active {
       border-color: var(--accent);
       box-shadow: inset 0 0 0 1px var(--accent);
@@ -441,11 +397,8 @@ function injectStyles() {
       overflow: hidden;
       text-overflow: ellipsis;
       line-height: 1.1;
-      letter-spacing: 0.02em;
     }
     .sk-ease-card.active .sk-ease-card-name { color: var(--text); }
-
-    /* ─── Remove button ─── */
     .sk-remove-btn {
       padding: 12px 16px;
       min-height: 46px;
@@ -459,9 +412,6 @@ function injectStyles() {
       font-family: inherit;
       width: 100%;
     }
-    .sk-remove-btn:active { background: var(--surface-2); }
-
-    /* ─── Preview overlay ─── */
     .sk-overlay {
       position: absolute;
       z-index: 46;
@@ -475,7 +425,6 @@ function injectStyles() {
   document.head.appendChild(style);
 }
 
-// ─── Router entry ──────────────────────────────────────────────
 export function open({ router }) {
   router.openLevel('stickers', [], {
     title: 'Stickers',
@@ -491,9 +440,6 @@ export function renderTo(container) {
   const panel = document.createElement('div');
   panel.className = 'sk-panel';
 
-  // ═══════════════════════════════════════════════════════════
-  //  1. CATEGORY SHELF
-  // ═══════════════════════════════════════════════════════════
   const catCard = document.createElement('div');
   catCard.className = 'sk-card';
 
@@ -537,9 +483,6 @@ export function renderTo(container) {
   catCard.append(catTitle, catShelf);
   panel.appendChild(catCard);
 
-  // ═══════════════════════════════════════════════════════════
-  //  2. STICKER GRID
-  // ═══════════════════════════════════════════════════════════
   const gridCard = document.createElement('div');
   gridCard.className = 'sk-card';
 
@@ -554,9 +497,6 @@ export function renderTo(container) {
   panel.appendChild(gridCard);
   renderStickerGrid(gridContainer);
 
-  // ═══════════════════════════════════════════════════════════
-  //  3. POSITION
-  // ═══════════════════════════════════════════════════════════
   const posCard = document.createElement('div');
   posCard.className = 'sk-card';
 
@@ -591,9 +531,6 @@ export function renderTo(container) {
 
   panel.appendChild(posCard);
 
-  // ═══════════════════════════════════════════════════════════
-  //  4. SCALE
-  // ═══════════════════════════════════════════════════════════
   const scCard = document.createElement('div');
   scCard.className = 'sk-card';
 
@@ -622,9 +559,6 @@ export function renderTo(container) {
 
   panel.appendChild(scCard);
 
-  // ═══════════════════════════════════════════════════════════
-  //  5. ROTATION
-  // ═══════════════════════════════════════════════════════════
   const rotCard = document.createElement('div');
   rotCard.className = 'sk-card';
 
@@ -653,9 +587,6 @@ export function renderTo(container) {
 
   panel.appendChild(rotCard);
 
-  // ═══════════════════════════════════════════════════════════
-  //  6. REMOVE
-  // ═══════════════════════════════════════════════════════════
   const removeBtn = document.createElement('button');
   removeBtn.type = 'button';
   removeBtn.className = 'sk-remove-btn';
@@ -665,14 +596,12 @@ export function renderTo(container) {
 
   container.appendChild(panel);
 
-  // Ensure overlay present if there's already an active sticker
   if (st.sticker.id && st.sticker.emoji) {
     ensureOverlay();
     refreshOverlay();
   }
 }
 
-// ─── Sticker grid renderer ─────────────────────────────────────
 function renderStickerGrid(gridContainer) {
   if (!gridContainer) return;
   gridContainer.replaceChildren();
@@ -696,7 +625,6 @@ function renderStickerGrid(gridContainer) {
   });
 }
 
-// ─── Add / update sticker ──────────────────────────────────────
 function addSticker(emoji) {
   if (!st.sticker.id) {
     st.sticker.id = 'sk-' + Date.now();
@@ -707,9 +635,6 @@ function addSticker(emoji) {
   commitToTimeline();
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  Keyframe section
-// ═══════════════════════════════════════════════════════════════
 function makeKeyframeSection({ kind, list, easeKey, capture, format, load }) {
   const section = document.createElement('div');
   section.className = 'sk-kf-section';
@@ -800,9 +725,6 @@ function makeKeyframeSection({ kind, list, easeKey, capture, format, load }) {
   return section;
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  Easing selector (scrollable shelf)
-// ═══════════════════════════════════════════════════════════════
 function makeEasingSelector(easeKey) {
   const row = document.createElement('div');
   row.className = 'sk-ease-row';
@@ -898,9 +820,6 @@ function buildCurvePath(ease, w, h, pad) {
   return 'M ' + pts.join(' L ');
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  Easing math
-// ═══════════════════════════════════════════════════════════════
 function getEasedValue(t, ease) {
   t = Math.max(0, Math.min(1, t));
   switch (ease) {
@@ -949,9 +868,6 @@ function refreshPanel() {
   if (c) renderTo(c);
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  Keyframe preview
-// ═══════════════════════════════════════════════════════════════
 function previewKeyframes(kind) {
   const video = document.querySelector('#preview-video');
   if (!video) return;
@@ -1067,9 +983,6 @@ function formatTime(s) {
   return s.toFixed(2) + 's';
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  Slider helper
-// ═══════════════════════════════════════════════════════════════
 function makeSlider(label, min, max, step, value, onChange) {
   const row = document.createElement('div');
   row.className = 'sk-row';
@@ -1123,9 +1036,6 @@ function makeSlider(label, min, max, step, value, onChange) {
   return row;
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  Overlay
-// ═══════════════════════════════════════════════════════════════
 function ensureOverlay() {
   const wrap = document.querySelector('#preview-canvas-wrap');
   if (!wrap) return;
@@ -1156,83 +1066,61 @@ function removeOverlay() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  Timeline integration
+//  Timeline integration — uses layersManager (collision-aware)
 // ═══════════════════════════════════════════════════════════════
 function commitToTimeline() {
   const s = st.sticker;
   if (!s.id || !s.emoji) return;
+  if (!Array.isArray(appState.timeline.visual)) appState.timeline.visual = [];
 
-  if (!appState.timeline.visual[0]) appState.timeline.visual[0] = [];
-  const track = appState.timeline.visual[0];
+  const video = document.querySelector('#preview-video');
+  const atTime = (video && Number.isFinite(video.currentTime)) ? video.currentTime : 0;
+  const dur = 3;
 
   const clipData = {
     name: s.emoji,
     url: 'sticker://' + s.id,
     type: 'sticker/plain',
     __stickerId: s.id,
-    stickerState: { ...s }
+    stickerState: Object.assign({}, s),
+    startTime: atTime,
+    duration: dur
   };
 
-  const idx = track.findIndex(c => c.__stickerId === s.id);
-  let clipIndex;
-  if (idx >= 0) {
-    track[idx] = { ...track[idx], ...clipData };
-    clipIndex = idx;
-  } else {
-    track.push(clipData);
-    clipIndex = track.length - 1;
+  let found = false;
+  for (let t = 0; t < appState.timeline.visual.length; t++) {
+    const track = appState.timeline.visual[t];
+    if (!Array.isArray(track)) continue;
+    const idx = track.findIndex(c => c && c.__stickerId === s.id);
+    if (idx >= 0) {
+      track[idx] = Object.assign({}, track[idx], clipData);
+      found = true;
+      break;
+    }
   }
 
-  syncStickerClipDom(clipIndex);
+  if (!found) {
+    placeClipAtTime(appState.timeline.visual, clipData, atTime);
+  }
+
+  document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
 }
 
 function syncStickerToTimeline() {
   const s = st.sticker;
   if (!s.id) return;
-  if (!appState.timeline.visual[0]) return;
-  const track = appState.timeline.visual[0];
-  const idx = track.findIndex(c => c.__stickerId === s.id);
-  if (idx >= 0) {
-    track[idx].stickerState = { ...s };
+  if (!Array.isArray(appState.timeline.visual)) return;
+  for (let t = 0; t < appState.timeline.visual.length; t++) {
+    const track = appState.timeline.visual[t];
+    if (!Array.isArray(track)) continue;
+    const idx = track.findIndex(c => c && c.__stickerId === s.id);
+    if (idx >= 0) {
+      track[idx].stickerState = Object.assign({}, s);
+      break;
+    }
   }
 }
 
-function syncStickerClipDom(clipIndex) {
-  const s = st.sticker;
-  const trackEl = document.querySelector(
-    '.track[data-group="visual"][data-track-index="0"]'
-  );
-  if (!trackEl) return;
-  const content = trackEl.querySelector('.track-content');
-  if (!content) return;
-
-  content.querySelectorAll(`.clip[data-sticker-id="${s.id}"]`)
-    .forEach(el => el.remove());
-
-  const el = document.createElement('button');
-  el.type = 'button';
-  el.className = 'clip';
-  el.textContent = s.emoji;
-  el.dataset.track = 'V1';
-  el.dataset.clip = clipIndex;
-  el.dataset.stickerId = s.id;
-
-  el.addEventListener('mousedown', (e) => {
-    if (e.button !== 0) return;
-    document.querySelectorAll('.clip.selected').forEach(x => x.classList.remove('selected'));
-    el.classList.add('selected');
-    e.preventDefault();
-  });
-  el.addEventListener('click', (e) => {
-    e.stopPropagation();
-    document.querySelectorAll('.clip.selected').forEach(x => x.classList.remove('selected'));
-    el.classList.add('selected');
-  });
-
-  content.appendChild(el);
-}
-
-// ─── Remove sticker ────────────────────────────────────────────
 function removeSticker() {
   const s = st.sticker;
   if (!s.id) return;
@@ -1240,14 +1128,14 @@ function removeSticker() {
   removeOverlay();
   stopPreview();
 
-  if (appState.timeline.visual[0]) {
-    const track = appState.timeline.visual[0];
-    const idx = track.findIndex(c => c.__stickerId === s.id);
-    if (idx >= 0) track.splice(idx, 1);
+  if (Array.isArray(appState.timeline.visual)) {
+    for (let t = 0; t < appState.timeline.visual.length; t++) {
+      const track = appState.timeline.visual[t];
+      if (!Array.isArray(track)) continue;
+      const idx = track.findIndex(c => c && c.__stickerId === s.id);
+      if (idx >= 0) { track.splice(idx, 1); break; }
+    }
   }
-
-  document.querySelectorAll(`.clip[data-sticker-id="${s.id}"]`)
-    .forEach(el => el.remove());
 
   st.sticker = {
     id: null,
@@ -1261,5 +1149,6 @@ function removeSticker() {
   st.kfScale = [];
   st.kfRotation = [];
 
+  document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
   refreshPanel();
 }
