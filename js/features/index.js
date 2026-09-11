@@ -1,6 +1,6 @@
 // ================================================================
 //  js/features/index.js
-//  Central registry. `delete` replaced by `trim`.
+//  Central registry. `volume` replaced by `soundeffect`.
 // ================================================================
 
 import * as music          from './music.js';
@@ -12,11 +12,11 @@ import * as textFonts      from './textFonts.js';
 import * as stickers       from './stickers.js';
 import * as motion         from './motion.js';
 import * as split          from './split.js';
-import * as trim           from './trim.js';        // 🆕 replaces delete
+import * as trim           from './trim.js';
 import * as crop           from './crop.js';
 import * as duplicate      from './duplicate.js';
 import * as freeze         from './freeze.js';
-import * as volume         from './volume.js';
+import * as soundeffect    from './soundeffect.js';    // 🆕 replaces volume
 import * as fx             from './fx.js';
 import * as speed          from './speed.js';
 import * as chromakey      from './chromakey.js';
@@ -35,11 +35,11 @@ export {
   stickers,
   motion,
   split,
-  trim,                 // 🆕
+  trim,
   crop,
   duplicate,
   freeze,
-  volume,
+  soundeffect,           // 🆕
   fx,
   speed,
   chromakey,
