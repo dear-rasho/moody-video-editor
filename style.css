@@ -363,14 +363,37 @@ h2 {
 }
 
 /* Timeline ruler */
+/* Timeline Ruler */
+/* Timeline Ruler */
 .timeline-ruler {
   position: relative;
   height: 24px;
   background: var(--surface-2);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
-  margin-left: 80px;
   overflow: visible;
+  /* no margin-left anymore — spacer handles the label offset */
+}
+/* Timeline Ruler */
+.timeline-ruler {
+  position: relative;
+  height: 24px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  overflow: visible;
+}
+.timeline-ruler-spacer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 80px;
+  height: 100%;
+  background: var(--surface-2);
+  border-right: 1px solid var(--border);
+  box-sizing: border-box;
+  z-index: 5;
+  pointer-events: none;
 }
 .ruler-marker {
   position: absolute;
@@ -390,14 +413,6 @@ h2 {
   background: var(--surface-2);
   padding: 0 4px;
   white-space: nowrap;
-}
-
-#media-file-input {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  opacity: 0;
-  pointer-events: none;
 }
 
 /* Timeline: flexible, but never collapses too much */

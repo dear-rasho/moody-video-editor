@@ -1,10 +1,9 @@
 // ================================================================
 //  js/features/chromakey.js
-//  Self-contained Chroma Key Panel (Premiere Pro style)
-//  - Hover over video → loupe shows color under cursor
-//  - Click → that color becomes key and is removed
-//  - Similarity / Smoothness / Spill Suppression
-//  - Intensity slider (0-100)
+//  All 4 properties (Similarity, Smoothness, Spill, Intensity)
+//  live in a single HORIZONTALLY scrollable shelf.
+//  The panel itself is vertically scrollable with a generous
+//  bottom gap so nothing gets cut on any mobile screen.
 // ================================================================
 
 export const featureKey = 'chromakey';
@@ -57,87 +56,75 @@ function injectStyles() {
   const style = document.createElement('style');
   style.id = CSS_ID;
   style.textContent = `
+    /* ═══════════════════════════════════════════════════════
+       PANEL — scrollable with generous bottom gap
+       ═══════════════════════════════════════════════════════ */
     .ck-panel {
       display: flex;
       flex-direction: column;
-      gap: 10px;
-      padding: 10px 8px 14px;
-      overflow-y: auto;
-      max-height: 72vh;
-      width: 100%;
-    }
-    .ck-row {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      padding: 10px 12px;
-      background: var(--surface-2);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-    }
-    .ck-row-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
       gap: 8px;
-    }
-    .ck-label {
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--text);
-      letter-spacing: 0.02em;
-    }
-    .ck-value {
-      font-size: 12px;
-      font-weight: 600;
-      min-width: 44px;
-      text-align: right;
-      color: var(--muted);
-      font-variant-numeric: tabular-nums;
-    }
-    .ck-slider {
+      padding: 8px 0 0;
+      padding-bottom: calc(120px + env(safe-area-inset-bottom, 0px));
       width: 100%;
-      accent-color: var(--accent);
-      height: 4px;
-      cursor: pointer;
+      max-width: 100%;
+      min-width: 0;
+      max-height: 72vh;
+      overflow-y: auto;
+      overflow-x: hidden;
+      -webkit-overflow-scrolling: touch;
+      overscroll-behavior: contain;
+      box-sizing: border-box;
+      scrollbar-width: thin;
     }
-    .ck-hint {
-      font-size: 10px;
-      color: var(--muted);
-      line-height: 1.3;
-      opacity: 0.7;
+    .ck-panel::-webkit-scrollbar { width: 4px; }
+    .ck-panel::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 3px;
     }
+    .ck-panel * { box-sizing: border-box; }
+
+    /* ═══════════════════════════════════════════════════════
+       COLOR ROW
+       ═══════════════════════════════════════════════════════ */
     .ck-color-row {
       display: flex;
       align-items: center;
-      gap: 10px;
-      padding: 10px 12px;
+      gap: 8px;
+      padding: 6px 10px;
+      margin: 0 8px;
       background: var(--surface-2);
       border: 1px solid var(--border);
-      border-radius: 10px;
+      border-radius: 8px;
+      flex: 0 0 auto;
+      min-width: 0;
     }
     .ck-swatch {
-      width: 42px;
-      height: 42px;
-      border-radius: 8px;
+      width: 32px;
+      height: 32px;
+      border-radius: 6px;
       border: 2px solid var(--border);
       flex-shrink: 0;
       background:
-        linear-gradient(45deg, #333 25%, transparent 25%) 0 0 / 10px 10px,
-        linear-gradient(-45deg, #333 25%, transparent 25%) 0 5px / 10px 10px,
-        linear-gradient(45deg, transparent 75%, #333 75%) 5px -5px / 10px 10px,
-        linear-gradient(-45deg, transparent 75%, #333 75%) -5px 0 / 10px 10px,
+        linear-gradient(45deg, #333 25%, transparent 25%) 0 0 / 8px 8px,
+        linear-gradient(-45deg, #333 25%, transparent 25%) 0 4px / 8px 8px,
+        linear-gradient(45deg, transparent 75%, #333 75%) 4px -4px / 8px 8px,
+        linear-gradient(-45deg, transparent 75%, #333 75%) -4px 0 / 8px 8px,
         #1a1a1a;
     }
     .ck-color-info {
       display: flex;
       flex-direction: column;
-      gap: 2px;
+      gap: 1px;
       flex: 1;
       min-width: 0;
     }
-    .ck-color-value {
+    .ck-color-label {
       font-size: 11px;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .ck-color-value {
+      font-size: 10px;
       color: var(--muted);
       font-variant-numeric: tabular-nums;
       white-space: nowrap;
@@ -146,16 +133,17 @@ function injectStyles() {
     }
     .ck-pick-btn,
     .ck-clear-btn {
-      padding: 6px 12px;
-      font-size: 12px;
-      min-height: 36px;
+      padding: 4px 10px;
+      font-size: 11px;
+      min-height: 30px;
       white-space: nowrap;
-      border-radius: 8px;
+      border-radius: 6px;
       border: 1px solid var(--border);
-      background: var(--surface-2);
+      background: var(--surface);
       color: var(--text);
       cursor: pointer;
       font-weight: 600;
+      flex-shrink: 0;
     }
     .ck-pick-btn.active {
       background: var(--accent);
@@ -167,19 +155,116 @@ function injectStyles() {
       0%, 100% { opacity: 1; }
       50% { opacity: 0.6; }
     }
-    .ck-intensity-row {
+
+    /* ═══════════════════════════════════════════════════════
+       HORIZONTAL SHELF — all 4 cards here
+       ═══════════════════════════════════════════════════════ */
+    .ck-shelf-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      width: 100%;
+      min-width: 0;
+      padding: 0 8px;
+      overflow: hidden;
+      flex: 0 0 auto;
+    }
+    .ck-shelf-hint {
+      font-size: 9px;
+      color: var(--muted);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      opacity: 0.6;
+      padding: 0 2px;
+    }
+    .ck-shelf {
+      display: flex;
+      gap: 8px;
+      width: 100%;
+      min-width: 0;
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding: 2px 0 8px;
+      scroll-snap-type: x proximity;
+      -webkit-overflow-scrolling: touch;
+      overscroll-behavior-x: contain;
+      scrollbar-width: thin;
+      touch-action: pan-x;
+    }
+    .ck-shelf::-webkit-scrollbar { height: 4px; }
+    .ck-shelf::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 3px;
+    }
+
+    /* ═══════════════════════════════════════════════════════
+       PROPERTY CARD (all 4 use this style)
+       ═══════════════════════════════════════════════════════ */
+    .ck-card {
+      flex: 0 0 200px;
+      width: 200px;
+      padding: 10px 12px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
       display: flex;
       flex-direction: column;
       gap: 6px;
-      padding: 12px;
-      background: var(--surface-2);
-      border: 1px solid var(--accent);
-      border-radius: 10px;
-      margin-top: 4px;
+      scroll-snap-align: start;
     }
-    .ck-intensity-row .ck-label { font-size: 13px; font-weight: 700; }
-    .ck-intensity-row .ck-value { font-size: 13px; font-weight: 700; color: var(--accent); }
-    .ck-intensity-row .ck-slider { height: 5px; }
+    .ck-card.is-intensity {
+      border-color: var(--accent);
+    }
+    .ck-card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      min-height: 18px;
+    }
+    .ck-card-label {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text);
+      line-height: 1.1;
+      white-space: nowrap;
+    }
+    .ck-card.is-intensity .ck-card-label {
+      font-size: 13px;
+    }
+    .ck-card-value {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--accent);
+      font-variant-numeric: tabular-nums;
+      line-height: 1.1;
+      flex-shrink: 0;
+    }
+    .ck-card.is-intensity .ck-card-value {
+      font-size: 13px;
+    }
+    .ck-card-slider {
+      width: 100%;
+      accent-color: var(--accent);
+      height: 4px;
+      cursor: pointer;
+      margin: 0;
+      touch-action: pan-x;
+    }
+    .ck-card.is-intensity .ck-card-slider {
+      height: 5px;
+    }
+    .ck-card-hint {
+      font-size: 9px;
+      color: var(--muted);
+      line-height: 1.2;
+      opacity: 0.6;
+      min-height: 22px;
+    }
+
+    /* ═══════════════════════════════════════════════════════
+       LOUPE
+       ═══════════════════════════════════════════════════════ */
     .ck-loupe {
       position: fixed;
       width: 78px;
@@ -215,10 +300,31 @@ function injectStyles() {
       letter-spacing: 0.03em;
     }
     .ck-picking { cursor: crosshair !important; }
+
+    /* ═══════════════════════════════════════════════════════
+       SMALL SCREENS
+       ═══════════════════════════════════════════════════════ */
+    @media (max-width: 380px) {
+      .ck-panel {
+        padding-bottom: calc(140px + env(safe-area-inset-bottom, 0px));
+      }
+      .ck-card {
+        flex: 0 0 180px;
+        width: 180px;
+        padding: 9px 10px;
+      }
+      .ck-card-label { font-size: 11px; }
+      .ck-card-value { font-size: 11px; }
+      .ck-card.is-intensity .ck-card-label { font-size: 12px; }
+      .ck-card.is-intensity .ck-card-value { font-size: 12px; }
+      .ck-swatch { width: 28px; height: 28px; }
+      .ck-pick-btn, .ck-clear-btn { padding: 3px 8px; font-size: 10px; min-height: 28px; }
+    }
   `;
   document.head.appendChild(style);
 }
 
+// ─── Router entry ──────────────────────────────────────────────
 export function open({ router }) {
   router.openLevel('chromakey', [], {
     title: 'Chroma Key',
@@ -227,6 +333,7 @@ export function open({ router }) {
   });
 }
 
+// ─── Render panel ──────────────────────────────────────────────
 export function renderTo(container) {
   injectStyles();
   container.replaceChildren();
@@ -236,6 +343,9 @@ export function renderTo(container) {
   container.appendChild(panel);
   panelRefs = {};
 
+  // ═══════════════════════════════════════════════════════════
+  //  1. COLOR ROW
+  // ═══════════════════════════════════════════════════════════
   const colorRow = document.createElement('div');
   colorRow.className = 'ck-color-row';
 
@@ -246,7 +356,7 @@ export function renderTo(container) {
   colorInfo.className = 'ck-color-info';
 
   const colorLabel = document.createElement('span');
-  colorLabel.className = 'ck-label';
+  colorLabel.className = 'ck-color-label';
   colorLabel.textContent = 'Key Color';
 
   const colorValue = document.createElement('span');
@@ -270,7 +380,6 @@ export function renderTo(container) {
     updateSwatchUI(null);
     togglePickMode(false);
     refreshCanvas();
-    updateVideoVisibility();
   });
 
   colorRow.append(swatch, colorInfo, pickBtn, clearBtn);
@@ -280,25 +389,40 @@ export function renderTo(container) {
   panelRefs.colorValue = colorValue;
   panelRefs.pickBtn = pickBtn;
 
-  const sliderDefs = [
-    { key: 'similarity', label: 'Similarity',       hint: 'Colors close to key color are removed' },
-    { key: 'smoothness', label: 'Smoothness',       hint: 'Softens the edge around removed area' },
-    { key: 'spill',      label: 'Spill Suppression',hint: 'Removes color bleed on subject edges' }
+  // ═══════════════════════════════════════════════════════════
+  //  2. HORIZONTAL SHELF — all 4 property cards
+  // ═══════════════════════════════════════════════════════════
+  const shelfWrap = document.createElement('div');
+  shelfWrap.className = 'ck-shelf-wrap';
+
+  const shelfHint = document.createElement('div');
+  shelfHint.className = 'ck-shelf-hint';
+  shelfHint.textContent = '← Swipe for more properties →';
+  shelfWrap.appendChild(shelfHint);
+
+  const shelf = document.createElement('div');
+  shelf.className = 'ck-shelf';
+
+  const CARD_DEFS = [
+    { key: 'similarity', label: 'Similarity',        hint: 'Colors close to key color are removed' },
+    { key: 'smoothness', label: 'Smoothness',        hint: 'Softens the edge around removed area' },
+    { key: 'spill',      label: 'Spill Suppression', hint: 'Removes color bleed on subject edges' },
+    { key: 'intensity',  label: 'Intensity',         hint: 'Overall removal strength (0–100%)', isIntensity: true }
   ];
 
-  sliderDefs.forEach(def => {
-    const row = document.createElement('div');
-    row.className = 'ck-row';
+  CARD_DEFS.forEach(def => {
+    const card = document.createElement('div');
+    card.className = 'ck-card' + (def.isIntensity ? ' is-intensity' : '');
 
     const head = document.createElement('div');
-    head.className = 'ck-row-head';
+    head.className = 'ck-card-head';
 
     const label = document.createElement('span');
-    label.className = 'ck-label';
+    label.className = 'ck-card-label';
     label.textContent = def.label;
 
     const value = document.createElement('span');
-    value.className = 'ck-value';
+    value.className = 'ck-card-value';
     value.textContent = state[def.key] + '%';
 
     head.append(label, value);
@@ -307,7 +431,7 @@ export function renderTo(container) {
     slider.type = 'range';
     slider.min = 0; slider.max = 100; slider.step = 1;
     slider.value = state[def.key];
-    slider.className = 'ck-slider';
+    slider.className = 'ck-card-slider';
 
     slider.addEventListener('input', () => {
       state[def.key] = parseInt(slider.value, 10);
@@ -315,57 +439,24 @@ export function renderTo(container) {
       scheduleApply();
     });
 
-    const hint = document.createElement('span');
-    hint.className = 'ck-hint';
+    const hint = document.createElement('div');
+    hint.className = 'ck-card-hint';
     hint.textContent = def.hint;
 
-    row.append(head, slider, hint);
-    panel.appendChild(row);
+    card.append(head, slider, hint);
+    shelf.appendChild(card);
 
     panelRefs[def.key] = { slider, value };
   });
 
-  const intensityRow = document.createElement('div');
-  intensityRow.className = 'ck-intensity-row';
+  shelfWrap.appendChild(shelf);
+  panel.appendChild(shelfWrap);
 
-  const intHead = document.createElement('div');
-  intHead.className = 'ck-row-head';
-
-  const intLabel = document.createElement('span');
-  intLabel.className = 'ck-label';
-  intLabel.textContent = 'Intensity';
-
-  const intValue = document.createElement('span');
-  intValue.className = 'ck-value';
-  intValue.textContent = state.intensity + '%';
-
-  intHead.append(intLabel, intValue);
-
-  const intSlider = document.createElement('input');
-  intSlider.type = 'range';
-  intSlider.min = 0; intSlider.max = 100; intSlider.step = 1;
-  intSlider.value = state.intensity;
-  intSlider.className = 'ck-slider';
-
-  intSlider.addEventListener('input', () => {
-    state.intensity = parseInt(intSlider.value, 10);
-    intValue.textContent = state.intensity + '%';
-    updateVideoVisibility();
-    scheduleApply();
-  });
-
-  intensityRow.append(intHead, intSlider);
-  panel.appendChild(intensityRow);
-
-  panelRefs.intensity = { slider: intSlider, value: intValue };
-
+  // ─── Restore UI ───
   updateSwatchUI(state.keyColor);
   updatePickButtonUI();
 
-  if (state.keyColor) {
-    updateVideoVisibility();
-    scheduleApply();
-  }
+  if (state.keyColor) scheduleApply();
 }
 
 function updateSwatchUI(rgb) {
@@ -433,9 +524,7 @@ function readPixel(canvas, px, py) {
     if (!ctx) return null;
     const d = ctx.getImageData(px, py, 1, 1).data;
     return { r: d[0], g: d[1], b: d[2] };
-  } catch (_) {
-    return null;
-  }
+  } catch (_) { return null; }
 }
 
 function onHover(e) {
@@ -498,7 +587,6 @@ function applyKeyColor(rgb) {
   state.keyColor = { ...rgb };
   updateSwatchUI(state.keyColor);
   togglePickMode(false);
-  updateVideoVisibility();
   scheduleApply();
 }
 
@@ -535,12 +623,6 @@ function refreshCanvas() {
   if (video.readyState >= 2 && video.videoWidth > 0) {
     drawVideoContained(ctx, video, canvas);
   }
-}
-
-function updateVideoVisibility() {
-  const video = document.querySelector('#preview-video');
-  if (!video) return;
-  // video stays hidden always (previewCanvas enforces it)
 }
 
 function scheduleApply() {

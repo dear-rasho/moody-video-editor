@@ -1,3 +1,10 @@
+// ================================================================
+//  js/workspace/timelineEngine.js
+//  Ruler has a STICKY spacer (80px) exactly like track-labels.
+//  It sticks to viewport's left edge during scroll, so playhead
+//  and ruler markers can NEVER show inside the label column.
+// ================================================================
+
 export function initTimelineEngine({
   visual,
   audio,
@@ -12,15 +19,62 @@ export function initTimelineEngine({
   let draggedClip = null;
   let zoomFactor = 1.0;
 
+  const LABEL_WIDTH = 80;
+  const BASE_PPS = 100;
+  const DEFAULT_CLIP_SEC = 3;
+
   const viewport = document.querySelector('#timeline-viewport');
   const matrix = document.querySelector('#timeline-matrix');
 
-  // Ruler container
+  // ─── Inject CSS once (ruler + spacer override) ────────────
+  (function injectTimelineCSS() {
+    if (document.getElementById('tle-inline-css')) return;
+    const s = document.createElement('style');
+    s.id = 'tle-inline-css';
+    s.textContent = `
+      /* Ruler becomes a flex row; margin-left removed */
+      #timeline-matrix .timeline-ruler {
+        display: flex !important;
+        align-items: stretch;
+        position: relative;
+        height: 24px;
+        background: var(--surface-2);
+        border-bottom: 1px solid var(--border);
+        flex-shrink: 0;
+        margin-left: 0 !important;
+        overflow: visible;
+      }
+      /* Sticky spacer — sits on top of playhead (z=4) in the label area */
+      #timeline-matrix .timeline-ruler-spacer {
+        position: sticky !important;
+        left: 0 !important;
+        top: 0;
+        display: block;
+        width: ${LABEL_WIDTH}px;
+        min-width: ${LABEL_WIDTH}px;
+        max-width: ${LABEL_WIDTH}px;
+        height: 100%;
+        background: var(--surface-2);
+        border-right: 1px solid var(--border);
+        box-sizing: border-box;
+        z-index: 5;            /* above playhead (4), below labels (6) */
+        pointer-events: none;
+        flex-shrink: 0;
+      }
+      /* Playhead stays below the spacer */
+      #timeline-matrix .timeline-playhead {
+        z-index: 4;
+      }
+    `;
+    document.head.appendChild(s);
+  })();
+
+  // ─── Ruler container ──────────────────────────────────────
   const rulerContainer = document.createElement('div');
   rulerContainer.className = 'timeline-ruler';
   matrix.prepend(rulerContainer);
 
-  // Scroll block
+  // ─── Scroll block ─────────────────────────────────────────
   function blockScroll(block) {
     if (!viewport) return;
     if (block) {
@@ -39,10 +93,10 @@ export function initTimelineEngine({
     viewport.addEventListener('drop', (e) => e.preventDefault());
   }
 
-  // Zoom slider
+  // ─── Zoom slider ──────────────────────────────────────────
   if (zoomSlider) {
     zoomSlider.addEventListener('input', (e) => {
-      const val = parseInt(e.target.value);
+      const val = parseInt(e.target.value, 10);
       zoomFactor = val / 100;
       const zoomDisplay = document.querySelector('#zoom-value');
       if (zoomDisplay) zoomDisplay.textContent = val + '%';
@@ -50,6 +104,57 @@ export function initTimelineEngine({
     });
   }
 
+  // ─── Metrics ──────────────────────────────────────────────
+  function getVideoDuration() {
+    const video = document.querySelector('#preview-video');
+    if (video && Number.isFinite(video.duration) && video.duration > 0) {
+      return video.duration;
+    }
+    return 0;
+  }
+
+  function getTimelineMetrics() {
+    const pxPerSecond = BASE_PPS * zoomFactor;
+    let durationSeconds = getVideoDuration();
+
+    if (durationSeconds === 0) {
+      let maxClips = 0;
+      [...state.visual, ...state.audio].forEach(track => {
+        if (track && track.length > maxClips) maxClips = track.length;
+      });
+      durationSeconds = Math.max(1, maxClips);
+    }
+
+    return {
+      duration: durationSeconds,
+      pxPerSecond,
+      contentWidth: durationSeconds * pxPerSecond,
+      totalWidth: LABEL_WIDTH + durationSeconds * pxPerSecond,
+      labelWidth: LABEL_WIDTH
+    };
+  }
+
+  function getClipDuration(clip) {
+    const type = clip?.type || '';
+    const videoDur = getVideoDuration();
+    if (type.startsWith('video/') || type.startsWith('audio/')) {
+      return videoDur > 0 ? videoDur : DEFAULT_CLIP_SEC;
+    }
+    return DEFAULT_CLIP_SEC;
+  }
+
+  function formatRulerTime(sec) {
+    const s = Math.round(sec * 10) / 10;
+    const m = Math.floor(s / 60);
+    const rem = s - m * 60;
+    if (m > 0) {
+      const secStr = (rem < 10 ? '0' : '') + (Math.round(rem * 10) / 10);
+      return `${m}:${secStr}`;
+    }
+    return (Number.isInteger(s) ? s : s.toFixed(1)) + 's';
+  }
+
+  // ─── Track builder ────────────────────────────────────────
   const buildTrack = (label, clips = [], trackIndex, group) => {
     const track = document.createElement('div');
     track.className = 'track';
@@ -86,7 +191,7 @@ export function initTimelineEngine({
       if (data.startsWith('track:')) {
         const [, fromGroup, fromIndex] = data.split(':');
         if (fromGroup !== group) return;
-        const fromIdx = parseInt(fromIndex);
+        const fromIdx = parseInt(fromIndex, 10);
         const toIdx = trackIndex;
         if (fromIdx === toIdx) return;
         const list = group === 'visual' ? state.visual : state.audio;
@@ -100,9 +205,9 @@ export function initTimelineEngine({
       if (data.startsWith('clip:')) {
         const [, fromGroup, fromTrackIdx, clipIdx] = data.split(':');
         if (fromGroup !== group) return;
-        const fromIdx = parseInt(fromTrackIdx);
+        const fromIdx = parseInt(fromTrackIdx, 10);
         const toIdx = trackIndex;
-        const clipIndex = parseInt(clipIdx);
+        const clipIndex = parseInt(clipIdx, 10);
         if (fromIdx === toIdx) return;
 
         const list = group === 'visual' ? state.visual : state.audio;
@@ -118,7 +223,7 @@ export function initTimelineEngine({
       }
     });
 
-    // Label
+    // ─── Label ───
     const name = document.createElement('div');
     name.className = 'track-label';
     const labelText = document.createElement('span');
@@ -135,9 +240,11 @@ export function initTimelineEngine({
     });
     name.append(labelText, visibility);
 
-    // Content
+    // ─── Content ───
     const content = document.createElement('div');
     content.className = 'track-content';
+
+    const metrics = getTimelineMetrics();
 
     for (const [clipIndex, clip] of clips.entries()) {
       const el = document.createElement('button');
@@ -146,20 +253,25 @@ export function initTimelineEngine({
       el.textContent = clip.name || 'Empty';
       el.dataset.track = label;
       el.dataset.clip = clipIndex;
+
       if (selected?.track === label && selected?.clipIndex === clipIndex) {
         el.classList.add('selected');
       }
 
-      // Width based on zoom
-      const baseWidth = 100;
-      const width = baseWidth * zoomFactor;
+      const dur = getClipDuration(clip);
+      const width = Math.max(40, dur * metrics.pxPerSecond);
       el.style.width = width + 'px';
       el.style.flex = '0 0 auto';
 
       el.addEventListener('mousedown', (e) => {
         if (e.button !== 0) return;
-        selected = { type: label[0] === 'A' ? 'audio' : 'visual', track: label, clipIndex };
-        document.querySelectorAll('.clip.selected').forEach(el => el.classList.remove('selected'));
+        selected = {
+          type: label[0] === 'A' ? 'audio' : 'visual',
+          track: label,
+          clipIndex
+        };
+        document.querySelectorAll('.clip.selected')
+          .forEach(x => x.classList.remove('selected'));
         el.classList.add('selected');
         e.preventDefault();
       });
@@ -198,36 +310,47 @@ export function initTimelineEngine({
     return track;
   };
 
+  // ─── Ruler ────────────────────────────────────────────────
   function renderRuler() {
     rulerContainer.innerHTML = '';
-    let maxClips = 0;
-    [...state.visual, ...state.audio].forEach(track => {
-      if (track && track.length > maxClips) maxClips = track.length;
-    });
-    const totalSeconds = Math.max(1, maxClips);
-    const totalPixels = totalSeconds * 100 * zoomFactor;
-    rulerContainer.style.width = totalPixels + 'px';
-    rulerContainer.style.minWidth = totalPixels + 'px';
+    const m = getTimelineMetrics();
 
-    for (let i = 0; i <= totalSeconds; i++) {
+    // Sticky spacer at the very start
+    const spacer = document.createElement('div');
+    spacer.className = 'timeline-ruler-spacer';
+    rulerContainer.appendChild(spacer);
+
+    const totalWidth = m.labelWidth + m.contentWidth;
+    rulerContainer.style.width = totalWidth + 'px';
+    rulerContainer.style.minWidth = totalWidth + 'px';
+
+    // Marker step
+    let step = 1;
+    if (m.duration > 60) step = 5;
+    if (m.duration > 180) step = 10;
+    if (m.duration > 600) step = 30;
+    if (m.pxPerSecond * step < 40) {
+      step = Math.ceil(40 / m.pxPerSecond);
+    }
+
+    const count = Math.floor(m.duration / step);
+    for (let i = 0; i <= count; i++) {
+      const t = i * step;
       const marker = document.createElement('div');
       marker.className = 'ruler-marker';
-      marker.style.left = (i * 100 * zoomFactor) + 'px';
+      // Offset by label width so first marker starts after the spacer
+      marker.style.left = (m.labelWidth + t * m.pxPerSecond) + 'px';
       const label = document.createElement('span');
-      label.textContent = i + 's';
+      label.textContent = formatRulerTime(t);
       marker.appendChild(label);
       rulerContainer.appendChild(marker);
     }
   }
 
+  // ─── Render ───────────────────────────────────────────────
   function render() {
-    let maxClips = 0;
-    [...state.visual, ...state.audio].forEach(track => {
-      if (track && track.length > maxClips) maxClips = track.length;
-    });
-    const totalSeconds = Math.max(1, maxClips);
-    const totalPixels = totalSeconds * 100 * zoomFactor + 80;
-    matrix.style.minWidth = totalPixels + 'px';
+    const m = getTimelineMetrics();
+    matrix.style.minWidth = m.totalWidth + 'px';
 
     const visualIndices = [3, 2, 1, 0];
     visual.replaceChildren(
@@ -246,6 +369,7 @@ export function initTimelineEngine({
     renderRuler();
   }
 
+  // ─── Add media ────────────────────────────────────────────
   function addMedia(items) {
     for (const item of items) {
       const trackType = item.type.startsWith('audio/') ? 'audio' : 'visual';
@@ -263,13 +387,25 @@ export function initTimelineEngine({
           state.audio[0].push(audioAuto);
         }
       }
-      tracks[0].push({ name: item.file?.name ?? item.name ?? 'Media', url: item.url, type: item.type });
+      tracks[0].push({
+        name: item.file?.name ?? item.name ?? 'Media',
+        url: item.url,
+        type: item.type
+      });
     }
     render();
   }
 
+  // ─── Video metadata → re-render ───────────────────────────
+  const previewVideo = document.querySelector('#preview-video');
+  if (previewVideo) {
+    previewVideo.addEventListener('loadedmetadata', render);
+    previewVideo.addEventListener('durationchange', render);
+  }
+
   render();
 
+  // ─── Delete selected ──────────────────────────────────────
   function deleteSelected() {
     if (!selected) return;
     const clips = state[selected.type][Number(selected.track.slice(1)) - 1];

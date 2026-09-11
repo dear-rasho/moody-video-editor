@@ -4,6 +4,7 @@ import { initRecentProjects } from './home/recentProjects.js';
 import { initTemplatesShelf } from './home/templatesShelf.js';
 import { initHeaderBar } from './workspace/headerBar.js';
 import { initPreviewCanvas } from './workspace/previewCanvas.js';
+import { initPreviewHud } from './workspace/previewHud.js';
 import { initMediaLibrary } from './workspace/mediaLibrary.js';
 import { initPlaybackControls } from './workspace/playbackControls.js';
 import { initTimelineEngine } from './workspace/timelineEngine.js';
@@ -31,6 +32,7 @@ const elements = {
 };
 
 let preview;
+let previewHud;
 let timeline;
 let timelinePlayhead;
 
@@ -52,6 +54,7 @@ function createProject() {
   previewAudio.load();
   timeline?.render();
   timelinePlayhead?.setProgress(0, 0);
+  previewHud?.refresh();
   showPage('workspace');
 }
 
@@ -66,7 +69,19 @@ async function bootstrap() {
   initRecentProjects(document.querySelector('#recent-projects-grid'));
   initTemplatesShelf(document.querySelector('#templates-shelf'));
   initHeaderBar({ exportButton: document.querySelector('#export-btn') });
-  preview = initPreviewCanvas({ canvas: document.querySelector('#preview-canvas'), video: document.querySelector('#preview-video'), empty: document.querySelector('#preview-empty') });
+
+  preview = initPreviewCanvas({
+    canvas: document.querySelector('#preview-canvas'),
+    video: document.querySelector('#preview-video'),
+    empty: document.querySelector('#preview-empty')
+  });
+
+  // ─── Preview HUD (elapsed time + aspect ratio + total duration) ───
+  previewHud = initPreviewHud({
+    wrap: document.querySelector('#preview-canvas-wrap'),
+    video: document.querySelector('#preview-video')
+  });
+
   initMediaLibrary({
     button: document.querySelector('#media-picker-btn'),
     input: document.querySelector('#media-file-input'),
@@ -80,10 +95,13 @@ async function bootstrap() {
         previewAudio.load();
       }
       timeline.addMedia(items);
+      previewHud?.refresh();
     }
   });
+
   const previewVideo = document.querySelector('#preview-video');
   const previewAudio = document.querySelector('#preview-audio');
+
   timeline = initTimelineEngine({
     viewport: document.querySelector('#timeline-viewport'),
     visual: document.querySelector('#visual-tracks'),
@@ -100,21 +118,36 @@ async function bootstrap() {
       } else {
         preview.clear();
       }
+      previewHud?.refresh();
     }
   });
- timelinePlayhead = initTimelinePlayhead({
-  element: document.querySelector('#timeline-playhead'),
-  matrix: document.querySelector('#timeline-matrix'),
-  viewport: document.querySelector('#timeline-viewport'),
-  video: previewVideo,
-  timeDisplay: document.querySelector('#timeline-time'),
-  getZoomFactor: () => timeline?.zoomFactor || 1,  // 🆕 zoom factor
-  getRulerContainer: () => document.querySelector('.timeline-ruler') // 🆕 ruler
-});
-  initPlaybackControls({ play: document.querySelector('#play-btn'), deleteButton: document.querySelector('#delete-btn'), undo: document.querySelector('#undo-btn'), redo: document.querySelector('#redo-btn'), video: previewVideo, audio: previewAudio, onTimeUpdate: (time, duration) => timelinePlayhead.setProgress(time, duration) });
+
+  timelinePlayhead = initTimelinePlayhead({
+    element: document.querySelector('#timeline-playhead'),
+    matrix: document.querySelector('#timeline-matrix'),
+    viewport: document.querySelector('#timeline-viewport'),
+    video: previewVideo,
+    timeDisplay: document.querySelector('#timeline-time'),
+    getZoomFactor: () => timeline?.zoomFactor || 1,
+    getRulerContainer: () => document.querySelector('.timeline-ruler')
+  });
+
+  initPlaybackControls({
+    play: document.querySelector('#play-btn'),
+    deleteButton: document.querySelector('#delete-btn'),
+    undo: document.querySelector('#undo-btn'),
+    redo: document.querySelector('#redo-btn'),
+    video: previewVideo,
+    audio: previewAudio,
+    onTimeUpdate: (time, duration) => timelinePlayhead.setProgress(time, duration)
+  });
 
   registerFeatures();
-  featuresRouter.init({ shelf: elements.featureShelf, title: elements.featureTitle, backButton: elements.featureBack });
+  featuresRouter.init({
+    shelf: elements.featureShelf,
+    title: elements.featureTitle,
+    backButton: elements.featureBack
+  });
 
   elements.workspaceBack.addEventListener('click', () => showPage('dashboard'));
   showPage('dashboard');
