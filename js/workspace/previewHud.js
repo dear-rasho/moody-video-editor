@@ -1,12 +1,8 @@
 // ================================================================
 //  js/workspace/previewHud.js
-//  Small overlay HUD on the preview monitor showing:
-//    • Elapsed playback time (HH:MM:SS)     — left side
-//    • Video aspect ratio (e.g. 9:16)       — right side
-//    • Total video duration (HH:MM:SS)      — right side
-//
-//  Self-contained: injects its own CSS, listens to the <video>
-//  element directly, no external dependencies.
+//  Overlay HUD: elapsed time / aspect ratio / TOTAL TIME.
+//  Total time now reflects the TIMELINE duration (post-trim),
+//  not the video file's source duration.
 // ================================================================
 
 const HUD_CSS_ID = 'preview-hud-styles';
@@ -18,12 +14,8 @@ function injectStyles() {
   s.textContent = `
     .preview-hud {
       position: absolute;
-      left: 8px;
-      right: 8px;
-      bottom: 8px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
+      left: 8px; right: 8px; bottom: 8px;
+      display: flex; align-items: center; justify-content: space-between;
       gap: 8px;
       pointer-events: none;
       z-index: 30;
@@ -32,16 +24,11 @@ function injectStyles() {
       user-select: none;
       -webkit-user-select: none;
     }
-    .preview-hud-right {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
+    .preview-hud-right { display: flex; align-items: center; gap: 6px; }
     .preview-hud-chip {
       background: rgba(0, 0, 0, 0.72);
       color: #fff;
-      font-size: 11px;
-      font-weight: 700;
+      font-size: 11px; font-weight: 700;
       padding: 4px 10px;
       border-radius: 10px;
       letter-spacing: 0.05em;
@@ -52,10 +39,8 @@ function injectStyles() {
       line-height: 1;
     }
     .preview-hud-ratio {
-      font-size: 10px;
-      padding: 4px 8px;
-      opacity: 0.85;
-      letter-spacing: 0.08em;
+      font-size: 10px; padding: 4px 8px;
+      opacity: 0.85; letter-spacing: 0.08em;
     }
     @media (max-width: 380px) {
       .preview-hud-chip { font-size: 10px; padding: 3px 8px; }
@@ -65,7 +50,6 @@ function injectStyles() {
   document.head.appendChild(s);
 }
 
-// ─── HH:MM:SS formatter ────────────────────────────────────────
 function formatHMS(seconds) {
   if (!Number.isFinite(seconds) || seconds < 0) seconds = 0;
   const total = Math.floor(seconds);
@@ -79,7 +63,6 @@ function formatHMS(seconds) {
   );
 }
 
-// ─── Aspect-ratio helper ───────────────────────────────────────
 function gcd(a, b) {
   a = Math.abs(a); b = Math.abs(b);
   while (b) { const t = b; b = a % b; a = t; }
@@ -88,8 +71,6 @@ function gcd(a, b) {
 
 function aspectRatioLabel(w, h) {
   if (!w || !h) return '—';
-
-  // Match a common ratio within 2% tolerance first
   const target = w / h;
   const COMMON = [
     { w: 16, h: 9  }, { w: 9,  h: 16 },
@@ -102,13 +83,10 @@ function aspectRatioLabel(w, h) {
     const ar = r.w / r.h;
     if (Math.abs(ar - target) / ar < 0.02) return `${r.w}:${r.h}`;
   }
-
-  // Fallback: reduce by GCD
   const g = gcd(w, h);
   return `${Math.round(w / g)}:${Math.round(h / g)}`;
 }
 
-// ─── Public API ────────────────────────────────────────────────
 export function initPreviewHud({ wrap, video }) {
   if (!wrap || !video) {
     return { refresh() {}, destroy() {} };
@@ -116,7 +94,6 @@ export function initPreviewHud({ wrap, video }) {
 
   injectStyles();
 
-  // Build DOM
   const hud = document.createElement('div');
   hud.className = 'preview-hud';
 
@@ -139,34 +116,52 @@ export function initPreviewHud({ wrap, video }) {
   hud.append(elapsed, right);
   wrap.appendChild(hud);
 
-  // ─── Update routine ───
+  // 🆕 Prefer playbackEngine's timeline duration over raw video.duration
+  function getTimelineDuration() {
+    const eng = window.__playbackEngine;
+    if (eng && typeof eng.getDuration === 'function') {
+      const d = eng.getDuration();
+      if (Number.isFinite(d) && d > 0) return d;
+    }
+    // Fallback: video element's duration (only when no timeline)
+    return Number.isFinite(video.duration) ? video.duration : 0;
+  }
+
+  function getCurrentTime() {
+    const eng = window.__playbackEngine;
+    if (eng && typeof eng.getTime === 'function') {
+      const t = eng.getTime();
+      if (Number.isFinite(t)) return t;
+    }
+    return Number.isFinite(video.currentTime) ? video.currentTime : 0;
+  }
+
   function refresh() {
-    elapsed.textContent = formatHMS(video.currentTime);
-    total.textContent = formatHMS(
-      Number.isFinite(video.duration) ? video.duration : 0
-    );
+    elapsed.textContent = formatHMS(getCurrentTime());
+    total.textContent = formatHMS(getTimelineDuration());
     ratio.textContent = aspectRatioLabel(video.videoWidth, video.videoHeight);
   }
 
+  // Listen to engine ticks (fires 60x/sec during playback + on seek)
+  document.addEventListener('playback:tick', refresh);
+
+  // Fallback: video events (for when engine is idle)
   const events = [
-    'timeupdate',
-    'loadedmetadata',
-    'durationchange',
-    'seeking',
-    'seeked',
-    'play',
-    'pause',
-    'ended',
-    'emptied'
+    'timeupdate','loadedmetadata','durationchange',
+    'seeking','seeked','play','pause','ended','emptied'
   ];
   events.forEach(ev => video.addEventListener(ev, refresh));
 
-  // Initial paint
+  // Timeline changes → refresh (trim changes total duration)
+  document.addEventListener('editor:timeline-changed', refresh);
+
   refresh();
 
   return {
     refresh,
     destroy() {
+      document.removeEventListener('playback:tick', refresh);
+      document.removeEventListener('editor:timeline-changed', refresh);
       events.forEach(ev => video.removeEventListener(ev, refresh));
       hud.remove();
     }

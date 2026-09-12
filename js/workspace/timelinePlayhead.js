@@ -1,16 +1,18 @@
+// ================================================================
+//  js/workspace/timelinePlayhead.js
+//  Playhead position is driven by the playbackEngine's time.
+// ================================================================
+
 export function initTimelinePlayhead({
   element,
   matrix,
   viewport,
-  video,
+  engine,
   timeDisplay,
-  getZoomFactor = () => 1,
   getRulerContainer = () => null
 }) {
   const LABEL_WIDTH = 80;
   let contentStart = LABEL_WIDTH;
-  let currentDuration = 0;
-  let currentTime = 0;
 
   function formatTime(seconds) {
     if (!Number.isFinite(seconds)) seconds = 0;
@@ -31,19 +33,14 @@ export function initTimelinePlayhead({
   }
 
   function getContentWidth() {
-    const zoom = getZoomFactor();
     const ruler = getRulerContainer();
-    if (ruler) {
-      return ruler.scrollWidth || matrix.scrollWidth - contentStart;
-    }
+    if (ruler) return ruler.scrollWidth || (matrix.scrollWidth - contentStart);
     return Math.max(0, matrix.scrollWidth - contentStart);
   }
 
   function setProgress(currentTime, duration) {
-    currentDuration = Number.isFinite(duration) ? duration : 0;
-    currentTime = Number.isFinite(currentTime) ? currentTime : 0;
-    const safeDuration = Math.max(0, currentDuration);
-    const safeTime = Math.max(0, Math.min(currentTime, safeDuration));
+    const safeDuration = Math.max(0, Number(duration) || 0);
+    const safeTime = Math.max(0, Math.min(Number(currentTime) || 0, safeDuration));
     const progress = safeDuration > 0 ? safeTime / safeDuration : 0;
     const contentWidth = getContentWidth();
     const nextLeft = contentStart + (contentWidth * progress);
@@ -52,47 +49,40 @@ export function initTimelinePlayhead({
   }
 
   function seekFromClick(event) {
-    if (!video || !Number.isFinite(video.duration) || video.duration === 0) return;
+    if (!engine) return;
+    const duration = engine.getDuration();
+    if (!duration) return;
     const rect = matrix.getBoundingClientRect();
-    const clickX = event.clientX - rect.left + viewport.scrollLeft;
+    const clickX = event.clientX - rect.left + (viewport ? viewport.scrollLeft : 0);
     if (clickX < contentStart) return;
     const contentWidth = getContentWidth();
     if (contentWidth <= 0) return;
     const position = Math.max(0, Math.min(contentWidth, clickX - contentStart));
     const progress = position / contentWidth;
-    const newTime = progress * video.duration;
-    video.pause();
-    video.currentTime = newTime;
-    setProgress(newTime, video.duration);
-  }
-
-  function updateRulerOnZoom() {
-    // Zoom change par ruler update karne ke liye
-    const contentWidth = getContentWidth();
-    // Ruler markers ko reposition karne ke liye - timelineEngine handle karega
+    const newTime = progress * duration;
+    engine.seek(newTime);
   }
 
   matrix.addEventListener('click', seekFromClick);
 
-  // Resize observer
   if (typeof ResizeObserver !== 'undefined') {
     new ResizeObserver(() => {
       alignToLayerContent();
-      if (video && Number.isFinite(video.duration)) {
-        setProgress(video.currentTime, video.duration);
-      }
+      if (engine) setProgress(engine.getTime(), engine.getDuration());
     }).observe(matrix);
   }
 
-  // Zoom slider ke liye observer
   const zoomSlider = document.querySelector('#zoom-slider');
   if (zoomSlider) {
     zoomSlider.addEventListener('input', () => {
-      if (video && Number.isFinite(video.duration)) {
-        setProgress(video.currentTime, video.duration);
-      }
+      if (engine) setProgress(engine.getTime(), engine.getDuration());
     });
   }
+
+  document.addEventListener('playback:tick', function (e) {
+    const d = e.detail || {};
+    setProgress(d.time || 0, d.duration || 0);
+  });
 
   alignToLayerContent();
   updateTimeDisplay(0, 0);
@@ -100,7 +90,6 @@ export function initTimelinePlayhead({
   return {
     alignToLayerContent,
     setProgress,
-    formatTime,
-    updateRulerOnZoom
+    formatTime
   };
 }

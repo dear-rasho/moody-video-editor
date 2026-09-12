@@ -1,14 +1,14 @@
 // ================================================================
 //  js/workspace/trimHandles.js
 //  Drag-to-trim handles on selected timeline clips.
-//  Propagates trim to linked clips (e.g., video ↔ auto audio).
+//  Fixes: HTML5 dragstart hijack from clip's draggable=true.
 // ================================================================
 
 import { getPixelsPerSecond } from './timelineScaler.js';
 import { applyTrimToLinked } from './clipLink.js';
 
 const MIN_DUR = 0.15;
-const HANDLE_HIT_W = 18;
+const HANDLE_HIT_W = 20;
 
 const CSS_ID = 'trim-handles-styles';
 let stylesInjected = false;
@@ -22,22 +22,33 @@ export function injectTrimStyles() {
     document.head.appendChild(s);
   }
   s.textContent = `
-    .clip { position: absolute !important; overflow: visible !important; }
+    .clip { position: absolute !important; }
 
+    /* Selected clip must allow overflow so handles can extend out */
+    .clip.selected {
+      overflow: visible !important;
+      z-index: 12 !important;
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
+      box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.15);
+    }
+
+    /* Handles: hidden until clip is selected */
     .trim-handle {
       display: none;
       position: absolute;
-      top: -4px; bottom: -4px;
+      top: -6px;
+      bottom: -6px;
       width: ${HANDLE_HIT_W}px;
       cursor: ew-resize;
-      z-index: 20;
+      z-index: 30;
       touch-action: none;
       user-select: none;
       -webkit-user-select: none;
       -webkit-tap-highlight-color: transparent;
+      pointer-events: auto;
     }
     .clip.selected .trim-handle { display: block; }
-    .clip.selected { overflow: visible !important; }
 
     .trim-handle-left  { left:  -${HANDLE_HIT_W / 2}px; }
     .trim-handle-right { right: -${HANDLE_HIT_W / 2}px; }
@@ -45,7 +56,7 @@ export function injectTrimStyles() {
     .trim-handle::after {
       content: '';
       position: absolute;
-      top: 2px; bottom: 2px;
+      top: 4px; bottom: 4px;
       width: 6px;
       background: var(--accent);
       border-radius: 3px;
@@ -56,15 +67,9 @@ export function injectTrimStyles() {
     .trim-handle-left::after  { left:  ${HANDLE_HIT_W / 2 - 3}px; }
     .trim-handle-right::after { right: ${HANDLE_HIT_W / 2 - 3}px; }
 
-    .clip.selected {
-      outline: 2px solid var(--accent);
-      outline-offset: -2px;
-      box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.15);
-    }
-
     .clip.trimming {
-      outline-color: #ffd166;
-      box-shadow: 0 0 0 3px rgba(255, 209, 102, 0.35);
+      outline-color: #ffd166 !important;
+      box-shadow: 0 0 0 3px rgba(255, 209, 102, 0.35) !important;
     }
     .clip.trimming .trim-handle::after { background: #ffd166; }
 
@@ -73,7 +78,7 @@ export function injectTrimStyles() {
       transform: translate(-50%, -100%);
       background: var(--accent);
       color: #000;
-      padding: 4px 10px;
+      padding: 5px 11px;
       border-radius: 6px;
       font-size: 11px;
       font-weight: 800;
@@ -106,6 +111,7 @@ export function injectTrimStyles() {
   stylesInjected = true;
 }
 
+// ─── Attach to a clip element ─────────────────────────────────
 export function attachTrimHandles(clipEl, clipData) {
   if (!clipEl || !clipData) return;
   injectTrimStyles();
@@ -115,10 +121,12 @@ export function attachTrimHandles(clipEl, clipData) {
   const leftH = document.createElement('span');
   leftH.className = 'trim-handle trim-handle-left';
   leftH.setAttribute('aria-hidden', 'true');
+  leftH.draggable = false;
 
   const rightH = document.createElement('span');
   rightH.className = 'trim-handle trim-handle-right';
   rightH.setAttribute('aria-hidden', 'true');
+  rightH.draggable = false;
 
   clipEl.appendChild(leftH);
   clipEl.appendChild(rightH);
@@ -127,10 +135,28 @@ export function attachTrimHandles(clipEl, clipData) {
   rightH.addEventListener('pointerdown', (e) => beginDrag(e, clipEl, clipData, 'right'));
 }
 
+// ─── Drag implementation ──────────────────────────────────────
 function beginDrag(e, clipEl, clipData, side) {
   e.stopPropagation();
   e.preventDefault();
 
+  // 🆕 Critical fix: disable HTML5 drag on clip + its parent track
+  const trackEl = clipEl.closest('.track');
+  const prevClipDrag  = clipEl.draggable;
+  const prevTrackDrag = trackEl ? trackEl.draggable : false;
+  clipEl.draggable = false;
+  if (trackEl) trackEl.draggable = false;
+
+  // 🆕 Global dragstart blocker during this drag
+  const blockDrag = function (ev) {
+    if (ev.target === clipEl || clipEl.contains(ev.target)) {
+      ev.preventDefault();
+      ev.stopPropagation();
+    }
+  };
+  document.addEventListener('dragstart', blockDrag, true);
+
+  // Snapshot initial values
   const ppsAtStart    = getPixelsPerSecond();
   const startX        = e.clientX;
   const startStart    = Number.isFinite(clipData.startTime) ? clipData.startTime : 0;
@@ -147,6 +173,16 @@ function beginDrag(e, clipEl, clipData, side) {
   const tooltip = document.createElement('div');
   tooltip.className = 'trim-tooltip ' + (side === 'left' ? 'is-left' : 'is-right');
   document.body.appendChild(tooltip);
+
+  // Show initial tooltip immediately so user sees it's active
+  (function initialLabel() {
+    const rect = clipEl.getBoundingClientRect();
+    tooltip.style.left = (side === 'left' ? rect.left : rect.right) + 'px';
+    tooltip.style.top  = Math.max(20, rect.top - 8) + 'px';
+    tooltip.textContent = side === 'left'
+      ? 'In ' + fmtTime(startStart)
+      : 'Out ' + fmtTime(startSourceIn + startDur);
+  })();
 
   let rafPending = false;
   let pendingX = startX;
@@ -195,6 +231,7 @@ function beginDrag(e, clipEl, clipData, side) {
 
   function apply(pointerX) {
     const r = computeFrom(pointerX);
+
     clipEl.style.left  = r.clipLeftPx + 'px';
     clipEl.style.width = r.clipWidthPx + 'px';
 
@@ -229,13 +266,18 @@ function beginDrag(e, clipEl, clipData, side) {
     window.removeEventListener('pointerup', onUp);
     window.removeEventListener('pointercancel', onUp);
 
+    // Restore drag capabilities
+    clipEl.draggable = prevClipDrag;
+    if (trackEl) trackEl.draggable = prevTrackDrag;
+    document.removeEventListener('dragstart', blockDrag, true);
+
     clipEl.classList.remove('trimming');
     document.body.classList.remove('trim-dragging');
     if (tooltip.parentNode) tooltip.remove();
 
     clipData.__trimmed = true;
 
-    // 🆕 Propagate to linked clips (auto audio)
+    // Propagate to linked clips (auto audio)
     applyTrimToLinked(clipData, {
       startTime: clipData.startTime,
       duration:  clipData.duration,
@@ -249,6 +291,9 @@ function beginDrag(e, clipEl, clipData, side) {
   window.addEventListener('pointermove', onMove);
   window.addEventListener('pointerup', onUp);
   window.addEventListener('pointercancel', onUp);
+
+  // Capture pointer so we receive moves even outside the handle
+  try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
 }
 
 function fmtTime(sec) {

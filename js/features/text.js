@@ -1255,8 +1255,8 @@ function refreshCurrentPanel() {
 }
 
 function previewKeyframes(kind) {
-  const video = document.querySelector('#preview-video');
-  if (!video) return;
+  const eng = window.__playbackEngine;
+  if (!eng) return;
   stopPreview();
 
   const list =
@@ -1266,15 +1266,15 @@ function previewKeyframes(kind) {
   const lastKf = list[list.length - 1];
   const endTime = lastKf ? lastKf.time : 0;
 
-  video.currentTime = 0;
-  video.play().catch(() => {});
+  eng.seek(0);
+  eng.play();
 
   const loop = () => {
-    if (video.paused || video.ended) {
+    if (!eng.isPlaying()) {
       previewRAF = null;
       return;
     }
-    const t = video.currentTime;
+    const t = eng.getTime();
 
     if (kind === 'position' && ts.kfPosition.length) {
       const p = interpolatePosition(t);
@@ -1289,8 +1289,8 @@ function previewKeyframes(kind) {
 
     refreshOverlay();
 
-    if (endTime && t >= endTime) {
-      video.pause();
+      if (endTime && t >= endTime) {
+      eng.pause();
       previewRAF = null;
       return;
     }
@@ -1360,10 +1360,11 @@ function interpolateRotation(t) {
 }
 
 function getCurrentTime() {
+  const eng = window.__playbackEngine;
+  if (eng && typeof eng.getTime === 'function') return eng.getTime();
   const video = document.querySelector('#preview-video');
   return video && Number.isFinite(video.currentTime) ? video.currentTime : 0;
 }
-
 function formatTime(s) {
   if (!Number.isFinite(s)) s = 0;
   return s.toFixed(2) + 's';

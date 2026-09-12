@@ -101,8 +101,10 @@ export function initTimelineEngine(config) {
   }
 
   // Duration = max(video duration, furthest clip end), min 1s.
+  // Duration = furthest clip end on the timeline.
+  // Does NOT use video.duration so that trimming actually shrinks
+  // the timeline.
   function computeDuration() {
-    let durationSeconds = getVideoDuration();
     let furthestEnd = 0;
 
     const allTracks = state.visual.concat(state.audio);
@@ -114,9 +116,17 @@ export function initTimelineEngine(config) {
         if (r.end > furthestEnd) furthestEnd = r.end;
       }
     }
-    if (furthestEnd > durationSeconds) durationSeconds = furthestEnd;
-    if (durationSeconds === 0) durationSeconds = 1;
-    return durationSeconds;
+
+    // If no clips exist, fall back to video.duration (initial load only)
+    if (furthestEnd === 0) {
+      const video = document.querySelector('#preview-video');
+      if (video && Number.isFinite(video.duration) && video.duration > 0) {
+        return video.duration;
+      }
+      return 1;
+    }
+
+    return furthestEnd;
   }
 
   // ─── Track builder ────────────────────────────────────────────

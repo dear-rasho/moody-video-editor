@@ -1,13 +1,10 @@
 // ================================================================
 //  js/workspace/previewCanvas.js
-//  Preview canvas is the display surface.
+//  Preview canvas.
 //
-//  When a ratio is set (window.__offlineEditorRatio), the canvas
-//  is resized to that ratio and the video is COVER-FIT into it —
-//  cropping overflow so nothing outside the ratio is shown.
-//
-//  When ratio is "original", the canvas fills the wrap and video
-//  is drawn contain-fit (letterboxed).
+//  When window.__previewBlockAutoDraw is true (playbackEngine active),
+//  this module stops auto-drawing on video events. Engine drives the
+//  canvas via preview.redraw().
 // ================================================================
 
 export function initPreviewCanvas({ canvas, video, empty }) {
@@ -25,7 +22,12 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     return ctx;
   }
 
-  // ─── Target ratio from ratio.js ────────────────────────────
+  // 🆕 When true, no auto-draws happen (engine owns canvas)
+  function isBlocked() {
+    return window.__previewBlockAutoDraw === true;
+  }
+
+  // ─── Target ratio ─────────────────────────────────────────
   function getTargetRatio() {
     const r = window.__offlineEditorRatio;
     if (r && Number.isFinite(r.w) && Number.isFinite(r.h) && r.w > 0 && r.h > 0) {
@@ -34,7 +36,7 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     return null;
   }
 
-  // ─── Size canvas based on ratio ────────────────────────────
+  // ─── Size canvas ──────────────────────────────────────────
   function syncCanvasSize() {
     const wrap = canvas.parentElement;
     if (!wrap) return;
@@ -47,13 +49,11 @@ export function initPreviewCanvas({ canvas, video, empty }) {
 
     let w, h, cssW, cssH;
     if (!ratio) {
-      // Fill the wrap entirely
       w = Math.round(wrapW);
       h = Math.round(wrapH);
       cssW = '100%';
       cssH = '100%';
     } else {
-      // Fit the target ratio inside the wrap
       const targetAR = ratio.w / ratio.h;
       const wrapAR = wrapW / wrapH;
       if (targetAR > wrapAR) {
@@ -78,7 +78,7 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     }
   }
 
-  // ─── Contain-fit (letterbox) ──────────────────────────────
+  // ─── Contain-fit ──────────────────────────────────────────
   function containRect(srcW, srcH, dstW, dstH) {
     if (!srcW || !srcH) return { x: 0, y: 0, w: dstW, h: dstH };
     const srcAR = srcW / srcH;
@@ -89,41 +89,27 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     return { x: (dstW - w) / 2, y: (dstH - h) / 2, w, h };
   }
 
-  // ─── Cover-fit (crop) ─────────────────────────────────────
+  // ─── Cover-fit ────────────────────────────────────────────
   function coverSourceRect(srcW, srcH, dstW, dstH) {
     if (!srcW || !srcH) return { sx: 0, sy: 0, sw: srcW, sh: srcH };
     const srcAR = srcW / srcH;
     const dstAR = dstW / dstH;
     let sw, sh, sx, sy;
     if (srcAR > dstAR) {
-      // source wider → crop left/right
-      sh = srcH;
-      sw = srcH * dstAR;
-      sx = (srcW - sw) / 2;
-      sy = 0;
+      sh = srcH; sw = srcH * dstAR; sx = (srcW - sw) / 2; sy = 0;
     } else {
-      // source taller → crop top/bottom
-      sw = srcW;
-      sh = srcW / dstAR;
-      sx = 0;
-      sy = (srcH - sh) / 2;
+      sw = srcW; sh = srcW / dstAR; sx = 0; sy = (srcH - sh) / 2;
     }
     return { sx, sy, sw, sh };
   }
 
-  // Expose for other modules
   window.__previewContainRect = containRect;
-  
 
-  // ─── Shared draw helper for feature modules ───────────────────
-  // Features (adjustments, chromakey, colorWheel, …) redraw the
-  // video into the preview canvas. They must respect the SAME ratio
-  // logic as the main draw path, otherwise they revert the preview
-  // to the video's native aspect ratio.
-  window.__previewDrawVideo = function (ctx, videoEl, canvasEl) {
-    if (!ctx || !videoEl || !canvasEl) return;
-    ctx.fillStyle = '#000';
-    ctx.fillRect(0, 0, canvasEl.width, canvasEl.height);
+  // ─── Shared draw helper for feature modules ───────────────
+  window.__previewDrawVideo = function (drawCtx, videoEl, canvasEl) {
+    if (!drawCtx || !videoEl || !canvasEl) return;
+    drawCtx.fillStyle = '#000';
+    drawCtx.fillRect(0, 0, canvasEl.width, canvasEl.height);
 
     const vw = videoEl.videoWidth;
     const vh = videoEl.videoHeight;
@@ -132,13 +118,11 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     const ratio = getTargetRatio();
     try {
       if (!ratio) {
-        // No ratio selected → contain-fit (letterbox)
         const r = containRect(vw, vh, canvasEl.width, canvasEl.height);
-        ctx.drawImage(videoEl, r.x, r.y, r.w, r.h);
+        drawCtx.drawImage(videoEl, r.x, r.y, r.w, r.h);
       } else {
-        // Ratio selected → cover-fit (crop overflow)
         const s = coverSourceRect(vw, vh, canvasEl.width, canvasEl.height);
-        ctx.drawImage(
+        drawCtx.drawImage(
           videoEl,
           s.sx, s.sy, s.sw, s.sh,
           0, 0, canvasEl.width, canvasEl.height
@@ -147,7 +131,7 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     } catch (_) {}
   };
 
-  // ─── Draw a video frame ───────────────────────────────────
+  // ─── Draw video frame ─────────────────────────────────────
   function drawVideoFrame() {
     if (!video.videoWidth || !video.videoHeight) return;
     if (video.readyState < 2) return;
@@ -163,18 +147,16 @@ export function initPreviewCanvas({ canvas, video, empty }) {
 
     try {
       if (!ratio) {
-        // Contain-fit (letterbox)
         const r = containRect(video.videoWidth, video.videoHeight, canvas.width, canvas.height);
         c.drawImage(video, r.x, r.y, r.w, r.h);
       } else {
-        // Cover-fit: crop source to match target ratio
         const s = coverSourceRect(video.videoWidth, video.videoHeight, canvas.width, canvas.height);
         c.drawImage(video, s.sx, s.sy, s.sw, s.sh, 0, 0, canvas.width, canvas.height);
       }
     } catch (_) {}
   }
 
-  // ─── Draw a static image ──────────────────────────────────
+  // ─── Draw image ───────────────────────────────────────────
   function drawImageContained(image) {
     syncCanvasSize();
     const c = getCtx();
@@ -198,9 +180,10 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     } catch (_) {}
   }
 
-  // ─── Playback loop ────────────────────────────────────────
+  // ─── Playback loop (only when NOT blocked) ────────────────
   let rafId = null;
   function startLoop() {
+    if (isBlocked()) return;
     if (rafId) return;
     const loop = () => {
       drawVideoFrame();
@@ -231,25 +214,39 @@ export function initPreviewCanvas({ canvas, video, empty }) {
   }
   hideVideo();
 
-  // ─── Events ───────────────────────────────────────────────
-  video.addEventListener('loadedmetadata', drawVideoFrame);
-  video.addEventListener('loadeddata', drawVideoFrame);
-  video.addEventListener('seeked', drawVideoFrame);
-  video.addEventListener('play', startLoop);
-  video.addEventListener('playing', startLoop);
-  video.addEventListener('pause', () => { drawVideoFrame(); stopLoop(); });
-  video.addEventListener('ended', () => { drawVideoFrame(); stopLoop(); });
+  // ─── Event handlers (all guarded by isBlocked) ────────────
+  function guardedDraw() {
+    if (isBlocked()) return;
+    drawVideoFrame();
+  }
+
+  video.addEventListener('loadedmetadata', guardedDraw);
+  video.addEventListener('loadeddata', guardedDraw);
+  video.addEventListener('seeked', guardedDraw);
+
+  video.addEventListener('play',    () => { if (!isBlocked()) startLoop(); });
+  video.addEventListener('playing', () => { if (!isBlocked()) startLoop(); });
+  video.addEventListener('pause',   () => {
+    if (isBlocked()) return;
+    drawVideoFrame();
+    stopLoop();
+  });
+  video.addEventListener('ended', () => {
+    if (isBlocked()) return;
+    drawVideoFrame();
+    stopLoop();
+  });
 
   // Ratio change → resize + redraw
   document.addEventListener('ratio:changed', () => {
     syncCanvasSize();
-    drawVideoFrame();
+    if (!isBlocked()) drawVideoFrame();
   });
 
   if (typeof ResizeObserver !== 'undefined') {
     new ResizeObserver(() => {
       syncCanvasSize();
-      drawVideoFrame();
+      if (!isBlocked()) drawVideoFrame();
     }).observe(canvas.parentElement || canvas);
   }
 
@@ -264,7 +261,9 @@ export function initPreviewCanvas({ canvas, video, empty }) {
       video.load();
       hideVideo();
       canvas.hidden = false;
-      video.addEventListener('loadeddata', drawVideoFrame, { once: true });
+      if (!isBlocked()) {
+        video.addEventListener('loadeddata', drawVideoFrame, { once: true });
+      }
       return;
     }
 
@@ -273,6 +272,7 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     if (type.startsWith('image/')) {
       const image = new Image();
       image.onload = () => {
+        if (isBlocked()) return;
         drawImageContained(image);
         canvas.hidden = false;
         if (empty) empty.hidden = true;

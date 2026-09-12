@@ -9,7 +9,7 @@ import { initMediaLibrary } from './workspace/mediaLibrary.js';
 import { initPlaybackControls } from './workspace/playbackControls.js';
 import { initTimelineEngine } from './workspace/timelineEngine.js';
 import { initTimelinePlayhead } from './workspace/timelinePlayhead.js';
-import { initTrimPlayback } from './workspace/trimPlayback.js';   // 🆕
+import { initPlaybackEngine } from './workspace/playbackEngine.js';
 import { injectQuickLayerButtons } from './layers/layersManager.js';
 import { initKeyframeEngine } from './features/keyframeEngine.js';
 import { initHistory } from './workspace/historyManager.js';
@@ -40,6 +40,7 @@ let preview;
 let previewHud;
 let timeline;
 let timelinePlayhead;
+let playbackEngine;
 
 function showPage(page) {
   appState.page = page;
@@ -58,7 +59,7 @@ function createProject() {
   previewAudio.removeAttribute('src');
   previewAudio.load();
   if (timeline) timeline.render();
-  if (timelinePlayhead) timelinePlayhead.setProgress(0, 0);
+  if (playbackEngine) playbackEngine.seek(0);
   if (previewHud) previewHud.refresh();
   document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
   showPage('workspace');
@@ -78,23 +79,37 @@ async function bootstrap() {
   initTemplatesShelf(document.querySelector('#templates-shelf'));
   initHeaderBar({ exportButton: document.querySelector('#export-btn') });
 
+  const previewVideo = document.querySelector('#preview-video');
+  const previewAudio = document.querySelector('#preview-audio');
+  const previewCanvas = document.querySelector('#preview-canvas');
+
   preview = initPreviewCanvas({
-    canvas: document.querySelector('#preview-canvas'),
-    video: document.querySelector('#preview-video'),
+    canvas: previewCanvas,
+    video: previewVideo,
     empty: document.querySelector('#preview-empty')
   });
 
-  initKeyframeEngine({
-    video: document.querySelector('#preview-video')
-  });
+  initKeyframeEngine({ video: previewVideo });
 
   previewHud = initPreviewHud({
     wrap: document.querySelector('#preview-canvas-wrap'),
-    video: document.querySelector('#preview-video')
+    video: previewVideo
   });
 
-  const previewVideo = document.querySelector('#preview-video');
-  const previewAudio = document.querySelector('#preview-audio');
+  // 🆕 Master playback engine
+  playbackEngine = initPlaybackEngine({
+    canvas: previewCanvas,
+    video: previewVideo,
+    audio: previewAudio,
+    preview: preview,
+    onTick: function (time, duration) {
+      if (timelinePlayhead) timelinePlayhead.setProgress(time, duration);
+      if (previewHud) previewHud.refresh();
+    }
+  });
+
+  // Expose for feature modules that need "current playhead time"
+  window.__playbackEngine = playbackEngine;
 
   initMediaLibrary({
     button: document.querySelector('#media-picker-btn'),
@@ -104,12 +119,8 @@ async function bootstrap() {
       let visual = null;
       let audio = null;
       for (let i = 0; i < items.length; i++) {
-        if (!visual && (items[i].type.indexOf('video/') === 0 || items[i].type.indexOf('image/') === 0)) {
-          visual = items[i];
-        }
-        if (!audio && items[i].type.indexOf('audio/') === 0) {
-          audio = items[i];
-        }
+        if (!visual && (items[i].type.indexOf('video/') === 0 || items[i].type.indexOf('image/') === 0)) visual = items[i];
+        if (!audio && items[i].type.indexOf('audio/') === 0) audio = items[i];
       }
       if (visual) preview.setMedia(visual);
       if (audio) {
@@ -117,6 +128,7 @@ async function bootstrap() {
         previewAudio.load();
       }
       timeline.addMedia(items);
+      if (playbackEngine) playbackEngine.redraw();
       if (previewHud) previewHud.refresh();
     }
   });
@@ -126,12 +138,8 @@ async function bootstrap() {
     visual: document.querySelector('#visual-tracks'),
     audio: document.querySelector('#audio-tracks'),
     state: appState.timeline,
-    onVisualVisibility: function (label, visible) {
-      if (label === 'V1') preview.setVisible(visible);
-    },
-    onAudioMute: function (label, muted) {
-      if (label === 'A1') previewAudio.muted = muted;
-    },
+    onVisualVisibility: function (label, visible) { if (label === 'V1') preview.setVisible(visible); },
+    onAudioMute: function (label, muted) { if (label === 'A1') previewAudio.muted = muted; },
     onDeleteSelected: function (clip) {
       appState.media = appState.media.filter(function (item) { return item.url !== clip.url; });
       if (clip.type && clip.type.indexOf('audio/') === 0) {
@@ -141,11 +149,11 @@ async function bootstrap() {
       } else {
         preview.clear();
       }
+      if (playbackEngine) playbackEngine.redraw();
       if (previewHud) previewHud.refresh();
     },
     getPlayheadTime: function () {
-      const v = document.querySelector('#preview-video');
-      return v && Number.isFinite(v.currentTime) ? v.currentTime : 0;
+      return playbackEngine ? playbackEngine.getTime() : 0;
     },
     zoomSlider: document.querySelector('#zoom-slider')
   });
@@ -168,9 +176,8 @@ async function bootstrap() {
     element: document.querySelector('#timeline-playhead'),
     matrix: document.querySelector('#timeline-matrix'),
     viewport: document.querySelector('#timeline-viewport'),
-    video: previewVideo,
+    engine: playbackEngine,
     timeDisplay: document.querySelector('#timeline-time'),
-    getZoomFactor: function () { return timeline && timeline.zoomFactor ? timeline.zoomFactor : 1; },
     getRulerContainer: function () { return document.querySelector('.timeline-ruler'); }
   });
 
@@ -179,15 +186,8 @@ async function bootstrap() {
     deleteButton: document.querySelector('#delete-btn'),
     undo: document.querySelector('#undo-btn'),
     redo: document.querySelector('#redo-btn'),
-    video: previewVideo,
-    audio: previewAudio,
-    onTimeUpdate: function (time, duration) {
-      if (timelinePlayhead) timelinePlayhead.setProgress(time, duration);
-    }
+    engine: playbackEngine
   });
-
-  // 🆕 Trimmed portion play nahi hoga
-  initTrimPlayback(previewVideo);
 
   registerFeatures();
   featuresRouter.init({
@@ -196,11 +196,8 @@ async function bootstrap() {
     backButton: elements.featureBack
   });
 
-  elements.workspaceBack.addEventListener('click', function () {
-    showPage('dashboard');
-  });
+  elements.workspaceBack.addEventListener('click', function () { showPage('dashboard'); });
 
-  // Export button → open settings panel
   const exportBtn = document.querySelector('#export-btn');
   if (exportBtn) {
     exportBtn.addEventListener('click', function (e) {
