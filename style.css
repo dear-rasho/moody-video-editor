@@ -414,7 +414,14 @@ h2 {
   padding: 0 4px;
   white-space: nowrap;
 }
-
+.ruler-marker-end {
+  background: #ff5454;
+  width: 2px;
+}
+.ruler-marker-end span {
+  color: #ff5454;
+  font-weight: 700;
+}
 /* Timeline: flexible, but never collapses too much */
 .timeline-section {
   flex: 1 1 auto;

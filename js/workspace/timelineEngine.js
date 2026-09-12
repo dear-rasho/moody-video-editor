@@ -2,6 +2,8 @@
 //  js/workspace/timelineEngine.js
 //  Unlimited-layer timeline. Fires 'editor:timeline-changed' on
 //  every mutation so historyManager can snapshot.
+//
+//  Uses timelineScaler.js for ALL sizing / zoom / ruler math.
 // ================================================================
 
 import {
@@ -13,6 +15,16 @@ import {
   DEFAULT_VISUAL_LAYERS,
   DEFAULT_AUDIO_LAYERS
 } from '../layers/layersManager.js';
+
+import {
+  initTimelineScaler,
+  setDuration as setTimelineDuration,
+  getMetrics   as getScaleMetrics,
+  computeClipRect,
+  getRulerStep,
+  formatRulerTime,
+  LABEL_WIDTH
+} from './timelineScaler.js';
 
 export function initTimelineEngine(config) {
   injectLayerStyles();
@@ -29,10 +41,8 @@ export function initTimelineEngine(config) {
   let selected = null;
   let draggedTrack = null;
   let draggedClip = null;
-  let zoomFactor = 1.0;
+  let _rendering = false;              // re-entry guard
 
-  const LABEL_WIDTH = 80;
-  const BASE_PPS = 100;
   const DEFAULT_CLIP_SEC = 3;
 
   ensureMinLayers(state.visual, DEFAULT_VISUAL_LAYERS);
@@ -44,6 +54,17 @@ export function initTimelineEngine(config) {
   const rulerContainer = document.createElement('div');
   rulerContainer.className = 'timeline-ruler';
   matrix.prepend(rulerContainer);
+
+  // ─── SCALER INIT ───────────────────────────────────────────────
+  initTimelineScaler({
+    viewport:   viewport,
+    slider:     zoomSlider,
+    valueLabel: document.querySelector('#zoom-value')
+  });
+
+  document.addEventListener('timeline:scale-changed', function () {
+    if (!_rendering) render();
+  });
 
   function notifyChanged() {
     document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
@@ -64,17 +85,7 @@ export function initTimelineEngine(config) {
 
   if (viewport) {
     viewport.addEventListener('dragover', function (e) { e.preventDefault(); });
-    viewport.addEventListener('drop', function (e) { e.preventDefault(); });
-  }
-
-  if (zoomSlider) {
-    zoomSlider.addEventListener('input', function (e) {
-      const val = parseInt(e.target.value, 10);
-      zoomFactor = val / 100;
-      const zoomDisplay = document.querySelector('#zoom-value');
-      if (zoomDisplay) zoomDisplay.textContent = val + '%';
-      render();
-    });
+    viewport.addEventListener('drop',     function (e) { e.preventDefault(); });
   }
 
   function getVideoDuration() {
@@ -85,11 +96,11 @@ export function initTimelineEngine(config) {
     return 0;
   }
 
-  function getTimelineMetrics() {
-    const pxPerSecond = BASE_PPS * zoomFactor;
+  // Duration = max(video duration, furthest clip end), min 1s.
+  function computeDuration() {
     let durationSeconds = getVideoDuration();
-
     let furthestEnd = 0;
+
     const allTracks = state.visual.concat(state.audio);
     for (let t = 0; t < allTracks.length; t++) {
       const track = allTracks[t];
@@ -99,30 +110,12 @@ export function initTimelineEngine(config) {
         if (r.end > furthestEnd) furthestEnd = r.end;
       }
     }
-
     if (furthestEnd > durationSeconds) durationSeconds = furthestEnd;
     if (durationSeconds === 0) durationSeconds = 1;
-
-    return {
-      duration: durationSeconds,
-      pxPerSecond: pxPerSecond,
-      contentWidth: durationSeconds * pxPerSecond,
-      totalWidth: LABEL_WIDTH + durationSeconds * pxPerSecond,
-      labelWidth: LABEL_WIDTH
-    };
+    return durationSeconds;
   }
 
-  function formatRulerTime(sec) {
-    const s = Math.round(sec * 10) / 10;
-    const m = Math.floor(s / 60);
-    const rem = s - m * 60;
-    if (m > 0) {
-      const secStr = (rem < 10 ? '0' : '') + (Math.round(rem * 10) / 10);
-      return m + ':' + secStr;
-    }
-    return (Number.isInteger(s) ? s : s.toFixed(1)) + 's';
-  }
-
+  // ─── Track builder ────────────────────────────────────────────
   function buildTrack(label, clips, trackIndex, group) {
     const track = document.createElement('div');
     track.className = 'track';
@@ -228,10 +221,10 @@ export function initTimelineEngine(config) {
     const content = document.createElement('div');
     content.className = 'track-content';
 
-    const metrics = getTimelineMetrics();
-    content.style.width    = metrics.contentWidth + 'px';
-    content.style.flex     = '0 0 ' + metrics.contentWidth + 'px';
-    content.style.minWidth = metrics.contentWidth + 'px';
+    const m = getScaleMetrics();
+    content.style.width    = m.contentWidth + 'px';
+    content.style.flex     = '0 0 ' + m.contentWidth + 'px';
+    content.style.minWidth = m.contentWidth + 'px';
 
     for (let ci = 0; ci < clips.length; ci++) {
       const clip = clips[ci];
@@ -243,9 +236,10 @@ export function initTimelineEngine(config) {
       el.dataset.clip = ci;
       el.dataset.clipType = clip.type || '';
 
-      const r = clipRange(clip);
-      el.style.left  = (r.start * metrics.pxPerSecond) + 'px';
-      el.style.width = (r.duration * metrics.pxPerSecond) + 'px';
+      const rect = computeClipRect(clip);
+      el.style.left     = rect.left + 'px';
+      el.style.width    = rect.width + 'px';
+      el.style.minWidth = '20px';
 
       if (selected && selected.track === label && selected.clipIndex === ci) {
         el.classList.add('selected');
@@ -293,25 +287,18 @@ export function initTimelineEngine(config) {
     return track;
   }
 
+  // ─── Ruler ────────────────────────────────────────────────────
   function renderRuler() {
     rulerContainer.innerHTML = '';
-    const m = getTimelineMetrics();
+    const m = getScaleMetrics();
+    const step = getRulerStep();
 
     const spacer = document.createElement('div');
     spacer.className = 'timeline-ruler-spacer';
     rulerContainer.appendChild(spacer);
 
-    const totalWidth = m.labelWidth + m.contentWidth;
-    rulerContainer.style.width = totalWidth + 'px';
-    rulerContainer.style.minWidth = totalWidth + 'px';
-
-    let step = 1;
-    if (m.duration > 60) step = 5;
-    if (m.duration > 180) step = 10;
-    if (m.duration > 600) step = 30;
-    if (m.pxPerSecond * step < 40) {
-      step = Math.ceil(40 / m.pxPerSecond);
-    }
+    rulerContainer.style.width    = m.totalWidth + 'px';
+    rulerContainer.style.minWidth = m.totalWidth + 'px';
 
     const count = Math.floor(m.duration / step);
     for (let i = 0; i <= count; i++) {
@@ -320,31 +307,52 @@ export function initTimelineEngine(config) {
       marker.className = 'ruler-marker';
       marker.style.left = (m.labelWidth + t * m.pxPerSecond) + 'px';
       const lbl = document.createElement('span');
-      lbl.textContent = formatRulerTime(t);
+      lbl.textContent = formatRulerTime(t, step);
+      marker.appendChild(lbl);
+      rulerContainer.appendChild(marker);
+    }
+
+    // Always mark exact timeline end.
+    if (count * step < m.duration - 1e-6) {
+      const marker = document.createElement('div');
+      marker.className = 'ruler-marker ruler-marker-end';
+      marker.style.left = (m.labelWidth + m.duration * m.pxPerSecond) + 'px';
+      const lbl = document.createElement('span');
+      lbl.textContent = formatRulerTime(m.duration, step);
       marker.appendChild(lbl);
       rulerContainer.appendChild(marker);
     }
   }
 
+  // ─── Main render ──────────────────────────────────────────────
   function render() {
-    const m = getTimelineMetrics();
-    matrix.style.minWidth = m.totalWidth + 'px';
+    if (_rendering) return;
+    _rendering = true;
+    try {
+      setTimelineDuration(computeDuration());
 
-    const visualNodes = [];
-    for (let i = state.visual.length - 1; i >= 0; i--) {
-      visualNodes.push(buildTrack('V' + (i + 1), state.visual[i] || [], i, 'visual'));
+      const m = getScaleMetrics();
+      matrix.style.minWidth = m.totalWidth + 'px';
+
+      const visualNodes = [];
+      for (let i = state.visual.length - 1; i >= 0; i--) {
+        visualNodes.push(buildTrack('V' + (i + 1), state.visual[i] || [], i, 'visual'));
+      }
+      visual.replaceChildren.apply(visual, visualNodes);
+
+      const audioNodes = [];
+      for (let i = 0; i < state.audio.length; i++) {
+        audioNodes.push(buildTrack('A' + (i + 1), state.audio[i] || [], i, 'audio'));
+      }
+      audio.replaceChildren.apply(audio, audioNodes);
+
+      renderRuler();
+    } finally {
+      _rendering = false;
     }
-    visual.replaceChildren.apply(visual, visualNodes);
-
-    const audioNodes = [];
-    for (let i = 0; i < state.audio.length; i++) {
-      audioNodes.push(buildTrack('A' + (i + 1), state.audio[i] || [], i, 'audio'));
-    }
-    audio.replaceChildren.apply(audio, audioNodes);
-
-    renderRuler();
   }
 
+  // ─── addMedia ────────────────────────────────────────────────
   function addMedia(items) {
     const atTime = Number(getPlayheadTime()) || 0;
 
@@ -353,6 +361,7 @@ export function initTimelineEngine(config) {
       const isAudio = item.type.indexOf('audio/') === 0;
       const isVideo = item.type.indexOf('video/') === 0;
 
+      // Use probed duration; fallback to DEFAULT_CLIP_SEC only if missing.
       const realDur = (Number.isFinite(item.duration) && item.duration > 0)
         ? item.duration
         : DEFAULT_CLIP_SEC;
@@ -415,6 +424,51 @@ export function initTimelineEngine(config) {
   if (previewVideoEl) {
     previewVideoEl.addEventListener('loadedmetadata', render);
     previewVideoEl.addEventListener('durationchange', render);
+
+    // Auto-patch clip durations when the preview video loads metadata.
+    previewVideoEl.addEventListener('loadedmetadata', function () {
+      const real = previewVideoEl.duration;
+      if (!Number.isFinite(real) || real <= 0) return;
+
+      const src = previewVideoEl.currentSrc || previewVideoEl.src || '';
+      if (!src) return;
+
+      let changed = false;
+
+      for (let t = 0; t < state.visual.length; t++) {
+        const track = state.visual[t];
+        if (!Array.isArray(track)) continue;
+        for (let c = 0; c < track.length; c++) {
+          const clip = track[c];
+          if (clip && clip.url === src &&
+              Math.abs((clip.duration || 0) - real) > 0.05) {
+            clip.duration = real;
+            if (Number.isFinite(clip.startTime)) {
+              clip.endTime = clip.startTime + real;
+            }
+            changed = true;
+          }
+        }
+      }
+
+      for (let t = 0; t < state.audio.length; t++) {
+        const track = state.audio[t];
+        if (!Array.isArray(track)) continue;
+        for (let c = 0; c < track.length; c++) {
+          const clip = track[c];
+          if (clip && clip.url === src && clip.autoGenerated &&
+              Math.abs((clip.duration || 0) - real) > 0.05) {
+            clip.duration = real;
+            changed = true;
+          }
+        }
+      }
+
+      if (changed) {
+        render();
+        notifyChanged();
+      }
+    });
   }
 
   render();
