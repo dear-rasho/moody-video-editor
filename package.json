@@ -1,0 +1,27 @@
+{
+  "name": "moody-editing-app",
+  "version": "1.0.0",
+  "description": "ES6-module foundation for an offline 2D Android video editor architecture.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dear-rasho/moody-video-editor.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/dear-rasho/moody-video-editor/issues"
+  },
+  "homepage": "https://github.com/dear-rasho/moody-video-editor#readme",
+  "dependencies": {
+    "@capacitor/android": "^8.5.2",
+    "@capacitor/cli": "^8.5.2",
+    "@capacitor/core": "^8.5.2",
+    "@capacitor/filesystem": "^8.1.3"
+  }
+}

@@ -1,32 +1,23 @@
 // ================================================================
 //  js/features/ratio.js
-//  Self-contained Aspect Ratio feature.
-//
-//  - Panel with 7 presets: Original / 9:16 / 1:1 / 16:9 / 4:5 / 3:4 / 21:9
-//  - Applies a "frame overlay" on the preview wrap that shows the
-//    chosen ratio and masks (clips) anything outside it.
-//  - Persists in localStorage so export can read it.
-//  - User can change ratio anytime by reopening the panel.
-//
-//  All code + CSS lives in this file. No other file is touched.
+//  Aspect ratio selector. The preview canvas itself is resized
+//  and CROPPED to the chosen ratio — no overlay mask needed.
 // ================================================================
 
 import { featuresRouter } from './featuresRouter.js';
 
 export const featureKey = 'ratio';
 
-// ─── Ratio presets ─────────────────────────────────────────────
 const RATIOS = [
-  { key: 'original', label: 'Original',  sub: 'Source aspect',  w: 0,  h: 0  },
-  { key: '9:16',     label: '9:16',      sub: 'TikTok / Shorts',w: 9,  h: 16 },
-  { key: '1:1',      label: '1:1',       sub: 'Instagram',      w: 1,  h: 1  },
-  { key: '16:9',     label: '16:9',      sub: 'YouTube',        w: 16, h: 9  },
-  { key: '4:5',      label: '4:5',       sub: 'IG Portrait',    w: 4,  h: 5  },
-  { key: '3:4',      label: '3:4',       sub: 'Portrait',       w: 3,  h: 4  },
-  { key: '21:9',     label: '21:9',      sub: 'Cinematic',      w: 21, h: 9  }
+  { key: 'original', label: 'Original',  sub: 'Source aspect',   w: 0,  h: 0  },
+  { key: '9:16',     label: '9:16',      sub: 'TikTok / Shorts', w: 9,  h: 16 },
+  { key: '1:1',      label: '1:1',       sub: 'Instagram',       w: 1,  h: 1  },
+  { key: '16:9',     label: '16:9',      sub: 'YouTube',         w: 16, h: 9  },
+  { key: '4:5',      label: '4:5',       sub: 'IG Portrait',     w: 4,  h: 5  },
+  { key: '3:4',      label: '3:4',       sub: 'Portrait',        w: 3,  h: 4  },
+  { key: '21:9',     label: '21:9',      sub: 'Cinematic',       w: 21, h: 9  }
 ];
 
-// ─── State ─────────────────────────────────────────────────────
 const STORAGE_KEY = 'offline-editor-ratio';
 
 const state = {
@@ -35,7 +26,6 @@ const state = {
   h: 0
 };
 
-// Load saved
 (function loadSaved() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
@@ -44,10 +34,10 @@ const state = {
       state.w = Number(saved.w) || 0;
       state.h = Number(saved.h) || 0;
     }
-  } catch (_) { /* ignore */ }
+  } catch (_) {}
 })();
 
-// ─── Router self-install (no other file touched) ───────────────
+// ─── Router install ────────────────────────────────────────────
 (function installRatioRenderer() {
   if (featuresRouter.__ratioInstalled) return;
   featuresRouter.__ratioInstalled = true;
@@ -69,12 +59,12 @@ const state = {
 
 // ─── CSS ───────────────────────────────────────────────────────
 const CSS_ID = 'ratio-styles';
+
 function injectStyles() {
   if (document.getElementById(CSS_ID)) return;
-  const style = document.createElement('style');
-  style.id = CSS_ID;
-  style.textContent = `
-    /* ─── Panel ─── */
+  const s = document.createElement('style');
+  s.id = CSS_ID;
+  s.textContent = `
     .rn-panel {
       display: flex;
       flex-direction: column;
@@ -157,27 +147,7 @@ function injectStyles() {
       padding: 6px 4px 0;
       opacity: 0.75;
     }
-
-    /* ─── Preview frame overlay ─── */
-    .ratio-frame-outline {
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      aspect-ratio: var(--rn-w, auto) / var(--rn-h, auto);
-      height: 100%;
-      width: auto;
-      max-width: 100%;
-      max-height: 100%;
-      /* Big spread shadow acts as the outside mask */
-      box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.78);
-      border: 1.5px solid rgba(255, 255, 255, 0.55);
-      box-sizing: border-box;
-      pointer-events: none;
-      z-index: 12;
-      border-radius: 2px;
-    }
-    /* Ratio badge (top-right) */
+    /* Badge on preview (only small indicator, no mask) */
     .ratio-badge {
       position: absolute;
       top: 8px;
@@ -195,7 +165,7 @@ function injectStyles() {
       border: 1px solid rgba(255, 255, 255, 0.2);
     }
   `;
-  document.head.appendChild(style);
+  document.head.appendChild(s);
 }
 
 // ─── Router entry ──────────────────────────────────────────────
@@ -207,7 +177,7 @@ export function open({ router }) {
   });
 }
 
-// ─── Render panel ──────────────────────────────────────────────
+// ─── Render ────────────────────────────────────────────────────
 export function renderTo(container) {
   injectStyles();
   container.replaceChildren();
@@ -232,7 +202,6 @@ export function renderTo(container) {
     card.dataset.ratioKey = r.key;
     if (state.ratioKey === r.key) card.classList.add('active');
 
-    // Icon: proportional mini rectangle inside a 40x40 box
     const icon = document.createElement('div');
     icon.className = 'rn-icon';
 
@@ -271,7 +240,7 @@ export function renderTo(container) {
 
     card.addEventListener('click', () => {
       selectRatio(r.key);
-      Object.values(cards).forEach(c => c.classList.remove('active'));
+      Object.keys(cards).forEach(k => cards[k].classList.remove('active'));
       card.classList.add('active');
     });
 
@@ -284,20 +253,21 @@ export function renderTo(container) {
   const hint = document.createElement('div');
   hint.className = 'rn-hint';
   hint.textContent =
-    'Selected ratio is used for the preview frame and will be used for export. ' +
-    'Content that extends outside the frame is clipped.';
+    'Preview is cropped to this ratio. Anything outside the frame ' +
+    'will not appear in the export.';
   panel.appendChild(hint);
 
   container.appendChild(panel);
 
-  // Make sure preview has the frame applied (in case it wasn't yet)
+  // Re-apply state to preview
   applyRatio(state.ratioKey);
 }
 
-// ─── Select ratio ──────────────────────────────────────────────
+// ─── Selection ─────────────────────────────────────────────────
 function selectRatio(key) {
   const def = RATIOS.find(r => r.key === key);
   if (!def) return;
+
   state.ratioKey = def.key;
   state.w = def.w;
   state.h = def.h;
@@ -308,58 +278,50 @@ function selectRatio(key) {
       w: state.w,
       h: state.h
     }));
-  } catch (_) { /* ignore */ }
+  } catch (_) {}
 
   applyRatio(key);
-
-  // Global hook so other modules (e.g., export) can read it
-  window.__offlineEditorRatio = { key: state.ratioKey, w: state.w, h: state.h };
 }
 
-// ─── Apply ratio to preview wrap ───────────────────────────────
+// ─── Apply to preview (no overlay, just resize + crop) ────────
 function applyRatio(key) {
-  const wrap = document.querySelector('#preview-canvas-wrap');
-  if (!wrap) return;
-
   const def = RATIOS.find(r => r.key === key) || RATIOS[0];
 
-  // Clear previous
-  wrap.querySelector('.ratio-frame-outline')?.remove();
-  wrap.querySelector('.ratio-badge')?.remove();
-
-  if (def.key === 'original' || !def.w || !def.h) {
-    return;
+  // Badge only (visual indicator)
+  const wrap = document.querySelector('#preview-canvas-wrap');
+  if (wrap) {
+    wrap.querySelector('.ratio-badge')?.remove();
+    if (def.key !== 'original' && def.w && def.h) {
+      const badge = document.createElement('div');
+      badge.className = 'ratio-badge';
+      badge.textContent = def.key;
+      wrap.appendChild(badge);
+    }
   }
 
-  // Frame overlay with massive shadow-mask
-  const frame = document.createElement('div');
-  frame.className = 'ratio-frame-outline';
-  frame.style.setProperty('--rn-w', String(def.w));
-  frame.style.setProperty('--rn-h', String(def.h));
-  wrap.appendChild(frame);
+  // Expose global for other modules (export, etc.)
+  window.__offlineEditorRatio = {
+    key: state.ratioKey,
+    w: state.w,
+    h: state.h
+  };
 
-  // Badge
-  const badge = document.createElement('div');
-  badge.className = 'ratio-badge';
-  badge.textContent = def.key;
-  wrap.appendChild(badge);
-
-  // Expose global
-  window.__offlineEditorRatio = { key: state.ratioKey, w: state.w, h: state.h };
+  // Tell the preview canvas to redraw at the new ratio
+  document.dispatchEvent(new CustomEvent('ratio:changed', {
+    detail: { key: state.ratioKey, w: state.w, h: state.h }
+  }));
 }
 
-// ─── Auto-apply on app boot ────────────────────────────────────
+// ─── Auto-apply on boot ────────────────────────────────────────
 (function initExisting() {
   let tries = 0;
   const tick = () => {
     const wrap = document.querySelector('#preview-canvas-wrap');
     if (wrap) {
-      if (state.ratioKey !== 'original') applyRatio(state.ratioKey);
-      window.__offlineEditorRatio = { key: state.ratioKey, w: state.w, h: state.h };
+      applyRatio(state.ratioKey);
     } else if (tries++ < 30) {
       setTimeout(tick, 100);
     }
   };
-  // First attempt immediately, then poll for DOM
   setTimeout(tick, 0);
 })();
