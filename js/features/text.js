@@ -1,13 +1,25 @@
 // ================================================================
 //  js/features/text.js
-//  Self-contained Text feature with keyframes + easing + custom values.
-//  Integrates with timelineEngine via placeClipAtTime + custom event.
+//  Multi-instance text editor with per-layer state.
+//
+//  Behaviour
+//  ─────────
+//  • Open with a text clip selected → edit that clip
+//  • Open with NO text clip selected → start a fresh layer
+//  • Any property change → persists to the edited clip live
+//  • "Add Text → Apply" → updates clip if editing, else creates new
 // ================================================================
 
 import { featuresRouter } from './featuresRouter.js';
 import { appState } from '../app.js';
 import { getAnimationList, applyAnimation } from './animations.js';
 import { placeClipAtTime } from '../layers/layersManager.js';
+import {
+  applyTextStyle,
+  refreshCurrent,
+  forceRerender,
+  getTopTextClipAt
+} from '../workspace/textRenderer.js';
 
 export const featureKey = 'text';
 
@@ -35,61 +47,64 @@ const OPTIONS = [
 ];
 
 const EASING_OPTIONS = [
-  { key: 'linear',        label: 'Linear' },
-  { key: 'easeIn',        label: 'Ease In' },
-  { key: 'easeOut',       label: 'Ease Out' },
-  { key: 'easeInOut',     label: 'Ease In-Out' },
-  { key: 'easeInCubic',   label: 'Cubic In' },
-  { key: 'easeOutCubic',  label: 'Cubic Out' },
-  { key: 'easeInOutCubic',label: 'Cubic In-Out' },
-  { key: 'easeInBack',    label: 'Back In' },
-  { key: 'easeOutBack',   label: 'Back Out' },
+  { key: 'linear', label: 'Linear' },
+  { key: 'easeIn', label: 'Ease In' },
+  { key: 'easeOut', label: 'Ease Out' },
+  { key: 'easeInOut', label: 'Ease In-Out' },
+  { key: 'easeInCubic', label: 'Cubic In' },
+  { key: 'easeOutCubic', label: 'Cubic Out' },
+  { key: 'easeInOutCubic', label: 'Cubic In-Out' },
+  { key: 'easeInBack', label: 'Back In' },
+  { key: 'easeOutBack', label: 'Back Out' },
   { key: 'easeInOutBack', label: 'Back In-Out' },
   { key: 'easeOutBounce', label: 'Bounce Out' },
-  { key: 'easeOutElastic',label: 'Elastic Out' }
+  { key: 'easeOutElastic', label: 'Elastic Out' }
 ];
 
-const ts = {
-  content: '',
-  fontFamily: 'Arial',
-  fontSize: 36,
-  fontWeight: 'normal',
-  fontStyle: 'normal',
-  color: '#ffffff',
-  strokeWidth: 0,
-  strokeColor: '#000000',
-  gradientEnabled: false,
-  gradientColor1: '#ff0066',
-  gradientColor2: '#0066ff',
-  gradientAngle: 90,
-  shadowEnabled: false,
-  shadowColor: '#000000',
-  shadowBlur: 8,
-  shadowOffsetX: 2,
-  shadowOffsetY: 2,
-  alignment: 'center',
-  positionX: 50,
-  positionY: 50,
-  scale: 100,
-  rotation: 0,
-  opacity: 100,
-  animation: 'none',
-  animationDuration: 0.6,
+// ─── Default text state ────────────────────────────────────────
+function makeDefaults() {
+  return {
+    content: '',
+    fontFamily: 'Arial',
+    fontSize: 36,
+    fontWeight: 'normal',
+    fontStyle: 'normal',
+    color: '#ffffff',
+    strokeWidth: 0,
+    strokeColor: '#000000',
+    gradientEnabled: false,
+    gradientColor1: '#ff0066',
+    gradientColor2: '#0066ff',
+    gradientAngle: 90,
+    shadowEnabled: false,
+    shadowColor: '#000000',
+    shadowBlur: 8,
+    shadowOffsetX: 2,
+    shadowOffsetY: 2,
+    alignment: 'center',
+    positionX: 50,
+    positionY: 50,
+    scale: 100,
+    rotation: 0,
+    opacity: 100,
+    animation: 'none',
+    animationDuration: 0.6,
+    kfPosition: [],
+    kfScale: [],
+    kfRotation: [],
+    easePosition: 'easeInOut',
+    easeScale: 'easeInOut',
+    easeRotation: 'easeInOut'
+  };
+}
 
-  kfPosition: [],
-  kfScale: [],
-  kfRotation: [],
-
-  easePosition: 'easeInOut',
-  easeScale:    'easeInOut',
-  easeRotation: 'easeInOut'
-};
-
+// ─── Working state (the clip currently being edited) ──────────
+let ts = makeDefaults();
+let editingClipId = null;
 let currentSubView = 'options';
-let overlayEl = null;
-let textLayerId = null;
 let previewRAF = null;
 
+// ─── Router install ────────────────────────────────────────────
 (function installTextRenderer() {
   if (featuresRouter.__textInstalled) return;
   featuresRouter.__textInstalled = true;
@@ -108,453 +123,174 @@ let previewRAF = null;
   };
 })();
 
+// ─── CSS ───────────────────────────────────────────────────────
 const CSS_ID = 'text-styles';
 function injectStyles() {
   if (document.getElementById(CSS_ID)) return;
   const style = document.createElement('style');
   style.id = CSS_ID;
   style.textContent = `
-    .tx-panel {
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-      padding: 10px 8px 14px;
-      overflow-y: auto;
-      overflow-x: hidden;
-      max-height: 72vh;
-      width: 100%;
-      max-width: 100%;
-      min-width: 0;
-      box-sizing: border-box;
-    }
-    .tx-panel * { box-sizing: border-box; }
-
-    .tx-options-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(78px, 1fr));
-      gap: 8px;
-      padding: 2px;
-      width: 100%;
-    }
-    .tx-option-btn {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-      min-height: 76px;
-      padding: 8px 4px;
-      background: var(--surface-2);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      color: var(--text);
-      cursor: pointer;
-      font-family: inherit;
-      transition: all 0.12s ease;
-    }
-    .tx-option-btn:active { background: var(--surface-3); }
-    .tx-option-icon {
-      width: 34px;
-      height: 34px;
-      border-radius: 50%;
-      border: 1px solid var(--border);
-      display: grid;
-      place-items: center;
-      font-size: 16px;
-      background: var(--surface);
-    }
-    .tx-option-label {
-      font-size: 11px;
-      font-weight: 600;
-      text-align: center;
-    }
-
-    .tx-card {
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-      padding: 12px;
-      background: var(--surface-2);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      width: 100%;
-      min-width: 0;
-    }
-    .tx-card-title {
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: var(--muted);
-    }
-
-    .tx-textarea {
-      width: 100%;
-      min-height: 80px;
-      padding: 10px;
-      background: var(--surface);
-      color: var(--text);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      font-size: 14px;
-      font-family: inherit;
-      resize: vertical;
-      outline: none;
-    }
-    .tx-textarea:focus { border-color: var(--accent); }
-    .tx-apply-btn {
-      padding: 10px 16px;
-      min-height: 44px;
-      background: var(--accent);
-      color: #000;
-      border: 0;
-      border-radius: 10px;
-      font-size: 14px;
-      font-weight: 700;
-      cursor: pointer;
-    }
-    .tx-apply-btn:active { opacity: 0.85; }
-
-    .tx-fonts-scroll {
-      display: flex;
-      gap: 8px;
-      overflow-x: auto;
-      overflow-y: hidden;
-      padding: 2px 2px 8px;
-      scroll-snap-type: x proximity;
-      -webkit-overflow-scrolling: touch;
-      width: 100%;
-      min-width: 0;
-    }
-    .tx-font-card {
-      flex: 0 0 auto;
-      min-width: 140px;
-      padding: 12px 14px;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      color: var(--text);
-      cursor: pointer;
-      font-size: 16px;
-      text-align: center;
-      scroll-snap-align: start;
-      transition: all 0.12s ease;
-      font-family: inherit;
-      white-space: nowrap;
-    }
-    .tx-font-card.active {
-      border-color: var(--accent);
-      box-shadow: inset 0 0 0 1px var(--accent);
-      background: var(--surface-2);
-    }
-
-    .tx-row {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      width: 100%;
-      min-width: 0;
-    }
-    .tx-row-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-    }
-    .tx-label {
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--text);
-    }
-    .tx-slider-wrap {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      width: 100%;
-      min-width: 0;
-    }
-    .tx-slider {
-      flex: 1;
-      accent-color: var(--accent);
-      height: 4px;
-      cursor: pointer;
-      min-width: 0;
-    }
-    .tx-num {
-      width: 62px;
-      padding: 4px 6px;
-      background: var(--surface);
-      color: var(--text);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      font-size: 12px;
-      text-align: right;
-      font-variant-numeric: tabular-nums;
-      outline: none;
-      font-family: inherit;
-      flex-shrink: 0;
-    }
-    .tx-num:focus { border-color: var(--accent); }
-
-    .tx-color-row {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      width: 100%;
-      min-width: 0;
-    }
-    .tx-color-input {
-      width: 44px;
-      height: 44px;
-      border-radius: 8px;
-      border: 2px solid var(--border);
-      background: transparent;
-      cursor: pointer;
-      padding: 0;
-      flex-shrink: 0;
-    }
-    .tx-hex {
-      flex: 1;
-      padding: 8px 10px;
-      background: var(--surface);
-      color: var(--text);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      font-size: 13px;
-      font-family: monospace;
-      outline: none;
-      min-width: 0;
-    }
-    .tx-hex:focus { border-color: var(--accent); }
-
-    .tx-chips {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-    .tx-chip {
-      padding: 8px 14px;
-      min-height: 36px;
-      background: var(--surface);
-      color: var(--text);
-      border: 1px solid var(--border);
-      border-radius: 20px;
-      font-size: 12px;
-      font-weight: 600;
-      cursor: pointer;
-      font-family: inherit;
-    }
-    .tx-chip.active {
-      background: var(--accent);
-      color: #000;
-      border-color: var(--accent);
-    }
-
-    .tx-align-row {
-      display: flex;
-      gap: 8px;
-    }
-    .tx-align-btn {
-      flex: 1;
-      padding: 12px;
-      background: var(--surface);
-      color: var(--text);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      font-size: 13px;
-      cursor: pointer;
-      font-family: inherit;
-    }
-    .tx-align-btn.active {
-      background: var(--accent);
-      color: #000;
-      border-color: var(--accent);
-    }
-
-    .tx-kf-section {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      padding-top: 10px;
-      border-top: 1px solid var(--border);
-      width: 100%;
-      min-width: 0;
-    }
-    .tx-kf-title {
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: var(--muted);
-    }
-    .tx-kf-actions {
-      display: flex;
-      gap: 8px;
-    }
-    .tx-kf-btn {
-      flex: 1;
-      padding: 8px 10px;
-      min-height: 38px;
-      border-radius: 8px;
-      font-size: 12px;
-      font-weight: 600;
-      cursor: pointer;
-      font-family: inherit;
-      border: 1px solid var(--border);
-      background: var(--surface);
-      color: var(--text);
-      white-space: nowrap;
-    }
-    .tx-kf-btn.primary {
-      background: var(--accent);
-      color: #000;
-      border-color: var(--accent);
-    }
-    .tx-kf-list {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      max-height: 160px;
-      overflow-y: auto;
-      overflow-x: hidden;
-      width: 100%;
-      min-width: 0;
-    }
-    .tx-kf-item {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 6px 10px;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      font-size: 12px;
-      cursor: pointer;
-    }
-    .tx-kf-time {
-      font-weight: 700;
-      color: var(--accent);
-      min-width: 48px;
-      font-variant-numeric: tabular-nums;
-    }
-    .tx-kf-value {
-      flex: 1;
-      color: var(--muted);
-      font-variant-numeric: tabular-nums;
-      font-size: 11px;
-      min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    .tx-kf-del {
-      background: transparent;
-      border: 0;
-      color: var(--muted);
-      cursor: pointer;
-      font-size: 14px;
-      padding: 2px 6px;
-      flex-shrink: 0;
-    }
-    .tx-kf-empty {
-      font-size: 11px;
-      color: var(--muted);
-      opacity: 0.65;
-      padding: 4px;
-      text-align: center;
-    }
-
-    .tx-ease-row {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      padding-top: 10px;
-      margin-top: 4px;
-      border-top: 1px dashed var(--border);
-      width: 100%;
-      min-width: 0;
-    }
-    .tx-ease-label {
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-      color: var(--muted);
-    }
-    .tx-ease-shelf {
-      display: flex;
-      gap: 8px;
-      width: 100%;
-      min-width: 0;
-      overflow-x: auto;
-      overflow-y: hidden;
-      padding: 2px 2px 8px;
-      scroll-snap-type: x proximity;
-      -webkit-overflow-scrolling: touch;
-      overscroll-behavior-x: contain;
-      scrollbar-width: thin;
-    }
-    .tx-ease-card {
-      flex: 0 0 90px;
-      width: 90px;
-      height: 68px;
-      padding: 4px 4px 3px;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 9px;
-      color: var(--text);
-      cursor: pointer;
-      display: flex;
-      flex-direction: column;
-      gap: 3px;
-      scroll-snap-align: start;
-      transition: border-color 0.12s ease, box-shadow 0.12s ease;
-      font-family: inherit;
-    }
-    .tx-ease-card.active {
-      border-color: var(--accent);
-      box-shadow: inset 0 0 0 1px var(--accent);
-      background: var(--surface-2);
-    }
-    .tx-ease-card-curve {
-      width: 100%;
-      height: 40px;
-      display: block;
-      border-radius: 5px;
-      background: var(--surface-2);
-      flex-shrink: 0;
-    }
-    .tx-ease-card-name {
-      font-size: 9px;
-      font-weight: 600;
-      text-align: center;
-      color: var(--muted);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      line-height: 1.1;
-      letter-spacing: 0.02em;
-    }
-    .tx-ease-card.active .tx-ease-card-name {
-      color: var(--text);
-    }
-
-    .tx-overlay {
-      position: absolute;
-      z-index: 45;
-      pointer-events: none;
-      white-space: pre-wrap;
-      word-break: break-word;
-      max-width: 94%;
-      line-height: 1.15;
-      user-select: none;
-      will-change: transform, opacity;
-    }
+    .tx-panel { display:flex; flex-direction:column; gap:10px; padding:10px 8px 14px; overflow-y:auto; overflow-x:hidden; max-height:72vh; width:100%; max-width:100%; min-width:0; box-sizing:border-box; }
+    .tx-panel * { box-sizing:border-box; }
+    .tx-editing-badge { padding:8px 12px; background:rgba(255,209,102,0.15); border:1px solid #ffd166; border-radius:8px; font-size:11px; color:#ffd166; font-weight:700; letter-spacing:0.04em; }
+    .tx-options-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(78px, 1fr)); gap:8px; padding:2px; width:100%; }
+    .tx-option-btn { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; min-height:76px; padding:8px 4px; background:var(--surface-2); border:1px solid var(--border); border-radius:10px; color:var(--text); cursor:pointer; font-family:inherit; transition:all 0.12s ease; }
+    .tx-option-btn:active { background:var(--surface-3); }
+    .tx-option-icon { width:34px; height:34px; border-radius:50%; border:1px solid var(--border); display:grid; place-items:center; font-size:16px; background:var(--surface); }
+    .tx-option-label { font-size:11px; font-weight:600; text-align:center; }
+    .tx-card { display:flex; flex-direction:column; gap:10px; padding:12px; background:var(--surface-2); border:1px solid var(--border); border-radius:10px; width:100%; min-width:0; }
+    .tx-card-title { font-size:11px; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:var(--muted); }
+    .tx-textarea { width:100%; min-height:80px; padding:10px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:8px; font-size:14px; font-family:inherit; resize:vertical; outline:none; }
+    .tx-textarea:focus { border-color:var(--accent); }
+    .tx-apply-btn { padding:10px 16px; min-height:44px; background:var(--accent); color:#000; border:0; border-radius:10px; font-size:14px; font-weight:700; cursor:pointer; }
+    .tx-apply-btn:active { opacity:0.85; }
+    .tx-fonts-scroll { display:flex; gap:8px; overflow-x:auto; overflow-y:hidden; padding:2px 2px 8px; scroll-snap-type:x proximity; -webkit-overflow-scrolling:touch; width:100%; min-width:0; }
+    .tx-font-card { flex:0 0 auto; min-width:140px; padding:12px 14px; background:var(--surface); border:1px solid var(--border); border-radius:10px; color:var(--text); cursor:pointer; font-size:16px; text-align:center; scroll-snap-align:start; transition:all 0.12s ease; font-family:inherit; white-space:nowrap; }
+    .tx-font-card.active { border-color:var(--accent); box-shadow:inset 0 0 0 1px var(--accent); background:var(--surface-2); }
+    .tx-row { display:flex; flex-direction:column; gap:4px; width:100%; min-width:0; }
+    .tx-row-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+    .tx-label { font-size:12px; font-weight:600; color:var(--text); }
+    .tx-slider-wrap { display:flex; align-items:center; gap:8px; width:100%; min-width:0; }
+    .tx-slider { flex:1; accent-color:var(--accent); height:4px; cursor:pointer; min-width:0; }
+    .tx-num { width:62px; padding:4px 6px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:6px; font-size:12px; text-align:right; font-variant-numeric:tabular-nums; outline:none; font-family:inherit; flex-shrink:0; }
+    .tx-num:focus { border-color:var(--accent); }
+    .tx-color-row { display:flex; align-items:center; gap:10px; width:100%; min-width:0; }
+    .tx-color-input { width:44px; height:44px; border-radius:8px; border:2px solid var(--border); background:transparent; cursor:pointer; padding:0; flex-shrink:0; }
+    .tx-hex { flex:1; padding:8px 10px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:6px; font-size:13px; font-family:monospace; outline:none; min-width:0; }
+    .tx-hex:focus { border-color:var(--accent); }
+    .tx-chips { display:flex; gap:8px; flex-wrap:wrap; }
+    .tx-chip { padding:8px 14px; min-height:36px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:20px; font-size:12px; font-weight:600; cursor:pointer; font-family:inherit; }
+    .tx-chip.active { background:var(--accent); color:#000; border-color:var(--accent); }
+    .tx-align-row { display:flex; gap:8px; }
+    .tx-align-btn { flex:1; padding:12px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:10px; font-size:13px; cursor:pointer; font-family:inherit; }
+    .tx-align-btn.active { background:var(--accent); color:#000; border-color:var(--accent); }
+    .tx-kf-section { display:flex; flex-direction:column; gap:8px; padding-top:10px; border-top:1px solid var(--border); width:100%; min-width:0; }
+    .tx-kf-title { font-size:11px; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:var(--muted); }
+    .tx-kf-actions { display:flex; gap:8px; }
+    .tx-kf-btn { flex:1; padding:8px 10px; min-height:38px; border-radius:8px; font-size:12px; font-weight:600; cursor:pointer; font-family:inherit; border:1px solid var(--border); background:var(--surface); color:var(--text); white-space:nowrap; }
+    .tx-kf-btn.primary { background:var(--accent); color:#000; border-color:var(--accent); }
+    .tx-kf-list { display:flex; flex-direction:column; gap:4px; max-height:160px; overflow-y:auto; overflow-x:hidden; width:100%; min-width:0; }
+    .tx-kf-item { display:flex; align-items:center; gap:8px; padding:6px 10px; background:var(--surface); border:1px solid var(--border); border-radius:8px; font-size:12px; cursor:pointer; }
+    .tx-kf-time { font-weight:700; color:var(--accent); min-width:48px; font-variant-numeric:tabular-nums; }
+    .tx-kf-value { flex:1; color:var(--muted); font-variant-numeric:tabular-nums; font-size:11px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .tx-kf-del { background:transparent; border:0; color:var(--muted); cursor:pointer; font-size:14px; padding:2px 6px; flex-shrink:0; }
+    .tx-kf-empty { font-size:11px; color:var(--muted); opacity:0.65; padding:4px; text-align:center; }
+    .tx-ease-row { display:flex; flex-direction:column; gap:6px; padding-top:10px; margin-top:4px; border-top:1px dashed var(--border); width:100%; min-width:0; }
+    .tx-ease-label { font-size:11px; font-weight:700; letter-spacing:0.06em; text-transform:uppercase; color:var(--muted); }
+    .tx-ease-shelf { display:flex; gap:8px; width:100%; min-width:0; overflow-x:auto; overflow-y:hidden; padding:2px 2px 8px; scroll-snap-type:x proximity; -webkit-overflow-scrolling:touch; }
+    .tx-ease-card { flex:0 0 90px; width:90px; height:68px; padding:4px 4px 3px; background:var(--surface); border:1px solid var(--border); border-radius:9px; color:var(--text); cursor:pointer; display:flex; flex-direction:column; gap:3px; scroll-snap-align:start; font-family:inherit; }
+    .tx-ease-card.active { border-color:var(--accent); box-shadow:inset 0 0 0 1px var(--accent); background:var(--surface-2); }
+    .tx-ease-card-curve { width:100%; height:40px; display:block; border-radius:5px; background:var(--surface-2); flex-shrink:0; }
+    .tx-ease-card-name { font-size:9px; font-weight:600; text-align:center; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; line-height:1.1; }
+    .tx-ease-card.active .tx-ease-card-name { color:var(--text); }
   `;
   document.head.appendChild(style);
 }
 
+// ─── Load selection or start fresh ────────────────────────────
+function loadFromSelection() {
+  const el = document.querySelector('.clip.selected');
+  if (el && el.dataset.clipType === 'text/plain') {
+    const trackLabel = el.dataset.track || '';
+    const trackIdx = Number(trackLabel.slice(1)) - 1;
+    const clipIdx = Number(el.dataset.clip);
+    if (Number.isFinite(trackIdx) && Number.isFinite(clipIdx)) {
+      const track = appState.timeline.visual[trackIdx];
+      const clip = track && track[clipIdx];
+      if (clip && clip.__textId) {
+        ts = Object.assign(makeDefaults(), clip.textState || {});
+        editingClipId = clip.__textId;
+        return true;
+      }
+    }
+  }
+  // No text clip selected → start fresh
+  ts = makeDefaults();
+  editingClipId = null;
+  return false;
+}
+
+// ─── Persist changes to the edited clip ──────────────────────
+function syncToClip() {
+  if (!editingClipId) return false;
+
+  const tracks = appState.timeline.visual || [];
+  for (let t = 0; t < tracks.length; t++) {
+    const track = tracks[t];
+    if (!Array.isArray(track)) continue;
+    for (let c = 0; c < track.length; c++) {
+      const clip = track[c];
+      if (clip && clip.__textId === editingClipId) {
+        clip.textState = Object.assign({}, ts);
+        clip.name = ts.content || clip.name;
+        document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
+        forceRerender();
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// ─── Create a brand-new text clip ─────────────────────────────
+function createNewTextClip() {
+  if (!ts.content) return null;
+  if (!Array.isArray(appState.timeline.visual)) appState.timeline.visual = [];
+
+  const eng = window.__playbackEngine;
+  const atTime = eng ? eng.getTime() : 0;
+  const dur = 3;
+
+  editingClipId = 'tx-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+
+  const clipData = {
+    name: ts.content,
+    url: 'text://' + editingClipId,
+    type: 'text/plain',
+    __textId: editingClipId,
+    textState: Object.assign({}, ts),
+    startTime: atTime,
+    duration: dur
+  };
+
+  placeClipAtTime(appState.timeline.visual, clipData, atTime);
+  document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
+  forceRerender();
+  return editingClipId;
+}
+
+// ─── Refresh live overlay (during editing) ────────────────────
+function refreshOverlay() {
+  if (editingClipId) {
+    // Update clip's textState so timeline clip keeps latest values
+    const tracks = appState.timeline.visual || [];
+    for (const track of tracks) {
+      if (!Array.isArray(track)) continue;
+      for (const clip of track) {
+        if (clip && clip.__textId === editingClipId) {
+          clip.textState = Object.assign({}, ts);
+          break;
+        }
+      }
+    }
+  }
+  // Update live overlay directly (paused state)
+  const wrap = document.querySelector('#preview-canvas-wrap');
+  if (wrap) {
+    let el = wrap.querySelector('.tx-overlay');
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'tx-overlay';
+      wrap.appendChild(el);
+    }
+    applyTextStyle(el, ts);
+    el.style.display = ts.content ? '' : 'none';
+  }
+}
+
+// ─── Router entry ──────────────────────────────────────────────
 export function open({ router }) {
+  loadFromSelection();
   currentSubView = 'options';
   router.openLevel('text', [], {
     title: 'Text',
@@ -563,7 +299,8 @@ export function open({ router }) {
   });
 }
 
-export function renderTo(container, titleEl) {
+// ─── Main render ───────────────────────────────────────────────
+export function renderTo(container) {
   injectStyles();
   installBackInterceptor(container);
   renderCurrent(container);
@@ -592,6 +329,14 @@ function renderCurrent(container) {
   const panel = document.createElement('div');
   panel.className = 'tx-panel';
   container.appendChild(panel);
+
+  // Editing badge
+  if (editingClipId) {
+    const badge = document.createElement('div');
+    badge.className = 'tx-editing-badge';
+    badge.textContent = '✏️ Editing selected text layer';
+    panel.appendChild(badge);
+  }
 
   switch (currentSubView) {
     case 'options':    renderOptions(panel); break;
@@ -656,7 +401,9 @@ function renderAddText(panel) {
 
   const title = document.createElement('div');
   title.className = 'tx-card-title';
-  title.textContent = 'Type your text';
+  title.textContent = editingClipId
+    ? 'Edit text of selected layer'
+    : 'Type your text (new layer)';
 
   const ta = document.createElement('textarea');
   ta.className = 'tx-textarea';
@@ -666,14 +413,19 @@ function renderAddText(panel) {
   const apply = document.createElement('button');
   apply.type = 'button';
   apply.className = 'tx-apply-btn';
-  apply.textContent = '✓ Apply';
+  apply.textContent = editingClipId ? '✓ Update Layer' : '✓ Create Layer';
 
   apply.addEventListener('click', () => {
     const val = ta.value.trim();
     if (!val) return;
     ts.content = val;
-    commitTextToPreview();
-    commitTextToTimeline();
+
+    if (editingClipId) {
+      syncToClip();
+    } else {
+      createNewTextClip();
+    }
+    refreshOverlay();
     goto('options');
   });
 
@@ -707,6 +459,7 @@ function renderFonts(panel) {
       scroll.querySelectorAll('.tx-font-card').forEach(x => x.classList.remove('active'));
       btn.classList.add('active');
       refreshOverlay();
+      syncToClip();
     });
 
     scroll.appendChild(btn);
@@ -727,11 +480,13 @@ function renderStroke(panel) {
   card.appendChild(makeSlider('Width', 0, 30, 1, ts.strokeWidth, v => {
     ts.strokeWidth = v;
     refreshOverlay();
+    syncToClip();
   }));
 
   card.appendChild(makeColorRow('Color', ts.strokeColor, v => {
     ts.strokeColor = v;
     refreshOverlay();
+    syncToClip();
   }));
 
   panel.appendChild(card);
@@ -749,6 +504,7 @@ function renderColor(panel) {
     ts.color = v;
     ts.gradientEnabled = false;
     refreshOverlay();
+    syncToClip();
   }));
 
   panel.appendChild(card);
@@ -773,6 +529,7 @@ function renderGradient(panel) {
     onChip.textContent = ts.gradientEnabled ? 'ON' : 'OFF';
     onChip.classList.toggle('active', ts.gradientEnabled);
     refreshOverlay();
+    syncToClip();
   });
   chips.appendChild(onChip);
   card.appendChild(chips);
@@ -783,6 +540,7 @@ function renderGradient(panel) {
     onChip.textContent = 'ON';
     onChip.classList.add('active');
     refreshOverlay();
+    syncToClip();
   }));
   card.appendChild(makeColorRow('Color B', ts.gradientColor2, v => {
     ts.gradientColor2 = v;
@@ -790,10 +548,12 @@ function renderGradient(panel) {
     onChip.textContent = 'ON';
     onChip.classList.add('active');
     refreshOverlay();
+    syncToClip();
   }));
   card.appendChild(makeSlider('Angle', 0, 360, 1, ts.gradientAngle, v => {
     ts.gradientAngle = v;
     refreshOverlay();
+    syncToClip();
   }));
 
   panel.appendChild(card);
@@ -818,6 +578,7 @@ function renderShadows(panel) {
     onChip.textContent = ts.shadowEnabled ? 'ON' : 'OFF';
     onChip.classList.toggle('active', ts.shadowEnabled);
     refreshOverlay();
+    syncToClip();
   });
   chips.appendChild(onChip);
   card.appendChild(chips);
@@ -828,10 +589,11 @@ function renderShadows(panel) {
     onChip.textContent = 'ON';
     onChip.classList.add('active');
     refreshOverlay();
+    syncToClip();
   }));
-  card.appendChild(makeSlider('Blur',    0, 40, 1, ts.shadowBlur,    v => { ts.shadowBlur = v;    refreshOverlay(); }));
-  card.appendChild(makeSlider('Offset X', -40, 40, 1, ts.shadowOffsetX, v => { ts.shadowOffsetX = v; refreshOverlay(); }));
-  card.appendChild(makeSlider('Offset Y', -40, 40, 1, ts.shadowOffsetY, v => { ts.shadowOffsetY = v; refreshOverlay(); }));
+  card.appendChild(makeSlider('Blur',     0, 40, 1, ts.shadowBlur,    v => { ts.shadowBlur = v;    refreshOverlay(); syncToClip(); }));
+  card.appendChild(makeSlider('Offset X', -40, 40, 1, ts.shadowOffsetX, v => { ts.shadowOffsetX = v; refreshOverlay(); syncToClip(); }));
+  card.appendChild(makeSlider('Offset Y', -40, 40, 1, ts.shadowOffsetY, v => { ts.shadowOffsetY = v; refreshOverlay(); syncToClip(); }));
 
   panel.appendChild(card);
 }
@@ -843,10 +605,6 @@ function renderAlignment(panel) {
   const title = document.createElement('div');
   title.className = 'tx-card-title';
   title.textContent = 'Alignment';
-
-  const hint = document.createElement('div');
-  hint.style.cssText = 'font-size:11px;color:var(--muted);opacity:.7;';
-  hint.textContent = 'Anchor point ke hisaab se text left / center / right shift hota hai.';
 
   const row = document.createElement('div');
   row.className = 'tx-align-row';
@@ -867,11 +625,12 @@ function renderAlignment(panel) {
       row.querySelectorAll('.tx-align-btn').forEach(x => x.classList.remove('active'));
       btn.classList.add('active');
       refreshOverlay();
+      syncToClip();
     });
     row.appendChild(btn);
   });
 
-  card.append(title, hint, row);
+  card.append(title, row);
   panel.appendChild(card);
 }
 
@@ -886,10 +645,12 @@ function renderPosition(panel) {
   card.appendChild(makeSlider('X (%)', 0, 100, 0.1, ts.positionX, v => {
     ts.positionX = v;
     refreshOverlay();
+    syncToClip();
   }));
   card.appendChild(makeSlider('Y (%)', 0, 100, 0.1, ts.positionY, v => {
     ts.positionY = v;
     refreshOverlay();
+    syncToClip();
   }));
 
   card.appendChild(makeKeyframeSection({
@@ -919,6 +680,7 @@ function renderScale(panel) {
   card.appendChild(makeSlider('Size (%)', 10, 300, 0.5, ts.scale, v => {
     ts.scale = v;
     refreshOverlay();
+    syncToClip();
   }));
 
   card.appendChild(makeKeyframeSection({
@@ -947,6 +709,7 @@ function renderRotation(panel) {
   card.appendChild(makeSlider('Angle (°)', -180, 180, 0.5, ts.rotation, v => {
     ts.rotation = v;
     refreshOverlay();
+    syncToClip();
   }));
 
   card.appendChild(makeKeyframeSection({
@@ -975,6 +738,7 @@ function renderOpacity(panel) {
   card.appendChild(makeSlider('Value (%)', 0, 100, 1, ts.opacity, v => {
     ts.opacity = v;
     refreshOverlay();
+    syncToClip();
   }));
 
   panel.appendChild(card);
@@ -1006,6 +770,7 @@ function renderAnimations(panel) {
       scroll.querySelectorAll('.tx-font-card').forEach(x => x.classList.remove('active'));
       btn.classList.add('active');
       replayAnimation();
+      syncToClip();
     });
 
     scroll.appendChild(btn);
@@ -1016,6 +781,7 @@ function renderAnimations(panel) {
   card.appendChild(makeSlider('Duration (s)', 0.2, 3, 0.1, ts.animationDuration, v => {
     ts.animationDuration = v;
     replayAnimation();
+    syncToClip();
   }));
 
   panel.appendChild(card);
@@ -1049,6 +815,7 @@ function makeKeyframeSection({ kind, list, easeKey, capture, format, load }) {
     filtered.sort((a, b) => a.time - b.time);
     list.length = 0;
     filtered.forEach(k => list.push(k));
+    syncToClip();
     refreshCurrentPanel();
   });
 
@@ -1089,14 +856,13 @@ function makeKeyframeSection({ kind, list, easeKey, capture, format, load }) {
         e.stopPropagation();
         const idx = list.indexOf(kf);
         if (idx >= 0) list.splice(idx, 1);
+        syncToClip();
         refreshCurrentPanel();
       });
 
       item.addEventListener('click', () => {
-        const video = document.querySelector('#preview-video');
-        if (video && Number.isFinite(kf.time)) {
-          video.currentTime = kf.time;
-        }
+        const eng = window.__playbackEngine;
+        if (eng && Number.isFinite(kf.time)) eng.seek(kf.time);
         load(kf);
       });
 
@@ -1129,30 +895,12 @@ function makeEasingSelector(easeKey) {
     const card = document.createElement('button');
     card.type = 'button';
     card.className = 'tx-ease-card';
-    card.dataset.ease = opt.key;
     if (ts[easeKey] === opt.key) card.classList.add('active');
 
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.setAttribute('viewBox', '0 0 100 40');
     svg.setAttribute('preserveAspectRatio', 'none');
     svg.classList.add('tx-ease-card-curve');
-
-    const mid = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-    mid.setAttribute('x1', '0');   mid.setAttribute('y1', '20');
-    mid.setAttribute('x2', '100'); mid.setAttribute('y2', '20');
-    mid.setAttribute('stroke', 'rgba(255,255,255,0.08)');
-    mid.setAttribute('stroke-width', '0.6');
-    svg.appendChild(mid);
-
-    const dotA = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-    dotA.setAttribute('cx', '4');   dotA.setAttribute('cy', '36');
-    dotA.setAttribute('r', '1.8');
-    dotA.setAttribute('fill', 'var(--muted)');
-    const dotB = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-    dotB.setAttribute('cx', '96');  dotB.setAttribute('cy', '4');
-    dotB.setAttribute('r', '1.8');
-    dotB.setAttribute('fill', 'var(--muted)');
-    svg.append(dotA, dotB);
 
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     path.setAttribute('fill', 'none');
@@ -1173,6 +921,7 @@ function makeEasingSelector(easeKey) {
       ts[easeKey] = opt.key;
       Object.values(cards).forEach(c => c.classList.remove('active'));
       card.classList.add('active');
+      syncToClip();
     });
 
     cards[opt.key] = card;
@@ -1180,15 +929,6 @@ function makeEasingSelector(easeKey) {
   });
 
   row.appendChild(shelf);
-
-  setTimeout(() => {
-    const active = cards[ts[easeKey]];
-    if (active && shelf.scrollWidth > shelf.clientWidth) {
-      const target = active.offsetLeft - shelf.clientWidth / 2 + active.offsetWidth / 2;
-      shelf.scrollTo({ left: Math.max(0, target), behavior: 'smooth' });
-    }
-  }, 60);
-
   return row;
 }
 
@@ -1209,22 +949,15 @@ function buildCurvePath(ease, w, h, pad) {
 function getEasedValue(t, ease) {
   t = Math.max(0, Math.min(1, t));
   switch (ease) {
-    case 'linear':        return t;
-    case 'easeIn':        return t * t;
-    case 'easeOut':       return 1 - (1 - t) * (1 - t);
-    case 'easeInOut':     return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
-    case 'easeInCubic':   return t * t * t;
-    case 'easeOutCubic':  return 1 - Math.pow(1 - t, 3);
-    case 'easeInOutCubic':
-      return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-    case 'easeInBack': {
-      const c1 = 1.70158, c3 = c1 + 1;
-      return c3 * t * t * t - c1 * t * t;
-    }
-    case 'easeOutBack': {
-      const c1 = 1.70158, c3 = c1 + 1;
-      return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
-    }
+    case 'linear': return t;
+    case 'easeIn': return t * t;
+    case 'easeOut': return 1 - (1 - t) * (1 - t);
+    case 'easeInOut': return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+    case 'easeInCubic': return t * t * t;
+    case 'easeOutCubic': return 1 - Math.pow(1 - t, 3);
+    case 'easeInOutCubic': return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+    case 'easeInBack': { const c1 = 1.70158, c3 = c1 + 1; return c3 * t * t * t - c1 * t * t; }
+    case 'easeOutBack': { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); }
     case 'easeInOutBack': {
       const c1 = 1.70158, c2 = c1 * 1.525;
       return t < 0.5
@@ -1244,8 +977,7 @@ function getEasedValue(t, ease) {
       if (t === 1) return 1;
       return Math.pow(2, -10 * t) * Math.sin((t * 10 - 0.75) * c4) + 1;
     }
-    default:
-      return t;
+    default: return t;
   }
 }
 
@@ -1261,7 +993,7 @@ function previewKeyframes(kind) {
 
   const list =
     kind === 'position' ? ts.kfPosition :
-    kind === 'scale'    ? ts.kfScale    :
+    kind === 'scale'    ? ts.kfScale :
                           ts.kfRotation;
   const lastKf = list[list.length - 1];
   const endTime = lastKf ? lastKf.time : 0;
@@ -1270,10 +1002,7 @@ function previewKeyframes(kind) {
   eng.play();
 
   const loop = () => {
-    if (!eng.isPlaying()) {
-      previewRAF = null;
-      return;
-    }
+    if (!eng.isPlaying()) { previewRAF = null; return; }
     const t = eng.getTime();
 
     if (kind === 'position' && ts.kfPosition.length) {
@@ -1289,7 +1018,7 @@ function previewKeyframes(kind) {
 
     refreshOverlay();
 
-      if (endTime && t >= endTime) {
+    if (endTime && t >= endTime) {
       eng.pause();
       previewRAF = null;
       return;
@@ -1307,8 +1036,7 @@ function stopPreview() {
 function interpolatePosition(t) {
   const kfs = ts.kfPosition;
   if (!kfs.length) return null;
-  if (kfs.length === 1 || t <= kfs[0].time)
-    return { x: kfs[0].x, y: kfs[0].y };
+  if (kfs.length === 1 || t <= kfs[0].time) return { x: kfs[0].x, y: kfs[0].y };
   const last = kfs[kfs.length - 1];
   if (t >= last.time) return { x: last.x, y: last.y };
   for (let i = 0; i < kfs.length - 1; i++) {
@@ -1316,10 +1044,7 @@ function interpolatePosition(t) {
     if (t >= a.time && t <= b.time) {
       const raw = (t - a.time) / (b.time - a.time || 1);
       const local = getEasedValue(raw, ts.easePosition);
-      return {
-        x: a.x + (b.x - a.x) * local,
-        y: a.y + (b.y - a.y) * local
-      };
+      return { x: a.x + (b.x - a.x) * local, y: a.y + (b.y - a.y) * local };
     }
   }
   return { x: last.x, y: last.y };
@@ -1362,9 +1087,9 @@ function interpolateRotation(t) {
 function getCurrentTime() {
   const eng = window.__playbackEngine;
   if (eng && typeof eng.getTime === 'function') return eng.getTime();
-  const video = document.querySelector('#preview-video');
-  return video && Number.isFinite(video.currentTime) ? video.currentTime : 0;
+  return 0;
 }
+
 function formatTime(s) {
   if (!Number.isFinite(s)) s = 0;
   return s.toFixed(2) + 's';
@@ -1467,144 +1192,32 @@ function makeColorRow(label, value, onChange) {
   return row;
 }
 
-function commitTextToPreview() {
-  if (!ts.content) { removeOverlay(); return; }
-  const wrap = document.querySelector('#preview-canvas-wrap');
-  if (!wrap) return;
-
-  if (!overlayEl) {
-    overlayEl = document.createElement('div');
-    overlayEl.className = 'tx-overlay';
-    wrap.appendChild(overlayEl);
-  }
-  overlayEl.textContent = ts.content;
-  applyOverlayStyle();
-  replayAnimation();
-}
-
-function refreshOverlay() {
-  if (!overlayEl) return;
-  applyOverlayStyle();
-}
-
-function applyOverlayStyle() {
-  if (!overlayEl) return;
-  const o = overlayEl;
-
-  o.textContent = ts.content;
-  o.style.fontFamily = `"${ts.fontFamily}", sans-serif`;
-  o.style.fontSize = ts.fontSize + 'px';
-  o.style.fontWeight = ts.fontWeight;
-  o.style.fontStyle = ts.fontStyle;
-  o.style.textAlign = ts.alignment;
-  o.style.opacity = String(Math.max(0, Math.min(100, ts.opacity)) / 100);
-
-  o.style.left = ts.positionX + '%';
-  o.style.top  = ts.positionY + '%';
-
-  let tx = '-50%';
-  let originX = '50%';
-  if (ts.alignment === 'left')   { tx = '0%';   originX = '0%';   }
-  if (ts.alignment === 'right')  { tx = '-100%'; originX = '100%'; }
-
-  o.style.transformOrigin = `${originX} 50%`;
-  o.style.transform =
-    `translate(${tx}, -50%) scale(${ts.scale / 100}) rotate(${ts.rotation}deg)`;
-
-  o.style.setProperty('--tx-scale', ts.scale / 100);
-  o.style.setProperty('--tx-rot', ts.rotation + 'deg');
-
-  if (ts.gradientEnabled) {
-    o.style.background = `linear-gradient(${ts.gradientAngle}deg, ${ts.gradientColor1}, ${ts.gradientColor2})`;
-    o.style.webkitBackgroundClip = 'text';
-    o.style.backgroundClip = 'text';
-    o.style.color = 'transparent';
-    o.style.webkitTextFillColor = 'transparent';
-  } else {
-    o.style.background = 'none';
-    o.style.webkitBackgroundClip = '';
-    o.style.backgroundClip = '';
-    o.style.color = ts.color;
-    o.style.webkitTextFillColor = '';
-  }
-
-  o.style.webkitTextStroke = ts.strokeWidth > 0
-    ? `${ts.strokeWidth}px ${ts.strokeColor}`
-    : '';
-
-  o.style.textShadow = ts.shadowEnabled
-    ? `${ts.shadowOffsetX}px ${ts.shadowOffsetY}px ${ts.shadowBlur}px ${ts.shadowColor}`
-    : '';
-}
-
 function replayAnimation() {
-  if (!overlayEl) return;
+  const wrap = document.querySelector('#preview-canvas-wrap');
+  const el = wrap && wrap.querySelector('.tx-overlay');
+  if (!el) return;
   const key = ts.animation || 'none';
-  applyAnimation(overlayEl, key, ts.animationDuration);
-}
-
-function removeOverlay() {
-  if (overlayEl) { overlayEl.remove(); overlayEl = null; }
-}
-
-// ================================================================
-//  Timeline integration — uses layersManager (collision-aware)
-// ================================================================
-function commitTextToTimeline() {
-  if (!ts.content) return;
-  if (!Array.isArray(appState.timeline.visual)) appState.timeline.visual = [];
-
-  const video = document.querySelector('#preview-video');
-  const atTime = (video && Number.isFinite(video.currentTime)) ? video.currentTime : 0;
-  const dur = 3;
-
-  if (!textLayerId) textLayerId = 'tx-' + Date.now();
-
-  const clipData = {
-    name: ts.content,
-    url: 'text://' + textLayerId,
-    type: 'text/plain',
-    __textId: textLayerId,
-    textState: Object.assign({}, ts),
-    startTime: atTime,
-    duration: dur
-  };
-
-  // Update existing entry if one exists
-  let found = false;
-  for (let t = 0; t < appState.timeline.visual.length; t++) {
-    const track = appState.timeline.visual[t];
-    if (!Array.isArray(track)) continue;
-    const idx = track.findIndex(c => c && c.__textId === textLayerId);
-    if (idx >= 0) {
-      track[idx] = Object.assign({}, track[idx], clipData);
-      found = true;
-      break;
-    }
-  }
-
-  if (!found) {
-    placeClipAtTime(appState.timeline.visual, clipData, atTime);
-  }
-
-  document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
+  applyAnimation(el, key, ts.animationDuration);
 }
 
 function removeText() {
-  removeOverlay();
   stopPreview();
-  ts.content = '';
 
-  if (textLayerId && Array.isArray(appState.timeline.visual)) {
-    for (let t = 0; t < appState.timeline.visual.length; t++) {
-      const track = appState.timeline.visual[t];
+  // Remove the currently edited clip
+  if (editingClipId) {
+    const tracks = appState.timeline.visual || [];
+    for (let t = 0; t < tracks.length; t++) {
+      const track = tracks[t];
       if (!Array.isArray(track)) continue;
-      const idx = track.findIndex(c => c && c.__textId === textLayerId);
+      const idx = track.findIndex(c => c && c.__textId === editingClipId);
       if (idx >= 0) { track.splice(idx, 1); break; }
     }
     document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
   }
-  textLayerId = null;
 
+  // Reset working state
+  ts = makeDefaults();
+  editingClipId = null;
+  forceRerender();
   goto('options');
 }

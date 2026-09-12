@@ -1,3 +1,4 @@
+import { initTextRenderer } from './workspace/textRenderer.js';
 import { featuresRouter } from './features/featuresRouter.js';
 import { initHomeController } from './home/homeController.js';
 import { initRecentProjects } from './home/recentProjects.js';
@@ -188,6 +189,8 @@ async function bootstrap() {
     redo: document.querySelector('#redo-btn'),
     engine: playbackEngine
   });
+    // 🆕 Runtime text overlay renderer
+  initTextRenderer();
 
   registerFeatures();
   featuresRouter.init({
