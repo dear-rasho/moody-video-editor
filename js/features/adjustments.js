@@ -38,7 +38,14 @@ let sliderRefs = {};
 let rafPending = false;
 
 // ─── Contain-fit draw helper ───────────────────────────────────
+// ─── Contain-fit draw helper ───────────────────────────────────
+// ─── Ratio-aware draw helper ───────────────────────────────────
 function drawVideoContained(ctx, video, canvas) {
+  if (typeof window.__previewDrawVideo === 'function') {
+    window.__previewDrawVideo(ctx, video, canvas);
+    return;
+  }
+  // Fallback (previewCanvas not initialized yet)
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   const rectFn = window.__previewContainRect;
@@ -84,8 +91,11 @@ export function renderTo(container) {
     const right = document.createElement('div');
     right.style.cssText = 'display:flex;align-items:center;gap:8px;';
 
+    // ✅ Restore from persisted state
+    const initialValue = state[adj.key] || 0;
+
     const valueDisplay = document.createElement('span');
-    valueDisplay.textContent = '0';
+    valueDisplay.textContent = initialValue > 0 ? `+${initialValue}` : `${initialValue}`;
     valueDisplay.style.cssText =
       'font-size:12px;font-weight:600;min-width:40px;text-align:right;' +
       'color:var(--muted);font-variant-numeric:tabular-nums;';
@@ -117,7 +127,7 @@ export function renderTo(container) {
     slider.min = -100;
     slider.max = 100;
     slider.step = 1;
-    slider.value = 0;
+    slider.value = initialValue;    // ✅ Restore
     slider.style.cssText =
       'width:100%;accent-color:var(--accent);height:4px;cursor:pointer;';
 
@@ -133,6 +143,10 @@ export function renderTo(container) {
 
     sliderRefs[adj.key] = { slider, valueDisplay };
   });
+
+  // ✅ Re-apply existing adjustments when panel reopens
+  const anyActive = ADJUSTMENTS.some(a => state[a.key] !== 0);
+  if (anyActive) scheduleApply();
 }
 
 function scheduleApply() {
@@ -144,10 +158,16 @@ function scheduleApply() {
   });
 }
 
+
 function applyAdjustments() {
   const canvas = document.querySelector('#preview-canvas');
   const video  = document.querySelector('#preview-video');
   if (!canvas) return;
+
+  // ✅ Only apply when video is actually ready — avoids cumulative
+  //    double-processing on the canvas.
+  if (!video || video.readyState < 2 || !video.videoWidth) return;
+
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) return;
 
@@ -156,16 +176,15 @@ function applyAdjustments() {
   temp.height = canvas.height;
   const tCtx = temp.getContext('2d', { willReadFrequently: true });
 
-  if (video && video.readyState >= 2 && video.videoWidth > 0) {
-    drawVideoContained(tCtx, video, canvas);
-  } else {
-    tCtx.drawImage(canvas, 0, 0);
-  }
+  drawVideoContained(tCtx, video, canvas);   // always fresh from video
+
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.drawImage(temp, 0, 0);
 
   const anyActive = ADJUSTMENTS.some(a => state[a.key] !== 0);
   if (!anyActive) return;
+
+  // ... rest unchanged (the pixel loop)
 
   const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const data = imgData.data;

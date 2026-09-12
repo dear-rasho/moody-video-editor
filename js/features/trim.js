@@ -1,12 +1,12 @@
 // ================================================================
 //  js/features/trim.js
 //  Split + Trim Left + Trim Right (replaces 'delete').
-//  REQUIRES a clip to be selected in the timeline first.
-//  Options are shown in a HORIZONTALLY SCROLLABLE shelf.
+//  Auto-selects first clip. Propagates trim to linked clips.
 // ================================================================
 
 import { featuresRouter } from './featuresRouter.js';
 import { appState } from '../app.js';
+import { applyTrimToLinked } from '../workspace/clipLink.js';
 
 export const featureKey = 'trim';
 
@@ -38,7 +38,6 @@ function injectStyles() {
   const s = document.createElement('style');
   s.id = CSS_ID;
   s.textContent = [
-    /* ─── Panel shell ─── */
     '.tr-panel{',
     '  display:flex;',
     '  flex-direction:column;',
@@ -52,7 +51,6 @@ function injectStyles() {
     '}',
     '.tr-panel *{box-sizing:border-box;}',
 
-    /* ─── Info bar ─── */
     '.tr-info{',
     '  display:flex;',
     '  align-items:center;',
@@ -87,7 +85,6 @@ function injectStyles() {
     '  max-width:140px;',
     '}',
 
-    /* ─── Swipe hint ─── */
     '.tr-hint{',
     '  font-size:10px;',
     '  color:var(--muted);',
@@ -98,7 +95,6 @@ function injectStyles() {
     '  flex:0 0 auto;',
     '}',
 
-    /* ─── Horizontal scrollable shelf ─── */
     '.tr-shelf{',
     '  display:flex;',
     '  flex-direction:row;',
@@ -120,7 +116,6 @@ function injectStyles() {
     '  border-radius:3px;',
     '}',
 
-    /* ─── Action card ─── */
     '.tr-btn{',
     '  flex:0 0 150px;',
     '  width:150px;',
@@ -184,7 +179,6 @@ function injectStyles() {
     '  letter-spacing:0.01em;',
     '}',
 
-    /* ─── Empty / warning state ─── */
     '.tr-empty{',
     '  display:flex;',
     '  flex-direction:column;',
@@ -224,7 +218,6 @@ function injectStyles() {
     '  color:#ff9e9e;',
     '}',
 
-    /* ─── Small screens ─── */
     '@media (max-width:380px){',
     '  .tr-btn{flex:0 0 130px;width:130px;min-height:110px;padding:12px 10px;}',
     '  .tr-btn-icon{width:34px;height:34px;font-size:16px;}',
@@ -283,6 +276,31 @@ function commit() {
   document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
 }
 
+// ✅ Auto-select first clip if none is selected
+function autoSelectFirstClip(group) {
+  if (document.querySelector('.clip.selected')) return true;
+
+  const clips = document.querySelectorAll('.clip');
+  for (let i = 0; i < clips.length; i++) {
+    const el = clips[i];
+    const track = el.dataset.track || '';
+    const isAudio = track.charAt(0) === 'A';
+
+    if (group === 'audio'  && !isAudio) continue;
+    if (group === 'visual' &&  isAudio) continue;
+
+    try {
+      el.dispatchEvent(new MouseEvent('mousedown', {
+        bubbles: true,
+        cancelable: true,
+        button: 0
+      }));
+      return true;
+    } catch (_) {}
+  }
+  return false;
+}
+
 // ═══════════════════════════════════════════════════════════════
 //  Toast
 // ═══════════════════════════════════════════════════════════════
@@ -330,6 +348,11 @@ function showToast(message, ok) {
 export function renderTo(container) {
   injectStyles();
   container.replaceChildren();
+
+  // ✅ Auto-select first clip if nothing is selected
+  if (!document.querySelector('.clip.selected')) {
+    autoSelectFirstClip('any');
+  }
 
   const panel = document.createElement('div');
   panel.className = 'tr-panel';
@@ -493,15 +516,28 @@ function doSplit() {
   const firstDur  = playhead - r.start;
   const secondDur = r.end - playhead;
 
+  const origSourceIn = Number.isFinite(sel.clip.sourceIn) ? sel.clip.sourceIn : 0;
+
   sel.clip.startTime = r.start;
   sel.clip.duration  = firstDur;
+  sel.clip.sourceIn  = origSourceIn;
+  sel.clip.__trimmed = true;
 
   const second = Object.assign({}, sel.clip, {
     startTime: playhead,
     duration: secondDur,
-    name: (sel.clip.name || 'Clip') + ' (split)'
+    sourceIn: origSourceIn + firstDur,
+    name: (sel.clip.name || 'Clip') + ' (split)',
+    __trimmed: true
   });
   sel.track.splice(sel.clipIndex + 1, 0, second);
+
+  // 🆕 Propagate to linked clips (auto audio)
+  applyTrimToLinked(sel.clip, {
+    startTime: sel.clip.startTime,
+    duration:  sel.clip.duration,
+    sourceIn:  sel.clip.sourceIn
+  });
 
   commit();
   showToast('Split at ' + playhead.toFixed(2) + 's');
@@ -519,8 +555,18 @@ function doTrimLeft() {
     return;
   }
 
+  const cutAmount = playhead - r.start;
   sel.clip.startTime = playhead;
   sel.clip.duration  = r.end - playhead;
+  sel.clip.sourceIn  = (Number.isFinite(sel.clip.sourceIn) ? sel.clip.sourceIn : 0) + cutAmount;
+  sel.clip.__trimmed = true;
+
+  // 🆕 Propagate to linked clips (auto audio)
+  applyTrimToLinked(sel.clip, {
+    startTime: sel.clip.startTime,
+    duration:  sel.clip.duration,
+    sourceIn:  sel.clip.sourceIn
+  });
 
   commit();
   showToast('Trimmed left');
@@ -540,6 +586,14 @@ function doTrimRight() {
 
   sel.clip.startTime = r.start;
   sel.clip.duration  = playhead - r.start;
+  sel.clip.__trimmed = true;
+
+  // 🆕 Propagate to linked clips (auto audio)
+  applyTrimToLinked(sel.clip, {
+    startTime: sel.clip.startTime,
+    duration:  sel.clip.duration,
+    sourceIn:  sel.clip.sourceIn
+  });
 
   commit();
   showToast('Trimmed right');

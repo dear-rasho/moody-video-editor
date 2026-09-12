@@ -113,6 +113,39 @@ export function initPreviewCanvas({ canvas, video, empty }) {
 
   // Expose for other modules
   window.__previewContainRect = containRect;
+  
+
+  // ─── Shared draw helper for feature modules ───────────────────
+  // Features (adjustments, chromakey, colorWheel, …) redraw the
+  // video into the preview canvas. They must respect the SAME ratio
+  // logic as the main draw path, otherwise they revert the preview
+  // to the video's native aspect ratio.
+  window.__previewDrawVideo = function (ctx, videoEl, canvasEl) {
+    if (!ctx || !videoEl || !canvasEl) return;
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, canvasEl.width, canvasEl.height);
+
+    const vw = videoEl.videoWidth;
+    const vh = videoEl.videoHeight;
+    if (!vw || !vh || videoEl.readyState < 2) return;
+
+    const ratio = getTargetRatio();
+    try {
+      if (!ratio) {
+        // No ratio selected → contain-fit (letterbox)
+        const r = containRect(vw, vh, canvasEl.width, canvasEl.height);
+        ctx.drawImage(videoEl, r.x, r.y, r.w, r.h);
+      } else {
+        // Ratio selected → cover-fit (crop overflow)
+        const s = coverSourceRect(vw, vh, canvasEl.width, canvasEl.height);
+        ctx.drawImage(
+          videoEl,
+          s.sx, s.sy, s.sw, s.sh,
+          0, 0, canvasEl.width, canvasEl.height
+        );
+      }
+    } catch (_) {}
+  };
 
   // ─── Draw a video frame ───────────────────────────────────
   function drawVideoFrame() {

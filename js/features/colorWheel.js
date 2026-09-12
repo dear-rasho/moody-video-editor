@@ -20,7 +20,13 @@ let hdrSlider, hdrDisplay;
 let resizeObserver;
 
 // ─── Contain-fit draw helper ───────────────────────────────────
+// ─── Contain-fit draw helper ───────────────────────────────────
+// ─── Ratio-aware draw helper ───────────────────────────────────
 function drawVideoContained(ctx, video, canvas) {
+  if (typeof window.__previewDrawVideo === 'function') {
+    window.__previewDrawVideo(ctx, video, canvas);
+    return;
+  }
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   const rectFn = window.__previewContainRect;

@@ -9,6 +9,7 @@ import { initMediaLibrary } from './workspace/mediaLibrary.js';
 import { initPlaybackControls } from './workspace/playbackControls.js';
 import { initTimelineEngine } from './workspace/timelineEngine.js';
 import { initTimelinePlayhead } from './workspace/timelinePlayhead.js';
+import { initTrimPlayback } from './workspace/trimPlayback.js';   // 🆕
 import { injectQuickLayerButtons } from './layers/layersManager.js';
 import { initKeyframeEngine } from './features/keyframeEngine.js';
 import { initHistory } from './workspace/historyManager.js';
@@ -185,6 +186,9 @@ async function bootstrap() {
     }
   });
 
+  // 🆕 Trimmed portion play nahi hoga
+  initTrimPlayback(previewVideo);
+
   registerFeatures();
   featuresRouter.init({
     shelf: elements.featureShelf,
@@ -196,7 +200,7 @@ async function bootstrap() {
     showPage('dashboard');
   });
 
-  // 🆕 Export button → open settings panel
+  // Export button → open settings panel
   const exportBtn = document.querySelector('#export-btn');
   if (exportBtn) {
     exportBtn.addEventListener('click', function (e) {

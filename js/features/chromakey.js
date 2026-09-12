@@ -1,9 +1,7 @@
 // ================================================================
 //  js/features/chromakey.js
-//  All 4 properties (Similarity, Smoothness, Spill, Intensity)
-//  live in a single HORIZONTALLY scrollable shelf.
-//  The panel itself is vertically scrollable with a generous
-//  bottom gap so nothing gets cut on any mobile screen.
+//  Chroma key panel with 4 properties + interactive color picker.
+//  Ratio-aware redraw via window.__previewDrawVideo.
 // ================================================================
 
 export const featureKey = 'chromakey';
@@ -22,8 +20,13 @@ let rafPending = false;
 let loupeEl = null;
 let hoverColor = null;
 
-// ─── Contain-fit draw helper ───────────────────────────────────
+// ─── Ratio-aware draw helper ───────────────────────────────────
 function drawVideoContained(ctx, video, canvas) {
+  if (typeof window.__previewDrawVideo === 'function') {
+    window.__previewDrawVideo(ctx, video, canvas);
+    return;
+  }
+  // Fallback if previewCanvas hasn't initialised yet
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   const rectFn = window.__previewContainRect;
@@ -56,9 +59,6 @@ function injectStyles() {
   const style = document.createElement('style');
   style.id = CSS_ID;
   style.textContent = `
-    /* ═══════════════════════════════════════════════════════
-       PANEL — scrollable with generous bottom gap
-       ═══════════════════════════════════════════════════════ */
     .ck-panel {
       display: flex;
       flex-direction: column;
@@ -83,9 +83,6 @@ function injectStyles() {
     }
     .ck-panel * { box-sizing: border-box; }
 
-    /* ═══════════════════════════════════════════════════════
-       COLOR ROW
-       ═══════════════════════════════════════════════════════ */
     .ck-color-row {
       display: flex;
       align-items: center;
@@ -156,9 +153,6 @@ function injectStyles() {
       50% { opacity: 0.6; }
     }
 
-    /* ═══════════════════════════════════════════════════════
-       HORIZONTAL SHELF — all 4 cards here
-       ═══════════════════════════════════════════════════════ */
     .ck-shelf-wrap {
       display: flex;
       flex-direction: column;
@@ -197,9 +191,6 @@ function injectStyles() {
       border-radius: 3px;
     }
 
-    /* ═══════════════════════════════════════════════════════
-       PROPERTY CARD (all 4 use this style)
-       ═══════════════════════════════════════════════════════ */
     .ck-card {
       flex: 0 0 200px;
       width: 200px;
@@ -262,9 +253,6 @@ function injectStyles() {
       min-height: 22px;
     }
 
-    /* ═══════════════════════════════════════════════════════
-       LOUPE
-       ═══════════════════════════════════════════════════════ */
     .ck-loupe {
       position: fixed;
       width: 78px;
@@ -301,9 +289,6 @@ function injectStyles() {
     }
     .ck-picking { cursor: crosshair !important; }
 
-    /* ═══════════════════════════════════════════════════════
-       SMALL SCREENS
-       ═══════════════════════════════════════════════════════ */
     @media (max-width: 380px) {
       .ck-panel {
         padding-bottom: calc(140px + env(safe-area-inset-bottom, 0px));
@@ -456,6 +441,10 @@ export function renderTo(container) {
   updateSwatchUI(state.keyColor);
   updatePickButtonUI();
 
+  // Ensure pick mode is OFF when panel opens
+  if (state.pickMode) togglePickMode(false);
+
+  // Re-apply existing chroma key if any
   if (state.keyColor) scheduleApply();
 }
 
@@ -584,7 +573,7 @@ function onTouchEnd(e) {
 }
 
 function applyKeyColor(rgb) {
-  state.keyColor = { ...rgb };
+  state.keyColor = { r: rgb.r, g: rgb.g, b: rgb.b };
   updateSwatchUI(state.keyColor);
   togglePickMode(false);
   scheduleApply();
@@ -641,16 +630,15 @@ function applyChromaKey() {
   const ctx = getPreviewCtx(canvas);
   if (!ctx) return;
 
+  // If video is not ready yet, do nothing (avoids cumulative processing)
+  if (!video || video.readyState < 2 || !video.videoWidth) return;
+
   const temp = document.createElement('canvas');
   temp.width = canvas.width;
   temp.height = canvas.height;
   const tCtx = temp.getContext('2d', { willReadFrequently: true });
 
-  if (video && video.readyState >= 2 && video.videoWidth > 0) {
-    drawVideoContained(tCtx, video, canvas);
-  } else {
-    tCtx.drawImage(canvas, 0, 0);
-  }
+  drawVideoContained(tCtx, video, canvas);   // always fresh from video
 
   if (!state.keyColor) {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -661,7 +649,9 @@ function applyChromaKey() {
   const imgData = tCtx.getImageData(0, 0, canvas.width, canvas.height);
   const data = imgData.data;
 
-  const { r: kr, g: kg, b: kb } = state.keyColor;
+  const kr = state.keyColor.r;
+  const kg = state.keyColor.g;
+  const kb = state.keyColor.b;
   const similarity = state.similarity / 100;
   const smoothness = state.smoothness / 100;
   const intensity  = state.intensity / 100;
