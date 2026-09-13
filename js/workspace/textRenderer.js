@@ -1,12 +1,13 @@
 // ================================================================
 //  js/workspace/textRenderer.js
-//  Renders ALL active text clips simultaneously (multi-layer).
-//  Respects hidden tracks.
+//  Renders ALL active text clips + samples keyframes.
+//  Text stays on ONE LINE during animation (no auto-wrap).
 // ================================================================
 
 import { applyAnimation } from '../features/animations.js';
+import { hasAnyKeyframes, sample } from './keyframeStore.js';
 
-const overlays = new Map(); // textId -> { el, lastAnimKey }
+const overlays = new Map();
 let wrapEl = null;
 
 const CSS_ID = 'text-renderer-styles';
@@ -18,13 +19,16 @@ function injectStyles() {
     .tx-overlay {
       position: absolute;
       pointer-events: none;
-      white-space: pre-wrap;
-      word-break: break-word;
-      max-width: 94%;
+      /* 🆕 Respect user newlines ONLY — no auto-wrap during animation */
+      white-space: pre;
+      /* No word-break */
+      max-width: none;
       line-height: 1.15;
       user-select: none;
       -webkit-user-select: none;
       will-change: transform, opacity;
+      /* Keep text crisp on scaled/rotated state */
+      backface-visibility: hidden;
     }
   `;
   document.head.appendChild(s);
@@ -36,7 +40,6 @@ function ensureWrap() {
   return wrapEl;
 }
 
-// ─── Public: apply a textState to an overlay element ──────────
 export function applyTextStyle(el, ts) {
   if (!el || !ts) return;
 
@@ -89,7 +92,6 @@ export function applyTextStyle(el, ts) {
     : '';
 }
 
-// ─── Get ALL active text clips at time (respects hidden) ─────
 export function getActiveTextClipsAt(time) {
   const appState = window.__appState;
   if (!appState) return [];
@@ -117,14 +119,25 @@ export function getActiveTextClipsAt(time) {
   return result;
 }
 
-// Kept for compatibility
 export function getTopTextClipAt(time) {
   const active = getActiveTextClipsAt(time);
   if (!active.length) return null;
   return active[active.length - 1].clip;
 }
 
-// ─── Render all active text clips at a given timeline time ────
+// ─── Sample keyframe-animated transform onto text state ───────
+function sampleTextState(clip, time) {
+  const ts = clip.textState || {};
+  if (!hasAnyKeyframes(clip)) return ts;
+
+  const eff = Object.assign({}, ts);
+  eff.positionX = sample(clip, 'x', time, ts.positionX != null ? ts.positionX : 50);
+  eff.positionY = sample(clip, 'y', time, ts.positionY != null ? ts.positionY : 50);
+  eff.scale = sample(clip, 'scale', time, ts.scale != null ? ts.scale : 100);
+  eff.rotation = sample(clip, 'rotation', time, ts.rotation != null ? ts.rotation : 0);
+  return eff;
+}
+
 export function renderAtTime(time) {
   injectStyles();
   const wrap = ensureWrap();
@@ -148,7 +161,7 @@ export function renderAtTime(time) {
       overlays.set(id, entry);
     }
 
-    const ts = clip.textState || {};
+    const ts = sampleTextState(clip, time);
     applyTextStyle(entry.el, ts);
     entry.el.style.zIndex = String(40 + trackIndex);
     entry.el.style.display = '';
@@ -162,7 +175,6 @@ export function renderAtTime(time) {
     }
   }
 
-  // Remove overlays for clips no longer active
   overlays.forEach(function (entry, id) {
     if (!seen.has(id)) {
       try { entry.el.remove(); } catch (_) {}
@@ -171,7 +183,6 @@ export function renderAtTime(time) {
   });
 }
 
-// ─── Force re-render (clears animation state so it replays) ───
 export function forceRerender() {
   overlays.forEach(function (entry) {
     entry.lastAnimKey = null;
@@ -180,13 +191,11 @@ export function forceRerender() {
   renderAtTime(eng ? eng.getTime() : 0);
 }
 
-// ─── Called by editor panel after in-panel changes ────────────
 export function refreshCurrent() {
   const eng = window.__playbackEngine;
   renderAtTime(eng ? eng.getTime() : 0);
 }
 
-// ─── Remove overlays ──────────────────────────────────────────
 export function removeOverlay() {
   overlays.forEach(function (entry) {
     try { entry.el.remove(); } catch (_) {}
@@ -194,7 +203,6 @@ export function removeOverlay() {
   overlays.clear();
 }
 
-// ─── Init ─────────────────────────────────────────────────────
 export function initTextRenderer() {
   injectStyles();
 
@@ -208,6 +216,14 @@ export function initTextRenderer() {
   });
 
   document.addEventListener('effects:refresh', function () {
+    forceRerender();
+  });
+
+  document.addEventListener('keyframe:changed', function () {
+    forceRerender();
+  });
+
+  document.addEventListener('transform:changed', function () {
     forceRerender();
   });
 

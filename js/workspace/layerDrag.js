@@ -1,11 +1,6 @@
 // ================================================================
 //  js/workspace/layerDrag.js
-//  Free-form drag & drop for timeline clips (touch + mouse).
-//
-//  - Horizontal drag → change startTime (move layer in time)
-//  - Vertical drag   → move clip between tracks (reorder layers)
-//  - Tap (no drag)   → select clip
-//  - Trim handles    → ignored (handled by trimHandles.js)
+//  Free-form drag & drop — skips trim handles AND kf markers.
 // ================================================================
 
 import { getPixelsPerSecond } from './timelineScaler.js';
@@ -17,46 +12,33 @@ const CSS_ID = 'layer-drag-styles';
 let dragState = null;
 let globalInited = false;
 
-// ─── Public init ──────────────────────────────────────────────
 export function initLayerDrag() {
   if (globalInited) return;
   globalInited = true;
 
   injectStyles();
-
   const viewport = document.querySelector('#timeline-viewport');
   if (!viewport) return;
 
-  // Block native HTML5 drag inside timeline
   document.addEventListener('dragstart', blockNativeDrag, true);
-
-  // Force-remove draggable attributes
   killDraggable(viewport);
 
-  // Watch for new elements (re-renders)
   if (typeof MutationObserver !== 'undefined') {
     const obs = new MutationObserver(() => killDraggable(viewport));
     obs.observe(viewport, { childList: true, subtree: true });
   }
 
-  // Main pointer handler (covers touch + mouse + pen)
   viewport.addEventListener('pointerdown', onPointerDown);
-
-  // Block long-press context menu on clips (mobile)
   viewport.addEventListener('contextmenu', function (e) {
-    if (e.target && e.target.closest && e.target.closest('.clip')) {
-      e.preventDefault();
-    }
+    if (e.target && e.target.closest && e.target.closest('.clip')) e.preventDefault();
   });
 
-  // Safety cleanup
   window.addEventListener('blur', forceCleanup);
   document.addEventListener('visibilitychange', function () {
     if (document.hidden) forceCleanup();
   });
 }
 
-// ─── CSS ──────────────────────────────────────────────────────
 function injectStyles() {
   if (document.getElementById(CSS_ID)) return;
   const s = document.createElement('style');
@@ -72,26 +54,19 @@ function injectStyles() {
     }
     .clip.layer-drag-active {
       z-index: 100 !important;
-      box-shadow:
-        0 0 0 3px var(--accent),
-        0 8px 24px rgba(0,0,0,0.7) !important;
+      box-shadow: 0 0 0 3px var(--accent), 0 8px 24px rgba(0,0,0,0.7) !important;
       opacity: 0.92 !important;
       pointer-events: none !important;
       cursor: grabbing !important;
     }
-    .clip.layer-drag-active .trim-handle {
-      display: none !important;
-    }
+    .clip.layer-drag-active .trim-handle { display: none !important; }
+    .clip.layer-drag-active .kf-marker-layer { display: none !important; }
     .track.layer-drop-target {
       outline: 2px dashed var(--accent) !important;
       outline-offset: -2px !important;
       background: rgba(255,255,255,0.04) !important;
     }
-    .track.layer-drop-target .track-content {
-      background: rgba(255,255,255,0.02);
-    }
-    body.layer-drag-active,
-    body.layer-drag-active * {
+    body.layer-drag-active, body.layer-drag-active * {
       user-select: none !important;
       -webkit-user-select: none !important;
       cursor: grabbing !important;
@@ -100,7 +75,6 @@ function injectStyles() {
   document.head.appendChild(s);
 }
 
-// ─── Native drag blockers ─────────────────────────────────────
 function blockNativeDrag(e) {
   if (e.target && e.target.closest && e.target.closest('#timeline-viewport')) {
     e.preventDefault();
@@ -115,16 +89,14 @@ function killDraggable(viewport) {
   }
 }
 
-// ─── Pointer down ─────────────────────────────────────────────
 function onPointerDown(e) {
   if (dragState) return;
   if (e.pointerType === 'mouse' && e.button !== 0) return;
-
   if (e.target.closest && e.target.closest('.trim-handle')) return;
+  if (e.target.closest && e.target.closest('.kf-marker')) return;
 
   const clipEl = e.target.closest && e.target.closest('.clip');
   if (!clipEl) return;
-
   const trackEl = clipEl.closest('.track');
   if (!trackEl) return;
 
@@ -145,10 +117,7 @@ function onPointerDown(e) {
   if (!clip) return;
 
   dragState = {
-    clip: clip,
-    clipEl: clipEl,
-    trackEl: trackEl,
-    group: group,
+    clip, clipEl, trackEl, group,
     startTrackIdx: trackIdx,
     startClipIdx: clipIdx,
     startClientX: e.clientX,
@@ -165,52 +134,35 @@ function onPointerDown(e) {
   window.addEventListener('pointercancel', onPointerUp);
 }
 
-// ─── Pointer move ─────────────────────────────────────────────
 function onPointerMove(e) {
   if (!dragState) return;
   if (e.pointerId !== dragState.pointerId) return;
-
   const dx = e.clientX - dragState.startClientX;
   const dy = e.clientY - dragState.startClientY;
   const absX = Math.abs(dx);
   const absY = Math.abs(dy);
-
   if (!dragState.mode) {
     if (absX < DRAG_THRESHOLD_PX && absY < DRAG_THRESHOLD_PX) return;
     dragState.mode = (absX >= absY) ? 'h' : 'v';
     enterDragMode();
   }
-
   if (e.cancelable) e.preventDefault();
-
-  if (dragState.mode === 'h') {
-    applyHorizontalDrag(e.clientX);
-  } else {
-    applyVerticalDrag(e.clientX, e.clientY);
-  }
+  if (dragState.mode === 'h') applyHorizontalDrag(e.clientX);
+  else applyVerticalDrag(e.clientX, e.clientY);
 }
 
-// ─── Pointer up ───────────────────────────────────────────────
 function onPointerUp(e) {
   if (!dragState) return;
   if (e.pointerId !== dragState.pointerId) return;
-
   const state = dragState;
   dragState = null;
-
   window.removeEventListener('pointermove', onPointerMove);
   window.removeEventListener('pointerup', onPointerUp);
   window.removeEventListener('pointercancel', onPointerUp);
-
   exitDragMode(state);
 
-  // Tap → select only
-  if (!state.mode) {
-    selectClip(state.clipEl);
-    return;
-  }
+  if (!state.mode) { selectClip(state.clipEl); return; }
 
-  // Commit horizontal move
   if (state.mode === 'h') {
     state.clip.__trimmed = true;
     document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
@@ -218,33 +170,19 @@ function onPointerUp(e) {
     return;
   }
 
-  // Commit vertical move
   const elUnder = document.elementFromPoint(e.clientX, e.clientY);
   const targetTrack = elUnder && elUnder.closest ? elUnder.closest('.track') : null;
-
-  if (targetTrack) {
-    commitVerticalMove(state, targetTrack);
-  } else {
-    // Dropped outside — just reset
-    document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
-  }
+  if (targetTrack) commitVerticalMove(state, targetTrack);
+  else document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
 }
 
-// ─── Enter / exit drag mode ───────────────────────────────────
 function enterDragMode() {
   if (!dragState) return;
   document.body.classList.add('layer-drag-active');
   dragState.clipEl.classList.add('layer-drag-active');
-
-  // Select the dragged clip
   selectClip(dragState.clipEl);
-
-  // Disable viewport scroll during drag
   const vp = document.querySelector('#timeline-viewport');
-  if (vp) {
-    vp.style.overflowX = 'hidden';
-    vp.style.touchAction = 'none';
-  }
+  if (vp) { vp.style.overflowX = 'hidden'; vp.style.touchAction = 'none'; }
 }
 
 function exitDragMode(state) {
@@ -259,72 +197,51 @@ function exitDragMode(state) {
   }
   clearDropHighlight();
   const vp = document.querySelector('#timeline-viewport');
-  if (vp) {
-    vp.style.overflowX = '';
-    vp.style.touchAction = '';
-  }
+  if (vp) { vp.style.overflowX = ''; vp.style.touchAction = ''; }
 }
 
 function clearDropHighlight() {
-  const els = document.querySelectorAll('.track.layer-drop-target');
-  for (let i = 0; i < els.length; i++) els[i].classList.remove('layer-drop-target');
+  document.querySelectorAll('.track.layer-drop-target').forEach(n => n.classList.remove('layer-drop-target'));
 }
 
-// ─── Horizontal drag ──────────────────────────────────────────
 function applyHorizontalDrag(clientX) {
   const s = dragState;
   if (!s) return;
-
   const curTimelineX = getTimelineX(clientX);
   const dx = curTimelineX - s.startTimelineX;
   const dt = dx / s.pps;
-
   const newStart = Math.max(0, s.startStartTime + dt);
   s.clip.startTime = newStart;
-
-  // Live visual update
   s.clipEl.style.transition = 'none';
   s.clipEl.style.left = (newStart * s.pps) + 'px';
 }
 
-// ─── Vertical drag ────────────────────────────────────────────
 function applyVerticalDrag(clientX, clientY) {
   const s = dragState;
   if (!s) return;
-
   const dy = clientY - s.startClientY;
   s.clipEl.style.transition = 'none';
   s.clipEl.style.transform = 'translateY(' + dy + 'px)';
   s.clipEl.style.opacity = '0.6';
-
   clearDropHighlight();
-
   const elUnder = document.elementFromPoint(clientX, clientY);
   const targetTrack = elUnder && elUnder.closest ? elUnder.closest('.track') : null;
   if (!targetTrack) return;
-
-  const targetGroup = targetTrack.dataset.group;
-  if (targetGroup !== s.group) return;
-
+  if (targetTrack.dataset.group !== s.group) return;
   targetTrack.classList.add('layer-drop-target');
 }
 
-// ─── Commit vertical move ─────────────────────────────────────
 function commitVerticalMove(state, targetTrackEl) {
   const appState = window.__appState;
   if (!appState) return;
-
   const targetGroup = targetTrackEl.dataset.group;
   if (targetGroup !== state.group) {
     showToast('Cannot mix visual & audio tracks');
     document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
     return;
   }
-
   const targetTrackIdx = Number(targetTrackEl.dataset.trackIndex);
   if (!Number.isFinite(targetTrackIdx)) return;
-
-  // Same track → nothing to move
   if (targetTrackIdx === state.startTrackIdx) {
     document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
     return;
@@ -335,15 +252,10 @@ function commitVerticalMove(state, targetTrackEl) {
   const dstTrack = list[targetTrackIdx];
   if (!Array.isArray(srcTrack) || !Array.isArray(dstTrack)) return;
 
-  // Remove from source track (by reference — safest)
   const idxInSrc = srcTrack.indexOf(state.clip);
-  if (idxInSrc < 0) {
-    document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
-    return;
-  }
+  if (idxInSrc < 0) { document.dispatchEvent(new CustomEvent('editor:timeline-changed')); return; }
   srcTrack.splice(idxInSrc, 1);
 
-  // Insert into destination — keep original startTime, but insert in sorted order
   const t = Number.isFinite(state.clip.startTime) ? state.clip.startTime : 0;
   let insertIdx = dstTrack.length;
   for (let i = 0; i < dstTrack.length; i++) {
@@ -354,14 +266,11 @@ function commitVerticalMove(state, targetTrackEl) {
   dstTrack.splice(insertIdx, 0, state.clip);
 
   state.clip.__trimmed = true;
-
   document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
-
   reselectByUrl(state.clip.url);
   showToast('Moved to ' + (state.group === 'visual' ? 'V' : 'A') + (targetTrackIdx + 1));
 }
 
-// ─── Helpers ──────────────────────────────────────────────────
 function getTimelineX(clientX) {
   const vp = document.querySelector('#timeline-viewport');
   if (!vp) return clientX;
@@ -373,9 +282,7 @@ function selectClip(clipEl) {
   if (!clipEl) return;
   try {
     clipEl.dispatchEvent(new MouseEvent('mousedown', {
-      bubbles: true,
-      cancelable: true,
-      button: 0
+      bubbles: true, cancelable: true, button: 0
     }));
   } catch (_) {}
 }
@@ -393,16 +300,13 @@ function reselectByUrl(url) {
 function findClipElByUrl(url) {
   const appState = window.__appState;
   if (!appState || !url) return null;
-
   const vTracks = appState.timeline.visual || [];
   for (let t = 0; t < vTracks.length; t++) {
     const track = vTracks[t];
     if (!Array.isArray(track)) continue;
     for (let c = 0; c < track.length; c++) {
       if (track[c] && track[c].url === url) {
-        return document.querySelector(
-          '.clip[data-track="V' + (t + 1) + '"][data-clip="' + c + '"]'
-        );
+        return document.querySelector('.clip[data-track="V' + (t + 1) + '"][data-clip="' + c + '"]');
       }
     }
   }
@@ -412,9 +316,7 @@ function findClipElByUrl(url) {
     if (!Array.isArray(track)) continue;
     for (let c = 0; c < track.length; c++) {
       if (track[c] && track[c].url === url) {
-        return document.querySelector(
-          '.clip[data-track="A' + (t + 1) + '"][data-clip="' + c + '"]'
-        );
+        return document.querySelector('.clip[data-track="A' + (t + 1) + '"][data-clip="' + c + '"]');
       }
     }
   }
@@ -426,29 +328,18 @@ function showToast(msg) {
   const el = document.createElement('div');
   el.textContent = msg;
   el.style.cssText = [
-    'position:fixed',
-    'bottom:110px',
-    'left:50%',
+    'position:fixed','bottom:110px','left:50%',
     'transform:translateX(-50%)',
-    'background:rgba(0,0,0,0.9)',
-    'color:#fff',
-    'padding:8px 18px',
-    'border-radius:20px',
-    'font-size:12px',
-    'font-weight:600',
-    'z-index:9999',
-    'pointer-events:none',
-    'font-family:inherit',
+    'background:rgba(0,0,0,0.9)','color:#fff',
+    'padding:8px 18px','border-radius:20px',
+    'font-size:12px','font-weight:600','z-index:9999',
+    'pointer-events:none','font-family:inherit',
     'box-shadow:0 4px 12px rgba(0,0,0,0.4)',
-    'opacity:0',
-    'transition:opacity 0.15s ease'
+    'opacity:0','transition:opacity 0.15s ease'
   ].join(';');
   document.body.appendChild(el);
-  requestAnimationFrame(function () { el.style.opacity = '1'; });
-  setTimeout(function () {
-    el.style.opacity = '0';
-    setTimeout(function () { el.remove(); }, 200);
-  }, 1100);
+  requestAnimationFrame(() => { el.style.opacity = '1'; });
+  setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.remove(), 200); }, 1100);
 }
 
 function forceCleanup() {

@@ -18,6 +18,9 @@ import { openExportPanel } from './features/export.js';
 import { initEffectRenderer } from './workspace/effectRenderer.js';
 import { initAudioFxRenderer } from './workspace/audioFxRenderer.js';
 import { initLayerDrag } from './workspace/layerDrag.js';
+import { initRatioControl } from './workspace/ratioControl.js';
+import { initKeyframeUI, clearKeyframeSelection, getSelectedKeyframe } from './workspace/keyframeUI.js';
+import * as keyframeStore from './workspace/keyframeStore.js';
 
 import * as featureModules from './features/index.js';
 
@@ -35,7 +38,6 @@ const appState = {
   configurations: {}
 };
 
-// Expose appState globally (used by feature modules)
 window.__appState = appState;
 
 const elements = {
@@ -106,6 +108,8 @@ async function bootstrap() {
     empty: document.querySelector('#preview-empty')
   });
 
+  window.__previewCanvasInstance = preview;
+
   initKeyframeEngine({ video: previewVideo });
 
   previewHud = initPreviewHud({
@@ -113,7 +117,6 @@ async function bootstrap() {
     video: previewVideo
   });
 
-  // Master playback engine
   playbackEngine = initPlaybackEngine({
     canvas: previewCanvas,
     video: previewVideo,
@@ -127,10 +130,7 @@ async function bootstrap() {
 
   window.__playbackEngine = playbackEngine;
 
-  // Visual effect renderer (CSS filters, motion, pixel effects, text, stickers)
   initEffectRenderer();
-
-  // Audio FX real-time router
   initAudioFxRenderer();
 
   initMediaLibrary({
@@ -164,11 +164,8 @@ async function bootstrap() {
     onVisualVisibility: function (label, visible) {
       const trackIdx = Number(label.slice(1)) - 1;
       if (!Number.isFinite(trackIdx)) return;
-      if (visible) {
-        appState.timeline.hiddenVisualTracks.delete(trackIdx);
-      } else {
-        appState.timeline.hiddenVisualTracks.add(trackIdx);
-      }
+      if (visible) appState.timeline.hiddenVisualTracks.delete(trackIdx);
+      else appState.timeline.hiddenVisualTracks.add(trackIdx);
       if (playbackEngine) playbackEngine.redraw();
       document.dispatchEvent(new CustomEvent('effects:refresh'));
     },
@@ -176,11 +173,8 @@ async function bootstrap() {
     onAudioMute: function (label, muted) {
       const trackIdx = Number(label.slice(1)) - 1;
       if (!Number.isFinite(trackIdx)) return;
-      if (muted) {
-        appState.timeline.mutedAudioTracks.add(trackIdx);
-      } else {
-        appState.timeline.mutedAudioTracks.delete(trackIdx);
-      }
+      if (muted) appState.timeline.mutedAudioTracks.add(trackIdx);
+      else appState.timeline.mutedAudioTracks.delete(trackIdx);
     },
 
     onDeleteSelected: function (clip, type) {
@@ -230,7 +224,6 @@ async function bootstrap() {
     getRulerContainer: function () { return document.querySelector('.timeline-ruler'); }
   });
 
-  // Free-form layer drag (touch + mouse) — enables up/down reordering
   initLayerDrag();
 
   initPlaybackControls({
@@ -241,7 +234,21 @@ async function bootstrap() {
     engine: playbackEngine
   });
 
-  // Runtime text overlay renderer
+  initRatioControl(document.querySelector('#ratio-select'));
+
+  window.__keyframeStore = keyframeStore;
+
+  initKeyframeUI(document.querySelector('#keyframe-btn'));
+
+  window.__keyframeUI = {
+    getSelectedKeyframe: getSelectedKeyframe,
+    clearKeyframeSelection: clearKeyframeSelection
+  };
+
+  document.addEventListener('keyframe:selected', function (e) {
+    window.__selectedKeyframe = e.detail || null;
+  });
+
   initTextRenderer();
 
   registerFeatures();

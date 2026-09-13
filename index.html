@@ -45,28 +45,37 @@
             <div id="preview-empty" class="preview-empty"></div>
           </div>
         </section>
-        <!--hello-->
 
         <section id="control-bar" class="control-bar" aria-label="Playback controls">
           <button id="play-btn" class="icon-button" type="button" aria-label="Play">▶</button>
           <button id="delete-btn" class="icon-button" type="button" aria-label="Delete selected layer">▣</button>
           <button id="undo-btn" class="icon-button" type="button" aria-label="Undo">↶</button>
           <button id="redo-btn" class="icon-button" type="button" aria-label="Redo">↷</button>
+          <button id="keyframe-btn" class="icon-button" type="button" aria-label="Add keyframe">◆︎</button>
+          <select id="ratio-select" class="ratio-select" aria-label="Aspect ratio">
+            <option value="original">Orig</option>
+            <option value="16:9">16:9</option>
+            <option value="9:16">9:16</option>
+            <option value="1:1">1:1</option>
+            <option value="4:5">4:5</option>
+            <option value="3:4">3:4</option>
+            <option value="21:9">21:9</option>
+          </select>
           <button id="media-picker-btn" class="action-button" type="button">＋ Media</button>
-<div class="zoom-control">
-  <label for="zoom-slider" class="zoom-label">🔍</label>
-  <input type="range" id="zoom-slider" min="10" max="1000" value="100" aria-label="Timeline zoom">
-  <span id="zoom-value" class="zoom-value">100%</span>
-</div>
+          <div class="zoom-control">
+            <label for="zoom-slider" class="zoom-label">🔍</label>
+            <input type="range" id="zoom-slider" min="10" max="1000" value="100" aria-label="Timeline zoom">
+            <span id="zoom-value" class="zoom-value">100%</span>
+          </div>
           <input id="media-file-input" type="file" accept="video/*,audio/*,image/*" multiple>
           <audio id="preview-audio" preload="metadata"></audio>
         </section>
 
         <section class="timeline-section" aria-labelledby="timeline-title">
           <div class="section-heading">
-  <h2 id="timeline-title">Timeline</h2>
-  <div id="timeline-time" class="timeline-time">00:00 / 00:00</div>
-</div>
+            <h2 id="timeline-title">Timeline</h2>
+            <div id="timeline-time" class="timeline-time">00:00 / 00:00</div>
+          </div>
           <div id="timeline-viewport" class="timeline-viewport" tabindex="0" aria-label="Multi-layer timeline">
             <div id="timeline-matrix" class="timeline-matrix">
               <div id="timeline-playhead" class="timeline-playhead" aria-hidden="true"></div>
@@ -87,8 +96,6 @@
     </main>
   </div>
 
-  <!-- ES6 module graph: one dedicated module per structural/view responsibility. -->
   <script type="module" src="./js/app.js"></script>
-  
 </body>
 </html>

@@ -1,23 +1,7 @@
 // ================================================================
 //  js/features/featuresRouter.js
-//  Lightweight feature router.
-//
-//  Responsibilities:
-//    - Register feature modules by key
-//    - Open / close levels (root → level 1 → level 2)
-//    - Render the feature shelf
-//    - Dispatch to custom panels via `renderMode` (colorWheel,
-//      chromaKey, crop, ratio, text, stickers, filters, adjustments,
-//      soundeffect, audioeffect)
-//    - Forward user selection to the appropriate module's open()
-//
-//  NOTE: All per-feature logic (sliders, canvas processing, etc.)
-//  lives inside each feature module — NOT here.
 // ================================================================
 
-// ═══════════════════════════════════════════════════════════════
-//  DISPLAY META — pretty labels + icons for feature list
-// ═══════════════════════════════════════════════════════════════
 const FEATURE_META = {
   music:        { label: 'Music',       icon: '🎵' },
   effect:       { label: 'Effects',     icon: '✨' },
@@ -27,7 +11,7 @@ const FEATURE_META = {
   textFonts:    { label: 'Fonts',       icon: '🔤' },
   stickers:     { label: 'Stickers',    icon: '😀' },
   motion:       { label: 'Motion',      icon: '🎞️' },
-  split:        { label: 'Split',       icon: '✂️' },
+  transform:    { label: 'Transform',   icon: '🔲' },
   trim:         { label: 'Trim',        icon: '🎯' },
   crop:         { label: 'Crop',        icon: '🖼️' },
   duplicate:    { label: 'Duplicate',   icon: '📋' },
@@ -38,15 +22,11 @@ const FEATURE_META = {
   speed:        { label: 'Speed',       icon: '⏩' },
   chromakey:    { label: 'Chroma Key',  icon: '🟢' },
   reverse:      { label: 'Reverse',     icon: '↩️' },
-  ratio:        { label: 'Ratio',       icon: '📐' },
   adjustments:  { label: 'Adjust',      icon: '🎚️' },
   colorWheel:   { label: 'Color Wheel', icon: '🌈' },
   export:       { label: 'Export',      icon: '💾' }
 };
 
-// ═══════════════════════════════════════════════════════════════
-//  MODULE REGISTRY
-// ═══════════════════════════════════════════════════════════════
 const featureModules = new Map();
 let currentView = { level: 0, key: 'root', title: 'Tools', items: [] };
 const parentHistory = [];
@@ -58,9 +38,6 @@ const state = {
 };
 
 const router = {
-  // ═══════════════════════════════════════════════════════════
-  //  INIT
-  // ═══════════════════════════════════════════════════════════
   init({ shelf, title, backButton }) {
     this.shelf = shelf;
     this.title = title;
@@ -69,14 +46,8 @@ const router = {
     this.render(currentView);
   },
 
-  // ═══════════════════════════════════════════════════════════
-  //  REGISTER
-  // ═══════════════════════════════════════════════════════════
   registerFeature(key, module) { state.register(key, module); },
 
-  // ═══════════════════════════════════════════════════════════
-  //  NAVIGATION
-  // ═══════════════════════════════════════════════════════════
   openLevel(key, items = [], options = {}) {
     parentHistory.push(structuredClone(currentView));
     currentView = {
@@ -93,8 +64,7 @@ const router = {
   openLevel2(key, items = [], options = {}) {
     parentHistory.push(structuredClone(currentView));
     currentView = {
-      level: 2,
-      key,
+      level: 2, key,
       title: options.title ?? key,
       items,
       multi: options.multi || false,
@@ -120,9 +90,6 @@ const router = {
 
   getState() { return structuredClone(currentView); },
 
-  // ═══════════════════════════════════════════════════════════
-  //  RENDER — dispatch to custom panels or feature list
-  // ═══════════════════════════════════════════════════════════
   render(view) {
     if (!this.shelf) return;
     this.title.textContent = view.title;
@@ -131,13 +98,11 @@ const router = {
     this.shelf.style.cssText = '';
     this.shelf.replaceChildren();
 
-    // ─── Custom panels (each feature owns its own renderer) ──
     const CUSTOM_PANELS = {
       colorwheel:       './colorWheel.js',
       adjustmentsPanel: './adjustments.js',
       chromaKeyPanel:   './chromakey.js',
       cropPanel:        './crop.js',
-      ratioPanel:       './ratio.js',
       textPanel:        './text.js',
       stickersPanel:    './stickers.js',
       filtersPanel:     './filters.js',
@@ -145,15 +110,15 @@ const router = {
       soundeffectPanel: './soundeffect.js',
       audioeffectPanel: './audioeffect.js',
       speedPanel:       './speed.js',
-      trimPanel:        './trim.js'
+      trimPanel:        './trim.js',
+      transformPanel:   './transform.js'
+      // ratio panel removed
     };
 
     if (view.renderMode && CUSTOM_PANELS[view.renderMode]) {
       const modulePath = CUSTOM_PANELS[view.renderMode];
       import(modulePath)
-        .then(mod => {
-          if (mod.renderTo) mod.renderTo(this.shelf, this.title);
-        })
+        .then(mod => { if (mod.renderTo) mod.renderTo(this.shelf, this.title); })
         .catch((err) => {
           console.error(`Panel load error (${view.renderMode}):`, err);
           this.shelf.textContent = '⚠️ Load failed';
@@ -161,7 +126,6 @@ const router = {
       return;
     }
 
-    // ─── Default feature list (level 0 / 1) ──────────────────
     const items = view.items.length
       ? view.items
       : state.list().map(key => {
@@ -170,7 +134,7 @@ const router = {
           return {
             key,
             label: (mod && mod.featureLabel) || meta.label || key,
-            icon:  (mod && mod.featureIcon)  || meta.icon  || '◆'
+            icon: (mod && mod.featureIcon) || meta.icon || '◆'
           };
         });
 
@@ -187,16 +151,9 @@ const router = {
     }
   },
 
-  // ═══════════════════════════════════════════════════════════
-  //  SELECT — hand off to the module
-  // ═══════════════════════════════════════════════════════════
   select(item) {
     const module = state.get(item.key);
-    if (module?.open) {
-      module.open({ router: this, item });
-      return;
-    }
-    // Fallback: nested children without a module
+    if (module?.open) { module.open({ router: this, item }); return; }
     if (item.children?.length) {
       if (currentView.level === 1) {
         this.openLevel2(item.key, item.children, { title: item.label || item.key });
@@ -207,5 +164,4 @@ const router = {
   }
 };
 
-// ─── Export ────────────────────────────────────────────────────
 export { router as featuresRouter, parentHistory };

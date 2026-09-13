@@ -274,30 +274,32 @@ h2 {
 }
 
 /* Monitor: fixed height, never shrinks */
+/* Monitor: centered, wrap sizes itself via JS */
 .monitor-window {
-  flex: 0 0 auto;                       /* ⬅ do not shrink */
-  height: 42vh;                          /* ⬅ fixed preview height */
+  flex: 0 0 auto;
+  height: 42vh;
   min-height: 200px;
   max-height: 52vh;
   padding: 8px 10px 0;
   min-width: 0;
   width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .preview-canvas-wrap {
-  width: 100%;
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
   position: relative;
-  display: grid;
-  place-items: center;
   background: #000;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
+  display: grid;
+  place-items: center;
+  /* width & height set by ratioControl.js */
+  max-width: 100%;
+  max-height: 100%;
 }
-
 #preview-canvas,
 #preview-video {
   max-width: 100%;
@@ -924,3 +926,32 @@ h2 {
   .color-wheel-single { width: 150px; height: 150px; }
   .color-wheel-item { flex: 1 0 150px; max-width: 190px; }
 }
+
+/* ─── Ratio dropdown in control bar ─────────────────── */
+.ratio-select {
+  min-height: var(--touch);
+  padding: 0 24px 0 10px;
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  flex: 0 0 auto;
+  font-family: inherit;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position:
+    calc(100% - 14px) 50%,
+    calc(100% - 10px) 50%;
+  background-size: 4px 4px, 4px 4px;
+  background-repeat: no-repeat;
+  text-align: center;
+  letter-spacing: 0.02em;
+  min-width: 62px;
+}
+.ratio-select:focus { outline: 2px solid var(--text); outline-offset: 2px; }

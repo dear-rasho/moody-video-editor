@@ -1,16 +1,14 @@
 // ================================================================
 //  js/workspace/previewCanvas.js
-//  Preview canvas.
-//
-//  When window.__previewBlockAutoDraw is true (playbackEngine active),
-//  this module stops auto-drawing on video events. Engine drives the
-//  canvas via preview.redraw().
+//  Canvas matches wrapper size. Video contain-fit + ctx transform
+//  (position/rotation/anchor/crop/scale) applied during draw.
 // ================================================================
 
 export function initPreviewCanvas({ canvas, video, empty }) {
   if (!canvas || !video) {
     return {
-      setMedia() {}, clear() {}, setVisible() {}, redraw() {}, getContext() { return null; }
+      setMedia() {}, clear() {}, setVisible() {}, redraw() {},
+      getContext() { return null; }, setLayerTransform() {}
     };
   }
 
@@ -22,63 +20,42 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     return ctx;
   }
 
-  // 🆕 When true, no auto-draws happen (engine owns canvas)
-  function isBlocked() {
-    return window.__previewBlockAutoDraw === true;
-  }
+  function isBlocked() { return window.__previewBlockAutoDraw === true; }
 
-  // ─── Target ratio ─────────────────────────────────────────
-  function getTargetRatio() {
-    const r = window.__offlineEditorRatio;
-    if (r && Number.isFinite(r.w) && Number.isFinite(r.h) && r.w > 0 && r.h > 0) {
-      return { w: r.w, h: r.h };
-    }
-    return null;
-  }
+  let layerTransform = null;
+  function setLayerTransform(t) { layerTransform = t; }
 
-  // ─── Size canvas ──────────────────────────────────────────
   function syncCanvasSize() {
     const wrap = canvas.parentElement;
     if (!wrap) return;
-
-    const wrapRect = wrap.getBoundingClientRect();
-    const wrapW = Math.max(1, wrapRect.width);
-    const wrapH = Math.max(1, wrapRect.height);
-
-    const ratio = getTargetRatio();
-
-    let w, h, cssW, cssH;
-    if (!ratio) {
-      w = Math.round(wrapW);
-      h = Math.round(wrapH);
-      cssW = '100%';
-      cssH = '100%';
-    } else {
-      const targetAR = ratio.w / ratio.h;
-      const wrapAR = wrapW / wrapH;
-      if (targetAR > wrapAR) {
-        cssW = wrapW;
-        cssH = wrapW / targetAR;
-      } else {
-        cssH = wrapH;
-        cssW = wrapH * targetAR;
-      }
-      w = Math.max(1, Math.round(cssW));
-      h = Math.max(1, Math.round(cssH));
-      cssW = w + 'px';
-      cssH = h + 'px';
-    }
-
-    canvas.style.width = cssW;
-    canvas.style.height = cssH;
-
+    const r = wrap.getBoundingClientRect();
+    const w = Math.max(1, Math.round(r.width));
+    const h = Math.max(1, Math.round(r.height));
     if (canvas.width !== w || canvas.height !== h) {
       canvas.width = w;
       canvas.height = h;
     }
+    canvas.style.width = '100%';
+    canvas.style.height = '100%';
   }
 
-  // ─── Contain-fit ──────────────────────────────────────────
+  function applyCtxTransform(c, W, H, t) {
+    if (!t) return;
+    const anchorX = t.anchorX != null ? t.anchorX : 50;
+    const anchorY = t.anchorY != null ? t.anchorY : 50;
+    const posX = t.x != null ? t.x : 50;
+    const posY = t.y != null ? t.y : 50;
+    const originX = W * (anchorX / 100);
+    const originY = H * (anchorY / 100);
+    const offsetX = (posX - 50) / 100 * W;
+    const offsetY = (posY - 50) / 100 * H;
+    c.translate(originX + offsetX, originY + offsetY);
+    if (t.rotation) c.rotate(t.rotation * Math.PI / 180);
+    const sc = (t.scale != null ? t.scale : 100) / 100;
+    if (sc !== 1) c.scale(sc, sc);
+    c.translate(-originX, -originY);
+  }
+
   function containRect(srcW, srcH, dstW, dstH) {
     if (!srcW || !srcH) return { x: 0, y: 0, w: dstW, h: dstH };
     const srcAR = srcW / srcH;
@@ -89,49 +66,21 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     return { x: (dstW - w) / 2, y: (dstH - h) / 2, w, h };
   }
 
-  // ─── Cover-fit ────────────────────────────────────────────
-  function coverSourceRect(srcW, srcH, dstW, dstH) {
-    if (!srcW || !srcH) return { sx: 0, sy: 0, sw: srcW, sh: srcH };
-    const srcAR = srcW / srcH;
-    const dstAR = dstW / dstH;
-    let sw, sh, sx, sy;
-    if (srcAR > dstAR) {
-      sh = srcH; sw = srcH * dstAR; sx = (srcW - sw) / 2; sy = 0;
-    } else {
-      sw = srcW; sh = srcW / dstAR; sx = 0; sy = (srcH - sh) / 2;
-    }
-    return { sx, sy, sw, sh };
-  }
-
   window.__previewContainRect = containRect;
 
-  // ─── Shared draw helper for feature modules ───────────────
   window.__previewDrawVideo = function (drawCtx, videoEl, canvasEl) {
     if (!drawCtx || !videoEl || !canvasEl) return;
     drawCtx.fillStyle = '#000';
     drawCtx.fillRect(0, 0, canvasEl.width, canvasEl.height);
-
     const vw = videoEl.videoWidth;
     const vh = videoEl.videoHeight;
     if (!vw || !vh || videoEl.readyState < 2) return;
-
-    const ratio = getTargetRatio();
     try {
-      if (!ratio) {
-        const r = containRect(vw, vh, canvasEl.width, canvasEl.height);
-        drawCtx.drawImage(videoEl, r.x, r.y, r.w, r.h);
-      } else {
-        const s = coverSourceRect(vw, vh, canvasEl.width, canvasEl.height);
-        drawCtx.drawImage(
-          videoEl,
-          s.sx, s.sy, s.sw, s.sh,
-          0, 0, canvasEl.width, canvasEl.height
-        );
-      }
+      const r = containRect(vw, vh, canvasEl.width, canvasEl.height);
+      drawCtx.drawImage(videoEl, r.x, r.y, r.w, r.h);
     } catch (_) {}
   };
 
-  // ─── Draw video frame ─────────────────────────────────────
   function drawVideoFrame() {
     if (!video.videoWidth || !video.videoHeight) return;
     if (video.readyState < 2) return;
@@ -140,58 +89,63 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     const c = getCtx();
     if (!c) return;
 
+    const W = canvas.width;
+    const H = canvas.height;
+
+    c.setTransform(1, 0, 0, 1, 0, 0);
     c.fillStyle = '#000';
-    c.fillRect(0, 0, canvas.width, canvas.height);
+    c.fillRect(0, 0, W, H);
 
-    const ratio = getTargetRatio();
+    c.save();
+    if (layerTransform) applyCtxTransform(c, W, H, layerTransform);
 
-    try {
-      if (!ratio) {
-        const r = containRect(video.videoWidth, video.videoHeight, canvas.width, canvas.height);
-        c.drawImage(video, r.x, r.y, r.w, r.h);
-      } else {
-        const s = coverSourceRect(video.videoWidth, video.videoHeight, canvas.width, canvas.height);
-        c.drawImage(video, s.sx, s.sy, s.sw, s.sh, 0, 0, canvas.width, canvas.height);
+    let sx = 0, sy = 0, sw = video.videoWidth, sh = video.videoHeight;
+    if (layerTransform) {
+      const t = layerTransform;
+      const cropL = (t.cropL || 0) / 100;
+      const cropR = (t.cropR || 0) / 100;
+      const cropT = (t.cropT || 0) / 100;
+      const cropB = (t.cropB || 0) / 100;
+      if (cropL || cropR || cropT || cropB) {
+        sx = video.videoWidth * cropL;
+        sy = video.videoHeight * cropT;
+        sw = video.videoWidth * (1 - cropL - cropR);
+        sh = video.videoHeight * (1 - cropT - cropB);
       }
-    } catch (_) {}
+    }
+    if (sw <= 0 || sh <= 0) { c.restore(); return; }
+
+    const r = containRect(sw, sh, W, H);
+    try { c.drawImage(video, sx, sy, sw, sh, r.x, r.y, r.w, r.h); } catch (_) {}
+    c.restore();
   }
 
-  // ─── Draw image ───────────────────────────────────────────
   function drawImageContained(image) {
     syncCanvasSize();
     const c = getCtx();
     if (!c) return;
-
+    const W = canvas.width;
+    const H = canvas.height;
+    c.setTransform(1, 0, 0, 1, 0, 0);
     c.fillStyle = '#000';
-    c.fillRect(0, 0, canvas.width, canvas.height);
-
+    c.fillRect(0, 0, W, H);
+    c.save();
+    if (layerTransform) applyCtxTransform(c, W, H, layerTransform);
     const iw = image.naturalWidth || image.width;
     const ih = image.naturalHeight || image.height;
-    const ratio = getTargetRatio();
-
-    try {
-      if (!ratio) {
-        const r = containRect(iw, ih, canvas.width, canvas.height);
-        c.drawImage(image, r.x, r.y, r.w, r.h);
-      } else {
-        const s = coverSourceRect(iw, ih, canvas.width, canvas.height);
-        c.drawImage(image, s.sx, s.sy, s.sw, s.sh, 0, 0, canvas.width, canvas.height);
-      }
-    } catch (_) {}
+    const r = containRect(iw, ih, W, H);
+    try { c.drawImage(image, r.x, r.y, r.w, r.h); } catch (_) {}
+    c.restore();
   }
 
-  // ─── Playback loop (only when NOT blocked) ────────────────
   let rafId = null;
   function startLoop() {
     if (isBlocked()) return;
     if (rafId) return;
     const loop = () => {
       drawVideoFrame();
-      if (!video.paused && !video.ended) {
-        rafId = requestAnimationFrame(loop);
-      } else {
-        rafId = null;
-      }
+      if (!video.paused && !video.ended) rafId = requestAnimationFrame(loop);
+      else rafId = null;
     };
     rafId = requestAnimationFrame(loop);
   }
@@ -200,7 +154,6 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     rafId = null;
   }
 
-  // ─── Hide video element ───────────────────────────────────
   function hideVideo() {
     video.style.setProperty('position', 'absolute', 'important');
     video.style.setProperty('left', '0', 'important');
@@ -214,34 +167,19 @@ export function initPreviewCanvas({ canvas, video, empty }) {
   }
   hideVideo();
 
-  // ─── Event handlers (all guarded by isBlocked) ────────────
-  function guardedDraw() {
-    if (isBlocked()) return;
-    drawVideoFrame();
-  }
+  function guardedDraw() { if (!isBlocked()) drawVideoFrame(); }
 
   video.addEventListener('loadedmetadata', guardedDraw);
   video.addEventListener('loadeddata', guardedDraw);
   video.addEventListener('seeked', guardedDraw);
-
   video.addEventListener('play',    () => { if (!isBlocked()) startLoop(); });
   video.addEventListener('playing', () => { if (!isBlocked()) startLoop(); });
-  video.addEventListener('pause',   () => {
-    if (isBlocked()) return;
-    drawVideoFrame();
-    stopLoop();
-  });
-  video.addEventListener('ended', () => {
-    if (isBlocked()) return;
-    drawVideoFrame();
-    stopLoop();
-  });
+  video.addEventListener('pause',   () => { if (isBlocked()) return; drawVideoFrame(); stopLoop(); });
+  video.addEventListener('ended',   () => { if (isBlocked()) return; drawVideoFrame(); stopLoop(); });
 
-  // Ratio change → resize + redraw
-  document.addEventListener('ratio:changed', () => {
-    syncCanvasSize();
-    if (!isBlocked()) drawVideoFrame();
-  });
+  document.addEventListener('ratio:changed', () => { syncCanvasSize(); drawVideoFrame(); });
+  document.addEventListener('keyframe:changed', () => { if (!isBlocked()) drawVideoFrame(); });
+  document.addEventListener('transform:changed', () => { if (!isBlocked()) drawVideoFrame(); });
 
   if (typeof ResizeObserver !== 'undefined') {
     new ResizeObserver(() => {
@@ -250,25 +188,18 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     }).observe(canvas.parentElement || canvas);
   }
 
-  // ─── Media setter ─────────────────────────────────────────
   function setMedia(item) {
     if (!item) return;
     const type = item.type || '';
     if (empty) empty.hidden = true;
-
     if (type.startsWith('video/')) {
       video.src = item.url;
       video.load();
       hideVideo();
       canvas.hidden = false;
-      if (!isBlocked()) {
-        video.addEventListener('loadeddata', drawVideoFrame, { once: true });
-      }
       return;
     }
-
     if (type.startsWith('audio/')) return;
-
     if (type.startsWith('image/')) {
       const image = new Image();
       image.onload = () => {
@@ -312,10 +243,8 @@ export function initPreviewCanvas({ canvas, video, empty }) {
   hideVideo();
 
   return {
-    setMedia,
-    clear,
-    setVisible,
-    redraw,
-    getContext: getCtx
+    setMedia, clear, setVisible, redraw,
+    getContext: getCtx,
+    setLayerTransform
   };
 }

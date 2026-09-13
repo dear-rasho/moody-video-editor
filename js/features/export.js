@@ -1,9 +1,8 @@
 // ================================================================
 //  js/features/export.js
-//  Full-screen export panel + REAL render via WebCodecs.
-//  - MP4: fast render with video effects + audio FX layers applied
-//  - PNG: numbered frame sequence into a chosen folder
-//  - Supports up to 4K
+//  Export — works with OR without a video source.
+//  If timeline has only text/image/effect layers, they still
+//  render with all animations.
 // ================================================================
 
 import { renderFrameToCanvas } from '../workspace/exportRenderer.js';
@@ -403,7 +402,7 @@ function buildAudioInfoField() {
   label.textContent = 'Audio Export';
   const help = document.createElement('div');
   help.className = 'exp-help';
-  help.textContent = 'Exports audio trimmed to the video clip range, with Audio FX layers applied.';
+  help.textContent = 'Exports audio from the video clip, trimmed to the same range as the video.';
   field.append(label, help);
   return field;
 }
@@ -498,8 +497,8 @@ function computeTimelineEnd() {
     for (let c = 0; c < track.length; c++) {
       const clip = track[c];
       if (!clip) continue;
-      if (clip.__audioFxId) continue;      // FX layers don't extend timeline
-      if (clip.__soundId) continue;        // generated SFX
+      if (clip.__audioFxId) continue;
+      if (clip.__soundId) continue;
       const s = Number.isFinite(clip.startTime) ? clip.startTime : 0;
       const d = Number.isFinite(clip.duration) ? clip.duration : 0;
       const end = s + d;
@@ -536,7 +535,21 @@ function findVideoClip(videoEl) {
   return null;
 }
 
-// Collect all Audio FX layers that overlap [rangeStart, rangeEnd]
+function hasAnyVideoSource() {
+  const appState = window.__appState;
+  if (!appState) return false;
+  const tracks = appState.timeline.visual || [];
+  for (let t = 0; t < tracks.length; t++) {
+    const track = tracks[t];
+    if (!Array.isArray(track)) continue;
+    for (let c = 0; c < track.length; c++) {
+      const clip = track[c];
+      if (clip && clip.type && clip.type.indexOf('video/') === 0) return true;
+    }
+  }
+  return false;
+}
+
 function getAudioFxLayersInRange(rangeStart, rangeEnd) {
   const appState = window.__appState;
   if (!appState) return [];
@@ -578,6 +591,13 @@ function getCodecCandidates(W, H) {
 // ═══════════════════════════════════════════════════════════════
 function onExportClick() {
   if (isExporting) return;
+
+  const timelineEnd = computeTimelineEnd();
+  if (timelineEnd <= 0) {
+    showToast('Timeline is empty — nothing to export', false);
+    return;
+  }
+
   const fmt = getFormatDef(settings.format);
   const name = (settings.fileName || 'Export').replace(/[\\/:*?"<>|]+/g, '_');
   if (fmt.kind === 'pngseq') return exportPngSequence(name);
@@ -585,17 +605,945 @@ function onExportClick() {
   return exportVideo(name + fmt.ext, fmt);
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  PNG SEQUENCE EXPORT
-// ═══════════════════════════════════════════════════════════════
-async function exportPngSequence(baseName) {
+// ─── PNG ───────────────────────────────────────────────────────
+async function exportPng(filename) {
   const videoEl = document.querySelector('#preview-video');
   if (!videoEl || !videoEl.src) { showToast('Load a video first', false); return; }
-  if (!window.showDirectoryPicker) { showToast('Folder export needs Chrome or Edge', false); return; }
+
+  const q = getCurrentQuality();
+  showProgress(0, 'Capturing frame…');
+
+  const canvas = document.createElement('canvas');
+  canvas.width = q.width;
+  canvas.height = q.height;
+  const ctx = canvas.getContext('2d', { alpha: false });
+
+  const eng = window.__playbackEngine;
+  const timelineTime = eng ? eng.getTime() : 0;
+  const sourceTime = videoEl.currentTime;
+  try {
+    renderFrameToCanvas(ctx, q.width, q.height, videoEl, sourceTime, timelineTime);
+  } catch (_) {
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, q.width, q.height);
+  }
+
+  try {
+    const blob = await new Promise(function (res, rej) {
+      canvas.toBlob(function (b) { b ? res(b) : rej(new Error('null')); }, 'image/png');
+    });
+    hideProgress();
+    const saved = await saveBlob(blob, filename);
+    if (saved) showToast('Saved ' + filename);
+  } catch (e) {
+    hideProgress();
+    showToast('Export failed', false);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  AUDIO ONLY
+// ═══════════════════════════════════════════════════════════════
+async function exportAudio(filename) {
+  const videoEl = document.querySelector('#preview-video');
+  if (!videoEl || !videoEl.src) { showToast('Load a video first', false); return; }
+
+  const hasAE = typeof AudioEncoder !== 'undefined' && typeof AudioData !== 'undefined' && typeof AudioContext !== 'undefined';
+  if (hasAE) {
+    try { await exportAudioFast(filename); return; }
+    catch (e) { console.warn('Audio fast failed:', e); }
+  }
+  return exportAudioRecorder(filename);
+}
+
+async function exportAudioFast(filename) {
+  const videoEl = document.querySelector('#preview-video');
+  const clip = findVideoClip(videoEl);
+  const sourceIn = clip ? (Number.isFinite(clip.sourceIn) ? clip.sourceIn : 0) : 0;
+  const clipDur  = clip && Number.isFinite(clip.duration) ? clip.duration : 0;
+  const clipStart = clip && Number.isFinite(clip.startTime) ? clip.startTime : 0;
+
+  showProgress(0.05, 'Decoding audio…', '');
+  const resp = await fetch(videoEl.src);
+  const ab = await resp.arrayBuffer();
+  const AC = window.AudioContext || window.webkitAudioContext;
+  const ac = new AC();
+  let rawBuffer;
+  try { rawBuffer = await ac.decodeAudioData(ab); }
+  finally { try { ac.close(); } catch (_) {} }
+
+  const fxLayers = getAudioFxLayersInRange(clipStart, clipStart + clipDur);
+  let processedBuffer = rawBuffer;
+  if (fxLayers.length) {
+    showProgress(0.15, 'Applying audio FX…', '');
+    try {
+      processedBuffer = await applyAudioFxLayers(rawBuffer, fxLayers, sourceIn, clipDur, clipStart);
+    } catch (e) {
+      console.warn('Audio FX offline failed:', e);
+      processedBuffer = rawBuffer;
+    }
+  }
+
+  const targetRate = 48000;
+  const numCh = Math.min(2, processedBuffer.numberOfChannels || 1);
+  const srcRate = processedBuffer.sampleRate;
+
+  const startSample = Math.floor(sourceIn * srcRate);
+  const endSample = clipDur > 0
+    ? Math.min(processedBuffer.length, Math.floor((sourceIn + clipDur) * srcRate))
+    : processedBuffer.length;
+  const totalFrames = Math.max(0, endSample - startSample);
+  if (totalFrames === 0) throw new Error('Empty audio range');
+
+  const muxerMod = await import('https://cdn.jsdelivr.net/npm/mp4-muxer@5.1.5/+esm');
+  const Muxer = muxerMod.Muxer;
+  const ArrayBufferTarget = muxerMod.ArrayBufferTarget;
+
+  const target = new ArrayBufferTarget();
+  const muxer = new Muxer({
+    target: target, fastStart: 'in-memory',
+    audio: { codec: 'aac', numberOfChannels: numCh, sampleRate: targetRate },
+    firstTimestampBehavior: 'offset'
+  });
+
+  const audioEncoder = new AudioEncoder({
+    output: function (chunk, meta) {
+      try { muxer.addAudioChunk(chunk, meta); } catch (e) { console.warn(e); }
+    },
+    error: function (e) { console.warn('AudioEncoder', e); }
+  });
+  audioEncoder.configure({
+    codec: 'mp4a.40.2', sampleRate: targetRate,
+    numberOfChannels: numCh, bitrate: 128000
+  });
+
+  const channels = [];
+  for (let c = 0; c < numCh; c++) channels.push(processedBuffer.getChannelData(c));
+
+  const chunkFrames = 1024;
+  let offset = 0;
+  while (offset < totalFrames) {
+    const len = Math.min(chunkFrames, totalFrames - offset);
+    const planar = new Float32Array(len * numCh);
+    for (let c = 0; c < numCh; c++) {
+      const src = channels[c];
+      const dstOff = c * len;
+      const srcStart = startSample + offset;
+      for (let i = 0; i < len; i++) {
+        if (srcRate === targetRate) {
+          planar[dstOff + i] = src[srcStart + i] || 0;
+        } else {
+          const srcIdx = srcStart + i * (srcRate / targetRate);
+          const i0 = Math.floor(srcIdx);
+          const i1 = Math.min(processedBuffer.length - 1, i0 + 1);
+          const frac = srcIdx - i0;
+          planar[dstOff + i] = (src[i0] || 0) * (1 - frac) + (src[i1] || 0) * frac;
+        }
+      }
+    }
+    try {
+      const ad = new AudioData({
+        format: 'f32-planar', sampleRate: targetRate,
+        numberOfFrames: len, numberOfChannels: numCh,
+        timestamp: Math.round((offset / targetRate) * 1e6),
+        data: planar
+      });
+      audioEncoder.encode(ad);
+      ad.close();
+    } catch (e) { console.warn('audio chunk', e); }
+    offset += len;
+    showProgress(0.5 + 0.45 * (offset / totalFrames), 'Encoding…', '');
+  }
+
+  try { await audioEncoder.flush(); } catch (_) {}
+  try { audioEncoder.close(); } catch (_) {}
+  showProgress(0.98, 'Writing file…', '');
+  muxer.finalize();
+  const blob = new Blob([target.buffer], { type: 'audio/mp4' });
+  hideProgress();
+  const saved = await saveBlob(blob, filename);
+  if (saved) showToast('Saved ' + filename);
+}
+
+async function exportAudioRecorder(filename) {
+  const audioEl = document.querySelector('#preview-audio');
+  if (!audioEl || !audioEl.src) { showToast('No audio layer found', false); return; }
+  if (!audioEl.captureStream) { showToast('Audio capture not supported', false); return; }
+
+  const videoEl = document.querySelector('#preview-video');
+  const clip = videoEl ? findVideoClip(videoEl) : null;
+  const sourceIn = clip && Number.isFinite(clip.sourceIn) ? clip.sourceIn : 0;
+  const clipDur  = clip && Number.isFinite(clip.duration) ? clip.duration : 0;
+  const duration = clipDur > 0 ? clipDur
+    : (Number.isFinite(audioEl.duration) ? audioEl.duration : 10);
+
+  const stream = audioEl.captureStream();
+  let mime = '';
+  if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) mime = 'audio/webm;codecs=opus';
+  else if (MediaRecorder.isTypeSupported('audio/webm')) mime = 'audio/webm';
+
+  const chunks = [];
+  let recorder;
+  try { recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); }
+  catch (e) { showToast('Audio recording failed', false); return; }
+  recorder.ondataavailable = function (e) { if (e.data.size > 0) chunks.push(e.data); };
+
+  showProgress(0, 'Recording audio…');
+  const startedAt = performance.now();
+  try { audioEl.currentTime = sourceIn; } catch (_) {}
+  try { await audioEl.play(); } catch (_) {}
+  recorder.start(200);
+
+  const tick = function () {
+    const elapsed = (performance.now() - startedAt) / 1000;
+    const p = Math.min(1, elapsed / Math.max(0.5, duration));
+    showProgress(p, 'Recording audio… ' + Math.round(p * 100) + '%');
+    if (audioEl.ended || elapsed >= duration + 0.3) {
+      if (recorder.state === 'recording') recorder.stop();
+      return;
+    }
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+
+  recorder.onstop = async function () {
+    try { audioEl.pause(); } catch (_) {}
+    const blob = new Blob(chunks, { type: mime || 'audio/webm' });
+    hideProgress();
+    const saved = await saveBlob(blob, filename);
+    if (saved) showToast('Saved ' + filename);
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  VIDEO EXPORT — routes to fast or canvas-only
+// ═══════════════════════════════════════════════════════════════
+async function exportVideo(filename, fmt) {
+  const timelineEnd = computeTimelineEnd();
+  if (timelineEnd <= 0) { showToast('Timeline is empty', false); return; }
+
+  const hasSource = hasAnyVideoSource();
+
+  if (fmt.key !== 'mp4') {
+    if (!hasSource) { showToast('MOV needs a video source', false); return; }
+    return exportVideoRecorder(filename, fmt);
+  }
+
+  const hasWebCodecs =
+    typeof VideoEncoder !== 'undefined' &&
+    typeof VideoDecoder !== 'undefined' &&
+    typeof EncodedVideoChunk !== 'undefined';
+
+  if (!hasWebCodecs) {
+    if (!hasSource) { showToast('Export needs WebCodecs', false); return; }
+    showToast('Using recorder');
+    return exportVideoRecorder(filename, fmt);
+  }
+
+  try {
+    if (hasSource) {
+      // Full pipeline: decode + render
+      await exportVideoFast(filename);
+    } else {
+      // Canvas-only: render text/image/effect layers frame-by-frame
+      await exportVideoCanvasOnly(filename);
+    }
+  } catch (e) {
+    console.error('Export failed:', e);
+    if (!hasSource) {
+      showToast('Export failed: ' + (e && e.message ? e.message : 'unknown'), false);
+      hideProgress();
+      return;
+    }
+    showToast('Fast render failed — using recorder…', false);
+    await sleep(500);
+    return exportVideoRecorder(filename, fmt);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  CANVAS-ONLY EXPORT (no video source in timeline)
+// ═══════════════════════════════════════════════════════════════
+async function exportVideoCanvasOnly(filename) {
+  const muxerMod = await import('https://cdn.jsdelivr.net/npm/mp4-muxer@5.1.5/+esm');
+  const Muxer = muxerMod.Muxer;
+  const ArrayBufferTarget = muxerMod.ArrayBufferTarget;
+
+  const q = getCurrentQuality();
+  const W = q.width;
+  const H = q.height;
+  const fps = Number(settings.fps) || 30;
+  const frameInterval = 1 / fps;
+  const bitrateBps = (settings.bitrateKbps || 10000) * 1000;
 
   const timelineEnd = computeTimelineEnd();
+  if (timelineEnd <= 0) throw new Error('Timeline is empty');
+
+  console.log('[export-canvas] timelineEnd=' + timelineEnd + ' fps=' + fps + ' res=' + W + 'x' + H);
+
+  // Muxer (video only — no audio source without video)
+  const target = new ArrayBufferTarget();
+  const muxer = new Muxer({
+    target,
+    fastStart: 'in-memory',
+    video: { codec: 'avc', width: W, height: H },
+    firstTimestampBehavior: 'offset'
+  });
+
+  // Encoder
+  let encoderError = null;
+  let encoderMetaSeen = false;
+  let frameCount = 0;
+  const keyFrameEvery = Math.max(1, Math.round(fps * 2));
+
+  const videoEncoder = new VideoEncoder({
+    output: (chunk, meta) => {
+      if (encoderError) return;
+      try {
+        if (meta && meta.decoderConfig) {
+          encoderMetaSeen = true;
+          muxer.addVideoChunk(chunk, meta);
+        } else if (encoderMetaSeen) {
+          muxer.addVideoChunk(chunk);
+        } else {
+          muxer.addVideoChunk(chunk, meta || undefined);
+        }
+      } catch (e) { console.warn('muxer.addVideoChunk:', e); }
+    },
+    error: (e) => { encoderError = e; console.error('VideoEncoder:', e); }
+  });
+
+  let encoderConfigured = false;
+  const codecCandidates = getCodecCandidates(W, H);
+  for (let ci = 0; ci < codecCandidates.length; ci++) {
+    const codecStr = codecCandidates[ci];
+    const config = {
+      codec: codecStr, width: W, height: H,
+      bitrate: bitrateBps, framerate: fps,
+      avc: { format: 'avc' }
+    };
+    try {
+      if (typeof VideoEncoder.isConfigSupported === 'function') {
+        const support = await VideoEncoder.isConfigSupported(config);
+        if (!support || !support.supported) continue;
+      }
+      videoEncoder.configure(config);
+      encoderConfigured = true;
+      console.log('[export-canvas] Encoder:', codecStr);
+      break;
+    } catch (_) {}
+  }
+  if (!encoderConfigured) {
+    for (let ci = 0; ci < codecCandidates.length; ci++) {
+      try {
+        videoEncoder.configure({
+          codec: codecCandidates[ci], width: W, height: H,
+          bitrate: bitrateBps, framerate: fps
+        });
+        encoderConfigured = true;
+        break;
+      } catch (_) {}
+    }
+  }
+  if (!encoderConfigured) throw new Error('No supported H.264 encoder for ' + W + 'x' + H);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
+
+  const totalFrames = Math.max(1, Math.round(timelineEnd * fps));
+
+  for (let i = 0; i < totalFrames; i++) {
+    if (encoderError) break;
+
+    const timelineTime = i * frameInterval;
+
+    // Reset canvas
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, W, H);
+
+    // Render every layer (video=null, so only text/image/effects draw)
+    try {
+      renderFrameToCanvas(ctx, W, H, null, timelineTime, timelineTime);
+    } catch (e) {
+      console.warn('[export-canvas] renderFrame error:', e);
+    }
+
+    const exportFrame = new VideoFrame(canvas, {
+      timestamp: Math.round(timelineTime * 1e6),
+      duration: Math.round(frameInterval * 1e6)
+    });
+    const needKey = (i % keyFrameEvery) === 0;
+    try {
+      videoEncoder.encode(exportFrame, { keyFrame: needKey });
+    } catch (e) {
+      console.warn('[export-canvas] encode error:', e);
+    }
+    exportFrame.close();
+    frameCount++;
+
+    if (i % 4 === 0 || i === totalFrames - 1) {
+      const p = (i + 1) / totalFrames;
+      showProgress(0.05 + p * 0.9,
+        'Rendering… ' + Math.round(p * 100) + '%',
+        'Frame ' + frameCount + ' / ' + totalFrames);
+      await sleep(0);
+    }
+  }
+
+  showProgress(0.96, 'Finalizing…', 'Flushing encoder');
+  try { await videoEncoder.flush(); } catch (_) {}
+  try { videoEncoder.close(); } catch (_) {}
+
+  if (encoderError) throw encoderError;
+  if (frameCount === 0) throw new Error('No frames encoded');
+
+  showProgress(0.99, 'Writing file…', '');
+  muxer.finalize();
+  const blob = new Blob([target.buffer], { type: 'video/mp4' });
+  hideProgress();
+  const saved = await saveBlob(blob, filename);
+  if (saved) showToast('Saved ' + filename);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  FAST RENDER (with video source)
+// ═══════════════════════════════════════════════════════════════
+async function exportVideoFast(filename) {
+  const MP4Box = await loadMP4Box();
+  const muxerMod = await import('https://cdn.jsdelivr.net/npm/mp4-muxer@5.1.5/+esm');
+  const Muxer = muxerMod.Muxer;
+  const ArrayBufferTarget = muxerMod.ArrayBufferTarget;
+
+  const videoEl = document.querySelector('#preview-video');
+  const q = getCurrentQuality();
+  const W = q.width, H = q.height;
+  const fps = Number(settings.fps) || 30;
+  const frameInterval = 1 / fps;
+  const bitrateBps = (settings.bitrateKbps || 10000) * 1000;
+
+  const timelineEnd = computeTimelineEnd();
+  if (timelineEnd <= 0) throw new Error('Timeline is empty');
+
+  const matchedClip = findVideoClip(videoEl);
+  let clipSourceIn = 0, clipStartTime = 0, clipDuration = 0, clipEnd = 0;
+  if (matchedClip) {
+    clipSourceIn = Number.isFinite(matchedClip.sourceIn) ? matchedClip.sourceIn : 0;
+    clipStartTime = Number.isFinite(matchedClip.startTime) ? matchedClip.startTime : 0;
+    clipDuration = Number.isFinite(matchedClip.duration) ? matchedClip.duration : 0;
+    clipEnd = clipStartTime + clipDuration;
+  }
+
+  showProgress(0.02, 'Reading source…', '');
+  const resp = await fetch(videoEl.src);
+  const sourceAB = await resp.arrayBuffer();
+  sourceAB.fileStart = 0;
+
+  const mp4box = MP4Box.createFile();
+  let videoTrackInfo = null;
+  let audioTrackInfo = null;
+  let fileDuration = 0;
+  const videoSamples = [];
+
+  await new Promise((resolve, reject) => {
+    let ready = false, lastCount = 0, stableChecks = 0;
+    mp4box.onError = (e) => { if (!ready) reject(new Error('mp4box: ' + e)); };
+    mp4box.onSamples = (trackId, user, samples) => {
+      if (!videoTrackInfo || trackId !== videoTrackInfo.id) return;
+      for (let i = 0; i < samples.length; i++) videoSamples.push(samples[i]);
+    };
+    mp4box.onReady = (info) => {
+      fileDuration = info.duration / info.timescale;
+      videoTrackInfo = info.videoTracks[0] || null;
+      audioTrackInfo = info.audioTracks[0] || null;
+      if (!videoTrackInfo) { reject(new Error('No video track')); return; }
+      try {
+        mp4box.setExtractionOptions(videoTrackInfo.id, null, { nbSamples: 1000 });
+        mp4box.start();
+        ready = true;
+      } catch (e) { reject(e); return; }
+      const check = () => {
+        if (videoSamples.length === lastCount) {
+          stableChecks++;
+          if (stableChecks >= 3) { resolve(); return; }
+        } else { stableChecks = 0; lastCount = videoSamples.length; }
+        setTimeout(check, 30);
+      };
+      setTimeout(check, 80);
+    };
+    mp4box.appendBuffer(sourceAB);
+    mp4box.flush();
+  });
+
+  if (!videoTrackInfo) throw new Error('No video track');
+  if (!videoSamples.length) throw new Error('No samples');
+
+  if (!matchedClip || clipDuration <= 0) {
+    clipSourceIn = 0; clipStartTime = 0;
+    clipDuration = fileDuration; clipEnd = fileDuration;
+  }
+
+  const description = getDecoderDescription(mp4box, videoTrackInfo.id, MP4Box, sourceAB);
+  if (!description) throw new Error('Missing avcC');
+
+  const decoderConfig = {
+    codec: videoTrackInfo.codec,
+    codedWidth: videoTrackInfo.track_width,
+    codedHeight: videoTrackInfo.track_height,
+    description: description
+  };
+
+  const target = new ArrayBufferTarget();
+  const muxerOpts = {
+    target: target, fastStart: 'in-memory',
+    video: { codec: 'avc', width: W, height: H },
+    firstTimestampBehavior: 'offset'
+  };
+  const hasAudio = !!audioTrackInfo;
+  if (hasAudio) {
+    muxerOpts.audio = { codec: 'aac', numberOfChannels: 2, sampleRate: 48000 };
+  }
+  const muxer = new Muxer(muxerOpts);
+
+  let frameCount = 0;
+  const keyFrameEvery = Math.max(1, Math.round(fps * 2));
+  let encoderError = null;
+  let encoderMetaSeen = false;
+
+  const videoEncoder = new VideoEncoder({
+    output: (chunk, meta) => {
+      if (encoderError) return;
+      try {
+        if (meta && meta.decoderConfig) {
+          encoderMetaSeen = true;
+          muxer.addVideoChunk(chunk, meta);
+        } else if (encoderMetaSeen) {
+          muxer.addVideoChunk(chunk);
+        } else {
+          muxer.addVideoChunk(chunk, meta || undefined);
+        }
+      } catch (e) { console.warn('addVideoChunk:', e); }
+    },
+    error: (e) => { encoderError = e; console.error('VideoEncoder:', e); }
+  });
+
+  let encoderConfigured = false;
+  const codecCandidates = getCodecCandidates(W, H);
+  for (let ci = 0; ci < codecCandidates.length; ci++) {
+    const codecStr = codecCandidates[ci];
+    const config = {
+      codec: codecStr, width: W, height: H,
+      bitrate: bitrateBps, framerate: fps,
+      avc: { format: 'avc' }
+    };
+    try {
+      if (typeof VideoEncoder.isConfigSupported === 'function') {
+        const support = await VideoEncoder.isConfigSupported(config);
+        if (!support || !support.supported) continue;
+      }
+      videoEncoder.configure(config);
+      encoderConfigured = true;
+      console.log('[export] Encoder codec:', codecStr, W + 'x' + H);
+      break;
+    } catch (_) {}
+  }
+  if (!encoderConfigured) {
+    for (let ci = 0; ci < codecCandidates.length; ci++) {
+      try {
+        videoEncoder.configure({
+          codec: codecCandidates[ci], width: W, height: H,
+          bitrate: bitrateBps, framerate: fps
+        });
+        encoderConfigured = true;
+        break;
+      } catch (_) {}
+    }
+  }
+  if (!encoderConfigured) throw new Error('No supported H.264 encoder for ' + W + 'x' + H);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
+
+  function emitBlackFrame(timelineTime) {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, W, H);
+    try { renderFrameToCanvas(ctx, W, H, null, timelineTime, timelineTime); }
+    catch (_) {}
+    const exportFrame = new VideoFrame(canvas, {
+      timestamp: Math.round(timelineTime * 1e6),
+      duration: Math.round(frameInterval * 1e6)
+    });
+    const needKey = (frameCount % keyFrameEvery) === 0;
+    videoEncoder.encode(exportFrame, { keyFrame: needKey });
+    exportFrame.close();
+    frameCount++;
+  }
+
+  if (clipStartTime > 0.005) {
+    let t = 0;
+    while (t < clipStartTime - 0.001) { emitBlackFrame(t); t += frameInterval; }
+  }
+
+  let decoderError = null;
+  const decoder = new VideoDecoder({
+    output: function (frame) {
+      if (decoderError) { try { frame.close(); } catch (_) {} return; }
+      try {
+        const sourceTime = frame.timestamp / 1e6;
+        const timelineTime = sourceTime - clipSourceIn + clipStartTime;
+        if (timelineTime < clipStartTime - 0.03) { frame.close(); return; }
+        if (timelineTime >= clipEnd) { frame.close(); return; }
+
+        renderFrameToCanvas(ctx, W, H, frame, sourceTime, timelineTime);
+
+        const exportFrame = new VideoFrame(canvas, {
+          timestamp: Math.round(timelineTime * 1e6),
+          duration: frame.duration || Math.round(1e6 / fps)
+        });
+        const needKey = (frameCount % keyFrameEvery) === 0;
+        videoEncoder.encode(exportFrame, { keyFrame: needKey });
+        exportFrame.close();
+        frame.close();
+        frameCount++;
+
+        const p = timelineEnd > 0 ? Math.max(0, Math.min(1, timelineTime / timelineEnd)) : 0;
+        showProgress(0.05 + p * 0.9,
+                     'Rendering… ' + Math.round(p * 100) + '%',
+                     'Frame ' + frameCount);
+      } catch (e) {
+        console.warn('frame err:', e);
+        try { frame.close(); } catch (_) {}
+      }
+    },
+    error: function (e) { decoderError = e; console.error('VideoDecoder:', e); }
+  });
+
+  try { decoder.configure(decoderConfig); }
+  catch (e) { throw new Error('Decoder configure failed: ' + e.message); }
+
+  let startIdx = -1;
+  for (let i = 0; i < videoSamples.length; i++) {
+    if (videoSamples[i].is_sync) { startIdx = i; break; }
+  }
+  if (startIdx < 0) throw new Error('No keyframe');
+
+  for (let i = startIdx; i < videoSamples.length; i++) {
+    if (decoder.state === 'closed') break;
+    if (decoderError) break;
+    while (decoder.decodeQueueSize > 25 && decoder.state === 'configured') await sleep(5);
+    const s = videoSamples[i];
+    try {
+      decoder.decode(new EncodedVideoChunk({
+        type: s.is_sync ? 'key' : 'delta',
+        timestamp: Math.round((s.cts * 1e6) / s.timescale),
+        duration: Math.round((s.duration * 1e6) / s.timescale),
+        data: s.data
+      }));
+    } catch (e) {
+      console.warn('decode err ' + i + ':', e.message);
+      if (!s.is_sync) {
+        for (let j = i + 1; j < videoSamples.length; j++) {
+          if (videoSamples[j].is_sync) { i = j - 1; break; }
+        }
+      }
+    }
+  }
+
+  showProgress(0.94, 'Finalizing…', 'Flushing decoder');
+  try { await decoder.flush(); } catch (_) {}
+  try { decoder.close(); } catch (_) {}
+
+  if (clipEnd < timelineEnd - 0.005) {
+    let t = clipEnd;
+    while (t < timelineEnd - 0.001) { emitBlackFrame(t); t += frameInterval; }
+  }
+
+  if (hasAudio) {
+    try {
+      await encodeAudioFromURL(
+        videoEl.src, muxer, audioTrackInfo,
+        clipSourceIn, clipDuration, clipStartTime
+      );
+    } catch (e) { console.warn('Audio failed:', e); }
+  }
+
+  try { await videoEncoder.flush(); } catch (_) {}
+  try { videoEncoder.close(); } catch (_) {}
+
+  if (encoderError) throw encoderError;
+  if (decoderError) throw decoderError;
+  if (frameCount === 0) throw new Error('No frames encoded');
+
+  showProgress(0.99, 'Writing file…', '');
+  muxer.finalize();
+  const blob = new Blob([target.buffer], { type: 'video/mp4' });
+  hideProgress();
+  const saved = await saveBlob(blob, filename);
+  if (saved) showToast('Saved ' + filename);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Audio encoder (with timeline offset) — used by fast path
+// ═══════════════════════════════════════════════════════════════
+async function encodeAudioFromURL(url, muxer, audioTrackInfo, sourceIn, clipDur, timelineStart) {
+  const resp = await fetch(url);
+  const ab = await resp.arrayBuffer();
+  const AC = window.AudioContext || window.webkitAudioContext;
+  const ac = new AC();
+  let rawBuffer;
+  try { rawBuffer = await ac.decodeAudioData(ab); }
+  catch (e) { try { ac.close(); } catch (_) {} throw e; }
+  try { ac.close(); } catch (_) {}
+
+  const fxLayers = getAudioFxLayersInRange(timelineStart, timelineStart + clipDur);
+  let processedBuffer = rawBuffer;
+  if (fxLayers.length) {
+    try {
+      processedBuffer = await applyAudioFxLayers(rawBuffer, fxLayers, sourceIn, clipDur, timelineStart);
+    } catch (e) {
+      console.warn('Audio FX offline failed:', e);
+      processedBuffer = rawBuffer;
+    }
+  }
+
+  const targetRate = 48000;
+  const numCh = Math.min(2, processedBuffer.numberOfChannels || 1);
+  const srcRate = processedBuffer.sampleRate;
+
+  const startSample = Math.max(0, Math.floor((sourceIn || 0) * srcRate));
+  const endSample = (clipDur && clipDur > 0)
+    ? Math.min(processedBuffer.length, Math.floor(((sourceIn || 0) + clipDur) * srcRate))
+    : processedBuffer.length;
+  const totalFrames = Math.max(0, endSample - startSample);
+  if (totalFrames === 0) throw new Error('Empty audio range');
+
+  const audioEncoder = new AudioEncoder({
+    output: function (chunk, meta) {
+      try { muxer.addAudioChunk(chunk, meta); } catch (e) { console.warn(e); }
+    },
+    error: function (e) { console.warn('AudioEncoder', e); }
+  });
+  audioEncoder.configure({
+    codec: 'mp4a.40.2', sampleRate: targetRate,
+    numberOfChannels: numCh, bitrate: 128000
+  });
+
+  const chunkFrames = 1024;
+  const channels = [];
+  for (let c = 0; c < numCh; c++) channels.push(processedBuffer.getChannelData(c));
+
+  const timeOffset = Number.isFinite(timelineStart) ? timelineStart : 0;
+  let offset = 0;
+  while (offset < totalFrames) {
+    const len = Math.min(chunkFrames, totalFrames - offset);
+    const planar = new Float32Array(len * numCh);
+    for (let c = 0; c < numCh; c++) {
+      const src = channels[c];
+      const dstOff = c * len;
+      const srcStart = startSample + offset;
+      for (let i = 0; i < len; i++) {
+        if (srcRate === targetRate) {
+          planar[dstOff + i] = src[srcStart + i] || 0;
+        } else {
+          const srcIdx = srcStart + i * (srcRate / targetRate);
+          const i0 = Math.floor(srcIdx);
+          const i1 = Math.min(processedBuffer.length - 1, i0 + 1);
+          const frac = srcIdx - i0;
+          planar[dstOff + i] = (src[i0] || 0) * (1 - frac) + (src[i1] || 0) * frac;
+        }
+      }
+    }
+    try {
+      const ad = new AudioData({
+        format: 'f32-planar', sampleRate: targetRate,
+        numberOfFrames: len, numberOfChannels: numCh,
+        timestamp: Math.round((timeOffset + offset / targetRate) * 1e6),
+        data: planar
+      });
+      audioEncoder.encode(ad);
+      ad.close();
+    } catch (e) { console.warn('audio chunk', e); }
+    offset += len;
+  }
+
+  try { await audioEncoder.flush(); } catch (_) {}
+  try { await audioEncoder.close(); } catch (_) {}
+}
+
+async function applyAudioFxLayers(inputBuffer, fxRanges, sourceIn, clipDur, timelineStart) {
+  const sr = inputBuffer.sampleRate;
+  const numCh = Math.min(2, inputBuffer.numberOfChannels || 1);
+  const outLen = Math.max(1, Math.ceil(clipDur * sr));
+
+  const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  if (!OAC) throw new Error('OfflineAudioContext not available');
+
+  const ac = new OAC(numCh, outLen, sr);
+
+  const points = new Set([timelineStart, timelineStart + clipDur]);
+  for (const fx of fxRanges) { points.add(fx.start); points.add(fx.end); }
+  const sorted = [...points].sort((a, b) => a - b);
+
+  const segments = [];
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const s = sorted[i];
+    const e = sorted[i + 1];
+    if (e <= s) continue;
+    let key = null;
+    for (const fx of fxRanges) {
+      if (fx.start <= s && fx.end >= e) { key = fx.key; break; }
+    }
+    segments.push({ start: s, end: e, key });
+  }
+
+  const FADE_SEC = 0.01;
+  const FADE_SAMPLES = Math.max(1, Math.floor(FADE_SEC * sr));
+
+  for (const seg of segments) {
+    const segDur = seg.end - seg.start;
+    if (segDur <= 0.001) continue;
+
+    const localStart = sourceIn + (seg.start - timelineStart);
+    const sSamp = Math.max(0, Math.floor(localStart * sr));
+    const eSamp = Math.min(inputBuffer.length, Math.floor((localStart + segDur) * sr));
+    const samples = Math.max(1, eSamp - sSamp);
+
+    const segBuf = ac.createBuffer(numCh, samples, sr);
+    for (let c = 0; c < numCh; c++) {
+      const srcCh = inputBuffer.getChannelData(Math.min(c, inputBuffer.numberOfChannels - 1));
+      const dstCh = segBuf.getChannelData(c);
+      for (let i = 0; i < samples; i++) {
+        let v = srcCh[sSamp + i] || 0;
+        if (i < FADE_SAMPLES) v *= i / FADE_SAMPLES;
+        const rem = samples - i;
+        if (rem < FADE_SAMPLES) v *= rem / FADE_SAMPLES;
+        dstCh[i] = v;
+      }
+    }
+
+    const src = ac.createBufferSource();
+    src.buffer = segBuf;
+
+    let tail = src;
+    if (seg.key) {
+      const build = getBuilder(seg.key);
+      if (build) {
+        try { tail = build(ac, src) || src; }
+        catch (e) { console.warn('FX build failed:', e); tail = src; }
+      }
+    }
+    tail.connect(ac.destination);
+    const startAtOutput = seg.start - timelineStart;
+    src.start(Math.max(0, startAtOutput));
+  }
+
+  return await ac.startRendering();
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Raw MP4 atom parser
+// ═══════════════════════════════════════════════════════════════
+function getDecoderDescription(mp4box, trackId, MP4Box, sourceBuffer) {
+  try {
+    if (sourceBuffer && sourceBuffer.byteLength > 0) {
+      const avcC = extractBoxPayload(sourceBuffer, 'avcC');
+      if (avcC && avcC.length > 4) return avcC;
+      const hvcC = extractBoxPayload(sourceBuffer, 'hvcC');
+      if (hvcC && hvcC.length > 4) return hvcC;
+    }
+  } catch (e) { console.warn('atom extract:', e); }
+  return undefined;
+}
+
+function extractBoxPayload(arrayBuffer, targetType) {
+  const view = new DataView(arrayBuffer);
+  const result = { found: null };
+  walkBoxes(arrayBuffer, view, 0, arrayBuffer.byteLength, targetType, result);
+  return result.found;
+}
+
+function walkBoxes(buffer, view, start, end, targetType, result) {
+  if (result.found) return;
+  let offset = start;
+  while (offset + 8 <= end) {
+    if (result.found) return;
+    const size32 = view.getUint32(offset, false);
+    const type = String.fromCharCode(
+      view.getUint8(offset + 4), view.getUint8(offset + 5),
+      view.getUint8(offset + 6), view.getUint8(offset + 7)
+    );
+    let boxSize = size32;
+    let payloadStart = offset + 8;
+    if (size32 === 1) {
+      if (offset + 16 > end) break;
+      const hi = view.getUint32(offset + 8, false);
+      const lo = view.getUint32(offset + 12, false);
+      boxSize = hi * 4294967296 + lo;
+      payloadStart = offset + 16;
+    } else if (size32 === 0) { boxSize = end - offset; }
+    if (boxSize < 8 || offset + boxSize > end) break;
+    if (type === targetType) {
+      result.found = new Uint8Array(buffer, payloadStart, offset + boxSize - payloadStart);
+      return;
+    }
+    if (type === 'moov' || type === 'trak' || type === 'mdia' ||
+        type === 'minf' || type === 'stbl' || type === 'dinf' ||
+        type === 'edts' || type === 'udta' || type === 'mvex') {
+      walkBoxes(buffer, view, payloadStart, offset + boxSize, targetType, result);
+    } else if (type === 'stsd') {
+      walkBoxes(buffer, view, payloadStart + 8, offset + boxSize, targetType, result);
+    } else if (type === 'avc1' || type === 'avc3' ||
+               type === 'hvc1' || type === 'hev1' ||
+               type === 'mp4v' || type === 'encv' ||
+               type === 'vp09' || type === 'av01') {
+      walkBoxes(buffer, view, payloadStart + 78, offset + boxSize, targetType, result);
+    } else if (type === 'mp4a' || type === 'enca' ||
+               type === 'samr' || type === 'sawb') {
+      walkBoxes(buffer, view, payloadStart + 36, offset + boxSize, targetType, result);
+    }
+    offset += boxSize;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  mp4box.js loader
+// ═══════════════════════════════════════════════════════════════
+let mp4boxLoadPromise = null;
+function loadMP4Box() {
+  if (window.MP4Box) return Promise.resolve(window.MP4Box);
+  if (mp4boxLoadPromise) return mp4boxLoadPromise;
+  mp4boxLoadPromise = new Promise(function (resolve, reject) {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/mp4box@0.5.2/dist/mp4box.all.min.js';
+    s.onload = function () {
+      if (window.MP4Box) resolve(window.MP4Box);
+      else reject(new Error('MP4Box not found'));
+    };
+    s.onerror = function () { reject(new Error('MP4Box load failed')); };
+    document.head.appendChild(s);
+  });
+  return mp4boxLoadPromise;
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  PNG SEQUENCE EXPORT — with & without video
+// ═══════════════════════════════════════════════════════════════
+async function exportPngSequence(baseName) {
+  const timelineEnd = computeTimelineEnd();
+  if (timelineEnd <= 0) { showToast('Timeline is empty', false); return; }
+
+  if (!window.showDirectoryPicker) {
+    showToast('Folder export needs Chrome or Edge', false);
+    return;
+  }
+
   const fps = Number(settings.fps) || 30;
   const totalFrames = Math.max(1, Math.round(timelineEnd * fps));
+  const hasSource = hasAnyVideoSource();
 
   let dirHandle = null;
   try {
@@ -607,18 +1555,94 @@ async function exportPngSequence(baseName) {
   }
   if (!dirHandle) return;
 
-  const hasWebCodecs = typeof VideoDecoder !== 'undefined' && typeof EncodedVideoChunk !== 'undefined';
-  if (!hasWebCodecs) { showToast('PNG sequence needs WebCodecs', false); return; }
-
-  try {
-    await exportPngSequenceFast(dirHandle, baseName, totalFrames, fps);
-  } catch (e) {
-    console.error('PNG seq failed:', e);
-    showToast('Export failed: ' + (e && e.message ? e.message : 'unknown'), false);
-    hideProgress();
+  if (hasSource) {
+    const hasWebCodecs = typeof VideoDecoder !== 'undefined' && typeof EncodedVideoChunk !== 'undefined';
+    if (!hasWebCodecs) { showToast('PNG sequence needs WebCodecs', false); return; }
+    try {
+      await exportPngSequenceFast(dirHandle, baseName, totalFrames, fps);
+    } catch (e) {
+      console.error('PNG seq failed:', e);
+      showToast('Export failed: ' + (e && e.message ? e.message : 'unknown'), false);
+      hideProgress();
+    }
+  } else {
+    try {
+      await exportPngSequenceCanvasOnly(dirHandle, totalFrames, fps);
+    } catch (e) {
+      console.error('PNG seq (canvas) failed:', e);
+      showToast('Export failed: ' + (e && e.message ? e.message : 'unknown'), false);
+      hideProgress();
+    }
   }
 }
 
+// ─── Canvas-only PNG sequence (no video in timeline) ──────────
+async function exportPngSequenceCanvasOnly(dirHandle, totalFrames, fps) {
+  const q = getCurrentQuality();
+  const W = q.width;
+  const H = q.height;
+  const frameInterval = 1 / fps;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
+
+  const padLen = Math.max(1, String(totalFrames).length);
+
+  let pendingWrites = 0;
+  let writeChain = Promise.resolve();
+  const MAX_PENDING = 8;
+
+  function queueWrite(blobPromise, frameIdx) {
+    pendingWrites++;
+    writeChain = writeChain.then(async function () {
+      try {
+        const blob = await blobPromise;
+        if (!blob) return;
+        const name = String(frameIdx + 1).padStart(padLen, '0') + '.png';
+        const fh = await dirHandle.getFileHandle(name, { create: true });
+        const w = await fh.createWritable();
+        await w.write(blob);
+        await w.close();
+      } catch (e) { console.warn('write frame:', e); }
+      finally { pendingWrites--; }
+    });
+  }
+
+  for (let i = 0; i < totalFrames; i++) {
+    const timelineTime = i * frameInterval;
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, W, H);
+
+    try { renderFrameToCanvas(ctx, W, H, null, timelineTime, timelineTime); }
+    catch (e) { console.warn('[pngseq-canvas] render error:', e); }
+
+    const blobPromise = new Promise(function (resolve) {
+      try { canvas.toBlob(function (b) { resolve(b); }, 'image/png'); }
+      catch (_) { resolve(null); }
+    });
+    queueWrite(blobPromise, i);
+
+    if (i % 4 === 0 || i === totalFrames - 1) {
+      const p = (i + 1) / totalFrames;
+      showProgress(0.05 + p * 0.9,
+        'Rendering frame ' + (i + 1) + ' / ' + totalFrames,
+        'PNG sequence');
+      await sleep(0);
+    }
+
+    while (pendingWrites > MAX_PENDING) await sleep(10);
+  }
+
+  showProgress(0.98, 'Writing files…', totalFrames + ' files');
+  await writeChain;
+  hideProgress();
+  showToast('Saved ' + totalFrames + ' PNG files');
+}
+
+// ─── Video-source PNG sequence (existing fast path) ───────────
 async function exportPngSequenceFast(dirHandle, baseName, totalFrames, fps) {
   const MP4Box = await loadMP4Box();
   const videoEl = document.querySelector('#preview-video');
@@ -820,745 +1844,6 @@ async function exportPngSequenceFast(dirHandle, baseName, totalFrames, fps) {
   await writeChain;
   hideProgress();
   showToast('Saved ' + totalFrames + ' PNG files');
-}
-
-// ═══════════════════════════════════════════════════════════════
-//  AUDIO ONLY EXPORT
-// ═══════════════════════════════════════════════════════════════
-async function exportAudio(filename) {
-  const videoEl = document.querySelector('#preview-video');
-  if (!videoEl || !videoEl.src) { showToast('Load a video first', false); return; }
-
-  const hasAE = typeof AudioEncoder !== 'undefined' && typeof AudioData !== 'undefined' && typeof AudioContext !== 'undefined';
-  if (hasAE) {
-    try { await exportAudioFast(filename); return; }
-    catch (e) { console.warn('Audio fast failed:', e); }
-  }
-  return exportAudioRecorder(filename);
-}
-
-async function exportAudioFast(filename) {
-  const videoEl = document.querySelector('#preview-video');
-  const clip = findVideoClip(videoEl);
-  const sourceIn = clip ? (Number.isFinite(clip.sourceIn) ? clip.sourceIn : 0) : 0;
-  const clipDur  = clip && Number.isFinite(clip.duration) ? clip.duration : 0;
-  const clipStart = clip && Number.isFinite(clip.startTime) ? clip.startTime : 0;
-
-  showProgress(0.05, 'Decoding audio…', '');
-  const resp = await fetch(videoEl.src);
-  const ab = await resp.arrayBuffer();
-  const AC = window.AudioContext || window.webkitAudioContext;
-  const ac = new AC();
-  let rawBuffer;
-  try { rawBuffer = await ac.decodeAudioData(ab); }
-  finally { try { ac.close(); } catch (_) {} }
-
-  // 🆕 Apply audio FX layers
-  const fxLayers = getAudioFxLayersInRange(clipStart, clipStart + clipDur);
-  let processedBuffer = rawBuffer;
-  if (fxLayers.length) {
-    showProgress(0.15, 'Applying audio FX…', '');
-    try {
-      processedBuffer = await applyAudioFxLayers(rawBuffer, fxLayers, sourceIn, clipDur, clipStart);
-    } catch (e) {
-      console.warn('Audio FX offline failed:', e);
-      processedBuffer = rawBuffer;
-    }
-  }
-
-  const targetRate = 48000;
-  const numCh = Math.min(2, processedBuffer.numberOfChannels || 1);
-  const srcRate = processedBuffer.sampleRate;
-
-  const startSample = Math.floor(sourceIn * srcRate);
-  const endSample = clipDur > 0
-    ? Math.min(processedBuffer.length, Math.floor((sourceIn + clipDur) * srcRate))
-    : processedBuffer.length;
-  const totalFrames = Math.max(0, endSample - startSample);
-  if (totalFrames === 0) throw new Error('Empty audio range');
-
-  const muxerMod = await import('https://cdn.jsdelivr.net/npm/mp4-muxer@5.1.5/+esm');
-  const Muxer = muxerMod.Muxer;
-  const ArrayBufferTarget = muxerMod.ArrayBufferTarget;
-
-  const target = new ArrayBufferTarget();
-  const muxer = new Muxer({
-    target: target, fastStart: 'in-memory',
-    audio: { codec: 'aac', numberOfChannels: numCh, sampleRate: targetRate },
-    firstTimestampBehavior: 'offset'
-  });
-
-  const audioEncoder = new AudioEncoder({
-    output: function (chunk, meta) {
-      try { muxer.addAudioChunk(chunk, meta); } catch (e) { console.warn(e); }
-    },
-    error: function (e) { console.warn('AudioEncoder', e); }
-  });
-  audioEncoder.configure({
-    codec: 'mp4a.40.2', sampleRate: targetRate,
-    numberOfChannels: numCh, bitrate: 128000
-  });
-
-  const channels = [];
-  for (let c = 0; c < numCh; c++) channels.push(processedBuffer.getChannelData(c));
-
-  const chunkFrames = 1024;
-  let offset = 0;
-  while (offset < totalFrames) {
-    const len = Math.min(chunkFrames, totalFrames - offset);
-    const planar = new Float32Array(len * numCh);
-    for (let c = 0; c < numCh; c++) {
-      const src = channels[c];
-      const dstOff = c * len;
-      const srcStart = startSample + offset;
-      for (let i = 0; i < len; i++) {
-        if (srcRate === targetRate) {
-          planar[dstOff + i] = src[srcStart + i] || 0;
-        } else {
-          const srcIdx = srcStart + i * (srcRate / targetRate);
-          const i0 = Math.floor(srcIdx);
-          const i1 = Math.min(processedBuffer.length - 1, i0 + 1);
-          const frac = srcIdx - i0;
-          planar[dstOff + i] = (src[i0] || 0) * (1 - frac) + (src[i1] || 0) * frac;
-        }
-      }
-    }
-    try {
-      const ad = new AudioData({
-        format: 'f32-planar', sampleRate: targetRate,
-        numberOfFrames: len, numberOfChannels: numCh,
-        timestamp: Math.round((offset / targetRate) * 1e6),
-        data: planar
-      });
-      audioEncoder.encode(ad);
-      ad.close();
-    } catch (e) { console.warn('audio chunk', e); }
-    offset += len;
-    showProgress(0.5 + 0.45 * (offset / totalFrames), 'Encoding…', '');
-  }
-
-  try { await audioEncoder.flush(); } catch (_) {}
-  try { audioEncoder.close(); } catch (_) {}
-  showProgress(0.98, 'Writing file…', '');
-  muxer.finalize();
-  const blob = new Blob([target.buffer], { type: 'audio/mp4' });
-  hideProgress();
-  const saved = await saveBlob(blob, filename);
-  if (saved) showToast('Saved ' + filename);
-}
-
-async function exportAudioRecorder(filename) {
-  const audioEl = document.querySelector('#preview-audio');
-  if (!audioEl || !audioEl.src) { showToast('No audio layer found', false); return; }
-  if (!audioEl.captureStream) { showToast('Audio capture not supported', false); return; }
-
-  const videoEl = document.querySelector('#preview-video');
-  const clip = videoEl ? findVideoClip(videoEl) : null;
-  const sourceIn = clip && Number.isFinite(clip.sourceIn) ? clip.sourceIn : 0;
-  const clipDur  = clip && Number.isFinite(clip.duration) ? clip.duration : 0;
-  const duration = clipDur > 0 ? clipDur : (Number.isFinite(audioEl.duration) ? audioEl.duration : 10);
-
-  const stream = audioEl.captureStream();
-  let mime = '';
-  if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) mime = 'audio/webm;codecs=opus';
-  else if (MediaRecorder.isTypeSupported('audio/webm')) mime = 'audio/webm';
-
-  const chunks = [];
-  let recorder;
-  try { recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); }
-  catch (e) { showToast('Audio recording failed', false); return; }
-  recorder.ondataavailable = function (e) { if (e.data.size > 0) chunks.push(e.data); };
-
-  showProgress(0, 'Recording audio…');
-  const startedAt = performance.now();
-  try { audioEl.currentTime = sourceIn; } catch (_) {}
-  try { await audioEl.play(); } catch (_) {}
-  recorder.start(200);
-
-  const tick = function () {
-    const elapsed = (performance.now() - startedAt) / 1000;
-    const p = Math.min(1, elapsed / Math.max(0.5, duration));
-    showProgress(p, 'Recording audio… ' + Math.round(p * 100) + '%');
-    if (audioEl.ended || elapsed >= duration + 0.3) {
-      if (recorder.state === 'recording') recorder.stop();
-      return;
-    }
-    requestAnimationFrame(tick);
-  };
-  requestAnimationFrame(tick);
-
-  recorder.onstop = async function () {
-    try { audioEl.pause(); } catch (_) {}
-    const blob = new Blob(chunks, { type: mime || 'audio/webm' });
-    hideProgress();
-    const saved = await saveBlob(blob, filename);
-    if (saved) showToast('Saved ' + filename);
-  };
-}
-
-// ═══════════════════════════════════════════════════════════════
-//  VIDEO EXPORT
-// ═══════════════════════════════════════════════════════════════
-async function exportVideo(filename, fmt) {
-  const videoEl = document.querySelector('#preview-video');
-  if (!videoEl || !videoEl.src) { showToast('Load a video first', false); return; }
-  if (fmt.key !== 'mp4') return exportVideoRecorder(filename, fmt);
-
-  const hasWebCodecs =
-    typeof VideoEncoder !== 'undefined' &&
-    typeof VideoDecoder !== 'undefined' &&
-    typeof AudioEncoder !== 'undefined' &&
-    typeof AudioData !== 'undefined' &&
-    typeof EncodedVideoChunk !== 'undefined';
-  if (!hasWebCodecs) { showToast('Using recorder'); return exportVideoRecorder(filename, fmt); }
-
-  try { await exportVideoFast(filename); }
-  catch (e) {
-    console.error('Fast render failed:', e);
-    showToast('Fast render failed — using recorder…', false);
-    await sleep(500);
-    return exportVideoRecorder(filename, fmt);
-  }
-}
-
-async function exportVideoFast(filename) {
-  const MP4Box = await loadMP4Box();
-  const muxerMod = await import('https://cdn.jsdelivr.net/npm/mp4-muxer@5.1.5/+esm');
-  const Muxer = muxerMod.Muxer;
-  const ArrayBufferTarget = muxerMod.ArrayBufferTarget;
-
-  const videoEl = document.querySelector('#preview-video');
-  const q = getCurrentQuality();
-  const W = q.width, H = q.height;
-  const fps = Number(settings.fps) || 30;
-  const frameInterval = 1 / fps;
-  const bitrateBps = (settings.bitrateKbps || 10000) * 1000;
-
-  const timelineEnd = computeTimelineEnd();
-  if (timelineEnd <= 0) throw new Error('Timeline is empty');
-
-  const matchedClip = findVideoClip(videoEl);
-  let clipSourceIn = 0, clipStartTime = 0, clipDuration = 0, clipEnd = 0;
-  if (matchedClip) {
-    clipSourceIn = Number.isFinite(matchedClip.sourceIn) ? matchedClip.sourceIn : 0;
-    clipStartTime = Number.isFinite(matchedClip.startTime) ? matchedClip.startTime : 0;
-    clipDuration = Number.isFinite(matchedClip.duration) ? matchedClip.duration : 0;
-    clipEnd = clipStartTime + clipDuration;
-  }
-
-  showProgress(0.02, 'Reading source…', '');
-  const resp = await fetch(videoEl.src);
-  const sourceAB = await resp.arrayBuffer();
-  sourceAB.fileStart = 0;
-
-  const mp4box = MP4Box.createFile();
-  let videoTrackInfo = null;
-  let audioTrackInfo = null;
-  let fileDuration = 0;
-  const videoSamples = [];
-
-  await new Promise((resolve, reject) => {
-    let ready = false, lastCount = 0, stableChecks = 0;
-    mp4box.onError = (e) => { if (!ready) reject(new Error('mp4box: ' + e)); };
-    mp4box.onSamples = (trackId, user, samples) => {
-      if (!videoTrackInfo || trackId !== videoTrackInfo.id) return;
-      for (let i = 0; i < samples.length; i++) videoSamples.push(samples[i]);
-    };
-    mp4box.onReady = (info) => {
-      fileDuration = info.duration / info.timescale;
-      videoTrackInfo = info.videoTracks[0] || null;
-      audioTrackInfo = info.audioTracks[0] || null;
-      if (!videoTrackInfo) { reject(new Error('No video track')); return; }
-      try {
-        mp4box.setExtractionOptions(videoTrackInfo.id, null, { nbSamples: 1000 });
-        mp4box.start();
-        ready = true;
-      } catch (e) { reject(e); return; }
-      const check = () => {
-        if (videoSamples.length === lastCount) {
-          stableChecks++;
-          if (stableChecks >= 3) { resolve(); return; }
-        } else { stableChecks = 0; lastCount = videoSamples.length; }
-        setTimeout(check, 30);
-      };
-      setTimeout(check, 80);
-    };
-    mp4box.appendBuffer(sourceAB);
-    mp4box.flush();
-  });
-
-  if (!videoTrackInfo) throw new Error('No video track');
-  if (!videoSamples.length) throw new Error('No samples');
-
-  if (!matchedClip || clipDuration <= 0) {
-    clipSourceIn = 0; clipStartTime = 0;
-    clipDuration = fileDuration; clipEnd = fileDuration;
-  }
-
-  const description = getDecoderDescription(mp4box, videoTrackInfo.id, MP4Box, sourceAB);
-  if (!description) throw new Error('Missing avcC');
-
-  const decoderConfig = {
-    codec: videoTrackInfo.codec,
-    codedWidth: videoTrackInfo.track_width,
-    codedHeight: videoTrackInfo.track_height,
-    description: description
-  };
-
-  const target = new ArrayBufferTarget();
-  const muxerOpts = {
-    target: target, fastStart: 'in-memory',
-    video: { codec: 'avc', width: W, height: H },
-    firstTimestampBehavior: 'offset'
-  };
-  const hasAudio = !!audioTrackInfo;
-  if (hasAudio) {
-    muxerOpts.audio = { codec: 'aac', numberOfChannels: 2, sampleRate: 48000 };
-  }
-  const muxer = new Muxer(muxerOpts);
-
-  let frameCount = 0;
-  const keyFrameEvery = Math.max(1, Math.round(fps * 2));
-  let encoderError = null;
-  let encoderMetaSeen = false;
-
-  const videoEncoder = new VideoEncoder({
-    output: (chunk, meta) => {
-      if (encoderError) return;
-      try {
-        if (meta && meta.decoderConfig) {
-          encoderMetaSeen = true;
-          muxer.addVideoChunk(chunk, meta);
-        } else if (encoderMetaSeen) {
-          muxer.addVideoChunk(chunk);
-        } else {
-          muxer.addVideoChunk(chunk, meta || undefined);
-        }
-      } catch (e) { console.warn('addVideoChunk:', e); }
-    },
-    error: (e) => { encoderError = e; console.error('VideoEncoder:', e); }
-  });
-
-  let encoderConfigured = false;
-  const codecCandidates = getCodecCandidates(W, H);
-  for (let ci = 0; ci < codecCandidates.length; ci++) {
-    const codecStr = codecCandidates[ci];
-    const config = {
-      codec: codecStr, width: W, height: H,
-      bitrate: bitrateBps, framerate: fps,
-      avc: { format: 'avc' }
-    };
-    try {
-      if (typeof VideoEncoder.isConfigSupported === 'function') {
-        const support = await VideoEncoder.isConfigSupported(config);
-        if (!support || !support.supported) continue;
-      }
-      videoEncoder.configure(config);
-      encoderConfigured = true;
-      console.log('[export] Encoder codec:', codecStr, W + 'x' + H);
-      break;
-    } catch (_) {}
-  }
-  if (!encoderConfigured) {
-    for (let ci = 0; ci < codecCandidates.length; ci++) {
-      try {
-        videoEncoder.configure({
-          codec: codecCandidates[ci], width: W, height: H,
-          bitrate: bitrateBps, framerate: fps
-        });
-        encoderConfigured = true;
-        break;
-      } catch (_) {}
-    }
-  }
-  if (!encoderConfigured) {
-    throw new Error('No supported H.264 encoder for ' + W + 'x' + H);
-  }
-
-  const canvas = document.createElement('canvas');
-  canvas.width = W; canvas.height = H;
-  const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
-
-  function emitBlackFrame(timelineTime) {
-    ctx.fillStyle = '#000';
-    ctx.fillRect(0, 0, W, H);
-    try { renderFrameToCanvas(ctx, W, H, null, timelineTime, timelineTime); }
-    catch (_) {}
-    const exportFrame = new VideoFrame(canvas, {
-      timestamp: Math.round(timelineTime * 1e6),
-      duration: Math.round(frameInterval * 1e6)
-    });
-    const needKey = (frameCount % keyFrameEvery) === 0;
-    videoEncoder.encode(exportFrame, { keyFrame: needKey });
-    exportFrame.close();
-    frameCount++;
-  }
-
-  if (clipStartTime > 0.005) {
-    let t = 0;
-    while (t < clipStartTime - 0.001) { emitBlackFrame(t); t += frameInterval; }
-  }
-
-  let decoderError = null;
-  const decoder = new VideoDecoder({
-    output: function (frame) {
-      if (decoderError) { try { frame.close(); } catch (_) {} return; }
-      try {
-        const sourceTime = frame.timestamp / 1e6;
-        const timelineTime = sourceTime - clipSourceIn + clipStartTime;
-        if (timelineTime < clipStartTime - 0.03) { frame.close(); return; }
-        if (timelineTime >= clipEnd) { frame.close(); return; }
-
-        renderFrameToCanvas(ctx, W, H, frame, sourceTime, timelineTime);
-
-        const exportFrame = new VideoFrame(canvas, {
-          timestamp: Math.round(timelineTime * 1e6),
-          duration: frame.duration || Math.round(1e6 / fps)
-        });
-        const needKey = (frameCount % keyFrameEvery) === 0;
-        videoEncoder.encode(exportFrame, { keyFrame: needKey });
-        exportFrame.close();
-        frame.close();
-        frameCount++;
-
-        const p = timelineEnd > 0 ? Math.max(0, Math.min(1, timelineTime / timelineEnd)) : 0;
-        showProgress(0.05 + p * 0.9,
-                     'Rendering… ' + Math.round(p * 100) + '%', 'Frame ' + frameCount);
-      } catch (e) { console.warn('frame err:', e); try { frame.close(); } catch (_) {} }
-    },
-    error: function (e) { decoderError = e; console.error('VideoDecoder:', e); }
-  });
-
-  try { decoder.configure(decoderConfig); }
-  catch (e) { throw new Error('Decoder configure failed: ' + e.message); }
-
-  let startIdx = -1;
-  for (let i = 0; i < videoSamples.length; i++) {
-    if (videoSamples[i].is_sync) { startIdx = i; break; }
-  }
-  if (startIdx < 0) throw new Error('No keyframe');
-
-  for (let i = startIdx; i < videoSamples.length; i++) {
-    if (decoder.state === 'closed') break;
-    if (decoderError) break;
-    while (decoder.decodeQueueSize > 25 && decoder.state === 'configured') await sleep(5);
-    const s = videoSamples[i];
-    try {
-      decoder.decode(new EncodedVideoChunk({
-        type: s.is_sync ? 'key' : 'delta',
-        timestamp: Math.round((s.cts * 1e6) / s.timescale),
-        duration: Math.round((s.duration * 1e6) / s.timescale),
-        data: s.data
-      }));
-    } catch (e) {
-      console.warn('decode err ' + i + ':', e.message);
-      if (!s.is_sync) {
-        for (let j = i + 1; j < videoSamples.length; j++) {
-          if (videoSamples[j].is_sync) { i = j - 1; break; }
-        }
-      }
-    }
-  }
-
-  showProgress(0.94, 'Finalizing…', 'Flushing decoder');
-  try { await decoder.flush(); } catch (_) {}
-  try { decoder.close(); } catch (_) {}
-
-  if (clipEnd < timelineEnd - 0.005) {
-    let t = clipEnd;
-    while (t < timelineEnd - 0.001) { emitBlackFrame(t); t += frameInterval; }
-  }
-
-  // 🆕 AUDIO with FX
-  if (hasAudio) {
-    try {
-      await encodeAudioFromURL(
-        videoEl.src, muxer, audioTrackInfo,
-        clipSourceIn, clipDuration, clipStartTime
-      );
-    } catch (e) { console.warn('Audio failed:', e); }
-  }
-
-  try { await videoEncoder.flush(); } catch (_) {}
-  try { videoEncoder.close(); } catch (_) {}
-
-  if (encoderError) throw encoderError;
-  if (decoderError) throw decoderError;
-  if (frameCount === 0) throw new Error('No frames encoded');
-
-  showProgress(0.99, 'Writing file…', '');
-  muxer.finalize();
-  const blob = new Blob([target.buffer], { type: 'video/mp4' });
-  hideProgress();
-  const saved = await saveBlob(blob, filename);
-  if (saved) showToast('Saved ' + filename);
-}
-
-// ═══════════════════════════════════════════════════════════════
-//  AUDIO ENCODER (with FX applied)
-// ═══════════════════════════════════════════════════════════════
-async function encodeAudioFromURL(url, muxer, audioTrackInfo, sourceIn, clipDur, timelineStart) {
-  const resp = await fetch(url);
-  const ab = await resp.arrayBuffer();
-  const AC = window.AudioContext || window.webkitAudioContext;
-  const ac = new AC();
-  let rawBuffer;
-  try { rawBuffer = await ac.decodeAudioData(ab); }
-  catch (e) { try { ac.close(); } catch (_) {} throw e; }
-  try { ac.close(); } catch (_) {}
-
-  // 🆕 Get FX layers in this range
-  const fxLayers = getAudioFxLayersInRange(
-    timelineStart, timelineStart + clipDur
-  );
-
-  let processedBuffer = rawBuffer;
-  if (fxLayers.length) {
-    console.log('[export] Applying', fxLayers.length, 'Audio FX layer(s)');
-    try {
-      processedBuffer = await applyAudioFxLayers(
-        rawBuffer, fxLayers, sourceIn, clipDur, timelineStart
-      );
-    } catch (e) {
-      console.warn('Audio FX offline render failed:', e);
-      processedBuffer = rawBuffer;
-    }
-  }
-
-  const targetRate = 48000;
-  const numCh = Math.min(2, processedBuffer.numberOfChannels || 1);
-  const srcRate = processedBuffer.sampleRate;
-
-  const startSample = Math.max(0, Math.floor((sourceIn || 0) * srcRate));
-  const endSample = (clipDur && clipDur > 0)
-    ? Math.min(processedBuffer.length, Math.floor(((sourceIn || 0) + clipDur) * srcRate))
-    : processedBuffer.length;
-  const totalFrames = Math.max(0, endSample - startSample);
-  if (totalFrames === 0) throw new Error('Empty audio range');
-
-  const audioEncoder = new AudioEncoder({
-    output: function (chunk, meta) {
-      try { muxer.addAudioChunk(chunk, meta); } catch (e) { console.warn(e); }
-    },
-    error: function (e) { console.warn('AudioEncoder', e); }
-  });
-  audioEncoder.configure({
-    codec: 'mp4a.40.2', sampleRate: targetRate,
-    numberOfChannels: numCh, bitrate: 128000
-  });
-
-  const chunkFrames = 1024;
-  const channels = [];
-  for (let c = 0; c < numCh; c++) channels.push(processedBuffer.getChannelData(c));
-
-  const timeOffset = Number.isFinite(timelineStart) ? timelineStart : 0;
-  let offset = 0;
-  while (offset < totalFrames) {
-    const len = Math.min(chunkFrames, totalFrames - offset);
-    const planar = new Float32Array(len * numCh);
-    for (let c = 0; c < numCh; c++) {
-      const src = channels[c];
-      const dstOff = c * len;
-      const srcStart = startSample + offset;
-      for (let i = 0; i < len; i++) {
-        if (srcRate === targetRate) {
-          planar[dstOff + i] = src[srcStart + i] || 0;
-        } else {
-          const srcIdx = srcStart + i * (srcRate / targetRate);
-          const i0 = Math.floor(srcIdx);
-          const i1 = Math.min(processedBuffer.length - 1, i0 + 1);
-          const frac = srcIdx - i0;
-          planar[dstOff + i] = (src[i0] || 0) * (1 - frac) + (src[i1] || 0) * frac;
-        }
-      }
-    }
-    try {
-      const ad = new AudioData({
-        format: 'f32-planar', sampleRate: targetRate,
-        numberOfFrames: len, numberOfChannels: numCh,
-        timestamp: Math.round((timeOffset + offset / targetRate) * 1e6),
-        data: planar
-      });
-      audioEncoder.encode(ad);
-      ad.close();
-    } catch (e) { console.warn('audio chunk', e); }
-    offset += len;
-  }
-
-  try { await audioEncoder.flush(); } catch (_) {}
-  try { await audioEncoder.close(); } catch (_) {}
-}
-
-// ═══════════════════════════════════════════════════════════════
-//  APPLY AUDIO FX LAYERS OFFLINE
-//  Splits clip duration into segments; each segment either uses
-//  a specific FX chain or plays dry.
-// ═══════════════════════════════════════════════════════════════
-async function applyAudioFxLayers(inputBuffer, fxRanges, sourceIn, clipDur, timelineStart) {
-  const sr = inputBuffer.sampleRate;
-  const numCh = Math.min(2, inputBuffer.numberOfChannels || 1);
-  const outLen = Math.max(1, Math.ceil(clipDur * sr));
-
-  const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
-  if (!OAC) throw new Error('OfflineAudioContext not available');
-
-  const ac = new OAC(numCh, outLen, sr);
-
-  // Build segment boundaries in TIMELINE space
-  const points = new Set([timelineStart, timelineStart + clipDur]);
-  for (const fx of fxRanges) {
-    points.add(fx.start);
-    points.add(fx.end);
-  }
-  const sorted = [...points].sort((a, b) => a - b);
-
-  const segments = [];
-  for (let i = 0; i < sorted.length - 1; i++) {
-    const s = sorted[i];
-    const e = sorted[i + 1];
-    if (e <= s) continue;
-    let key = null;
-    for (const fx of fxRanges) {
-      if (fx.start <= s && fx.end >= e) { key = fx.key; break; }
-    }
-    segments.push({ start: s, end: e, key });
-  }
-
-  console.log('[export-audio-fx] segments:', segments);
-
-  // Add a small fade to avoid clicks at segment boundaries
-  const FADE_SEC = 0.01;
-  const FADE_SAMPLES = Math.max(1, Math.floor(FADE_SEC * sr));
-
-  for (const seg of segments) {
-    const segDur = seg.end - seg.start;
-    if (segDur <= 0.001) continue;
-
-    // Source local time for this segment
-    const localStart = sourceIn + (seg.start - timelineStart);
-    const sSamp = Math.max(0, Math.floor(localStart * sr));
-    const eSamp = Math.min(inputBuffer.length, Math.floor((localStart + segDur) * sr));
-    const samples = Math.max(1, eSamp - sSamp);
-
-    const segBuf = ac.createBuffer(numCh, samples, sr);
-    for (let c = 0; c < numCh; c++) {
-      const srcCh = inputBuffer.getChannelData(Math.min(c, inputBuffer.numberOfChannels - 1));
-      const dstCh = segBuf.getChannelData(c);
-      for (let i = 0; i < samples; i++) {
-        let v = srcCh[sSamp + i] || 0;
-        // fade-in
-        if (i < FADE_SAMPLES) v *= i / FADE_SAMPLES;
-        // fade-out
-        const rem = samples - i;
-        if (rem < FADE_SAMPLES) v *= rem / FADE_SAMPLES;
-        dstCh[i] = v;
-      }
-    }
-
-    const src = ac.createBufferSource();
-    src.buffer = segBuf;
-
-    let tail = src;
-    if (seg.key) {
-      const build = getBuilder(seg.key);
-      if (build) {
-        try { tail = build(ac, src) || src; }
-        catch (e) { console.warn('FX build failed:', e); tail = src; }
-      }
-    }
-    tail.connect(ac.destination);
-
-    // Start at segment offset within output buffer
-    const startAtOutput = seg.start - timelineStart;
-    src.start(Math.max(0, startAtOutput));
-  }
-
-  return await ac.startRendering();
-}
-
-// ═══════════════════════════════════════════════════════════════
-//  Decoder description — raw MP4 atom parser
-// ═══════════════════════════════════════════════════════════════
-function getDecoderDescription(mp4box, trackId, MP4Box, sourceBuffer) {
-  try {
-    if (sourceBuffer && sourceBuffer.byteLength > 0) {
-      const avcC = extractBoxPayload(sourceBuffer, 'avcC');
-      if (avcC && avcC.length > 4) return avcC;
-      const hvcC = extractBoxPayload(sourceBuffer, 'hvcC');
-      if (hvcC && hvcC.length > 4) return hvcC;
-    }
-  } catch (e) { console.warn('atom extract:', e); }
-  return undefined;
-}
-
-function extractBoxPayload(arrayBuffer, targetType) {
-  const view = new DataView(arrayBuffer);
-  const result = { found: null };
-  walkBoxes(arrayBuffer, view, 0, arrayBuffer.byteLength, targetType, result);
-  return result.found;
-}
-
-function walkBoxes(buffer, view, start, end, targetType, result) {
-  if (result.found) return;
-  let offset = start;
-  while (offset + 8 <= end) {
-    if (result.found) return;
-    const size32 = view.getUint32(offset, false);
-    const type = String.fromCharCode(
-      view.getUint8(offset + 4), view.getUint8(offset + 5),
-      view.getUint8(offset + 6), view.getUint8(offset + 7)
-    );
-    let boxSize = size32;
-    let payloadStart = offset + 8;
-    if (size32 === 1) {
-      if (offset + 16 > end) break;
-      const hi = view.getUint32(offset + 8, false);
-      const lo = view.getUint32(offset + 12, false);
-      boxSize = hi * 4294967296 + lo;
-      payloadStart = offset + 16;
-    } else if (size32 === 0) { boxSize = end - offset; }
-    if (boxSize < 8 || offset + boxSize > end) break;
-    if (type === targetType) {
-      result.found = new Uint8Array(buffer, payloadStart, offset + boxSize - payloadStart);
-      return;
-    }
-    if (type === 'moov' || type === 'trak' || type === 'mdia' ||
-        type === 'minf' || type === 'stbl' || type === 'dinf' ||
-        type === 'edts' || type === 'udta' || type === 'mvex') {
-      walkBoxes(buffer, view, payloadStart, offset + boxSize, targetType, result);
-    } else if (type === 'stsd') {
-      walkBoxes(buffer, view, payloadStart + 8, offset + boxSize, targetType, result);
-    } else if (type === 'avc1' || type === 'avc3' ||
-               type === 'hvc1' || type === 'hev1' ||
-               type === 'mp4v' || type === 'encv' ||
-               type === 'vp09' || type === 'av01') {
-      walkBoxes(buffer, view, payloadStart + 78, offset + boxSize, targetType, result);
-    } else if (type === 'mp4a' || type === 'enca' ||
-               type === 'samr' || type === 'sawb') {
-      walkBoxes(buffer, view, payloadStart + 36, offset + boxSize, targetType, result);
-    }
-    offset += boxSize;
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════
-//  mp4box.js loader
-// ═══════════════════════════════════════════════════════════════
-let mp4boxLoadPromise = null;
-function loadMP4Box() {
-  if (window.MP4Box) return Promise.resolve(window.MP4Box);
-  if (mp4boxLoadPromise) return mp4boxLoadPromise;
-  mp4boxLoadPromise = new Promise(function (resolve, reject) {
-    const s = document.createElement('script');
-    s.src = 'https://cdn.jsdelivr.net/npm/mp4box@0.5.2/dist/mp4box.all.min.js';
-    s.onload = function () {
-      if (window.MP4Box) resolve(window.MP4Box);
-      else reject(new Error('MP4Box not found'));
-    };
-    s.onerror = function () { reject(new Error('MP4Box load failed')); };
-    document.head.appendChild(s);
-  });
-  return mp4boxLoadPromise;
 }
 
 // ═══════════════════════════════════════════════════════════════
