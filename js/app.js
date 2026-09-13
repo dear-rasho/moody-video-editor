@@ -15,6 +15,7 @@ import { injectQuickLayerButtons } from './layers/layersManager.js';
 import { initKeyframeEngine } from './features/keyframeEngine.js';
 import { initHistory } from './workspace/historyManager.js';
 import { openExportPanel } from './features/export.js';
+import { initEffectRenderer } from './workspace/effectRenderer.js';
 
 import * as featureModules from './features/index.js';
 
@@ -23,9 +24,19 @@ const appState = {
   project: null,
   history: [],
   media: [],
-  timeline: { visual: [], audio: [] },
+  timeline: {
+    visual: [],
+    audio: [],
+    // 🆕 Per-track visibility (visual) — Set of track indices that are HIDDEN
+    hiddenVisualTracks: new Set(),
+    // 🆕 Per-track mute (audio) — Set of track indices that are MUTED
+    mutedAudioTracks: new Set()
+  },
   configurations: {}
 };
+
+// 🆕 Expose appState globally (avoid circular import issues)
+window.__appState = appState;
 
 const elements = {
   dashboard: document.querySelector('#dashboard-page'),
@@ -54,6 +65,8 @@ function createProject() {
   appState.media = [];
   appState.timeline.visual = [];
   appState.timeline.audio = [];
+  appState.timeline.hiddenVisualTracks = new Set();
+  appState.timeline.mutedAudioTracks = new Set();
   if (preview) preview.clear();
   const previewAudio = document.querySelector('#preview-audio');
   previewAudio.pause();
@@ -109,8 +122,10 @@ async function bootstrap() {
     }
   });
 
-  // Expose for feature modules that need "current playhead time"
   window.__playbackEngine = playbackEngine;
+
+  // 🆕 Effect renderer — applies CSS filters + pixel effects + motion
+  initEffectRenderer();
 
   initMediaLibrary({
     button: document.querySelector('#media-picker-btn'),
@@ -139,20 +154,56 @@ async function bootstrap() {
     visual: document.querySelector('#visual-tracks'),
     audio: document.querySelector('#audio-tracks'),
     state: appState.timeline,
-    onVisualVisibility: function (label, visible) { if (label === 'V1') preview.setVisible(visible); },
-    onAudioMute: function (label, muted) { if (label === 'A1') previewAudio.muted = muted; },
-    onDeleteSelected: function (clip) {
-      appState.media = appState.media.filter(function (item) { return item.url !== clip.url; });
-      if (clip.type && clip.type.indexOf('audio/') === 0) {
-        previewAudio.pause();
-        previewAudio.removeAttribute('src');
-        previewAudio.load();
+
+    // 🆕 Per-track visibility toggle (works for ALL visual layers)
+    onVisualVisibility: function (label, visible) {
+      const trackIdx = Number(label.slice(1)) - 1;
+      if (!Number.isFinite(trackIdx)) return;
+      if (visible) {
+        appState.timeline.hiddenVisualTracks.delete(trackIdx);
       } else {
-        preview.clear();
+        appState.timeline.hiddenVisualTracks.add(trackIdx);
       }
+      // Force a redraw so hidden layer disappears immediately
+      if (playbackEngine) playbackEngine.redraw();
+      // Also refresh effects
+      document.dispatchEvent(new CustomEvent('effects:refresh'));
+    },
+
+    // 🆕 Per-track mute toggle (works for ALL audio layers)
+    onAudioMute: function (label, muted) {
+      const trackIdx = Number(label.slice(1)) - 1;
+      if (!Number.isFinite(trackIdx)) return;
+      if (muted) {
+        appState.timeline.mutedAudioTracks.add(trackIdx);
+      } else {
+        appState.timeline.mutedAudioTracks.delete(trackIdx);
+      }
+    },
+
+    // 🆕 Delete cleanup — DON'T clear preview for effect/text clips
+    onDeleteSelected: function (clip, type) {
+      // Only clean up audio element if we just deleted its active source
+      if (type === 'audio' || (clip.type && clip.type.indexOf('audio/') === 0)) {
+        const curSrc = previewAudio.currentSrc || previewAudio.src || '';
+        if (curSrc && clip.url && curSrc.indexOf(clip.url.split('/').pop()) >= 0) {
+          previewAudio.pause();
+          previewAudio.removeAttribute('src');
+          previewAudio.load();
+        }
+      }
+      // Remove from media library (only user-imported items have .file)
+      if (clip.file) {
+        appState.media = appState.media.filter(function (item) {
+          return item.url !== clip.url;
+        });
+      }
+      // Do NOT call preview.clear() — playbackEngine will redraw with
+      // whatever clips remain on the timeline.
       if (playbackEngine) playbackEngine.redraw();
       if (previewHud) previewHud.refresh();
     },
+
     getPlayheadTime: function () {
       return playbackEngine ? playbackEngine.getTime() : 0;
     },
@@ -189,7 +240,7 @@ async function bootstrap() {
     redo: document.querySelector('#redo-btn'),
     engine: playbackEngine
   });
-    // 🆕 Runtime text overlay renderer
+
   initTextRenderer();
 
   registerFeatures();

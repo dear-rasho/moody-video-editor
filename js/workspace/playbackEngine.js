@@ -2,9 +2,10 @@
 //  js/workspace/playbackEngine.js
 //  Master playback clock.
 //
-//  NEW: Preloads the upcoming video clip while playhead is in a
-//  blank/text/image area, so playback starts instantly when the
-//  video clip's region begins.
+//  NEW: Layer compositing — looks at ALL visual clips at the
+//  current time, finds the top-most VIDEO clip, plays it.
+//  Text/image/sticker overlays render independently on top.
+//  Only when NO video is present in the stack → black base.
 // ================================================================
 
 import { appState } from '../app.js';
@@ -40,27 +41,42 @@ export function initPlaybackEngine({ canvas, video, audio, preview, onTick }) {
     return c && c.type && c.type.indexOf('video/') === 0;
   }
 
-  function getTopVisualClipAt(time) {
+  // 🆕 All visual clips at time, sorted bottom→top (V1 first)
+  // 🆕 All visual clips at time, sorted bottom→top (V1 first)
+  //    Skips hidden tracks.
+  function getVisualStackAt(time) {
     const tracks = appState.timeline.visual || [];
-    let topClip = null;
-    let topIdx = -1;
+    const hidden = appState.timeline.hiddenVisualTracks || new Set();
+    const stack = [];
     for (let t = 0; t < tracks.length; t++) {
+      if (hidden.has(t)) continue;           // 🆕 skip hidden
       const track = tracks[t];
       if (!Array.isArray(track)) continue;
       for (let c = 0; c < track.length; c++) {
         const clip = track[c];
         if (!clip) continue;
         if (clipContainsTime(clip, time)) {
-          if (t > topIdx) { topClip = clip; topIdx = t; }
+          stack.push({ clip, trackIndex: t });
+          break;
         }
       }
     }
-    return topClip;
+    return stack;
+  }
+
+  // 🆕 Top-most video clip in the active stack
+  function getTopVideoClipInStack(stack) {
+    for (let i = stack.length - 1; i >= 0; i--) {
+      if (isVideoClip(stack[i].clip)) return stack[i].clip;
+    }
+    return null;
   }
 
   function getActiveAudioClipAt(time) {
     const tracks = appState.timeline.audio || [];
+    const muted = appState.timeline.mutedAudioTracks || new Set();
     for (let t = 0; t < tracks.length; t++) {
+      if (muted.has(t)) continue;              // 🆕 skip muted
       const track = tracks[t];
       if (!Array.isArray(track)) continue;
       for (let c = 0; c < track.length; c++) {
@@ -122,7 +138,6 @@ export function initPlaybackEngine({ canvas, video, audio, preview, onTick }) {
     const a = el.currentSrc || el.src || '';
     if (!a) return false;
     if (a === url) return true;
-    // Normalize blob: compare UUIDs
     const aM = a.match(/blob:[^/]+\/(.+)$/);
     const bM = String(url).match(/blob:[^/]+\/(.+)$/);
     if (aM && bM) return aM[1] === bM[1];
@@ -173,11 +188,7 @@ export function initPlaybackEngine({ canvas, video, audio, preview, onTick }) {
     if (audio && !audio.paused) { try { audio.pause(); } catch (_) {} }
   }
 
-  // ═══════════════════════════════════════════════════════════
-  //  PRELOAD: While playhead is NOT inside a video clip, prepare
-  //  the next upcoming video clip's source position in the paused
-  //  video element, so play() starts instantly.
-  // ═══════════════════════════════════════════════════════════
+  // ─── Preload next video clip ──────────────────────────────
   function preloadUpcomingVideo(currentTime) {
     const tracks = appState.timeline.visual || [];
     let bestClip = null;
@@ -205,7 +216,6 @@ export function initPlaybackEngine({ canvas, video, audio, preview, onTick }) {
     const sameSrc = srcMatches(video, bestClip.url);
 
     if (!sameSrc) {
-      // Different file → load + seek to sourceIn while paused
       video.src = bestClip.url;
       video.load();
       const onMeta = function () {
@@ -216,7 +226,6 @@ export function initPlaybackEngine({ canvas, video, audio, preview, onTick }) {
       return;
     }
 
-    // Same file → seek to sourceIn while paused (video is already paused here)
     if (video.paused) {
       const drift = Math.abs(video.currentTime - localTime);
       if (drift > 0.15) {
@@ -227,26 +236,27 @@ export function initPlaybackEngine({ canvas, video, audio, preview, onTick }) {
 
   // ─── Render frame ─────────────────────────────────────────
   function renderFrame(time) {
-    const topClip = getTopVisualClipAt(time);
     const audioClip = getActiveAudioClipAt(time);
+    const visualStack = getVisualStackAt(time);
 
-    // ═══ VIDEO ═══
-    if (isVideoClip(topClip)) {
-      const local = computeLocalTime(topClip, time);
-      const sameSrc = srcMatches(video, topClip.url);
+    // 🆕 Find top-most video clip in the active stack.
+    //    Layers above it (text, image, sticker) will overlay it.
+    const videoClip = getTopVideoClipInStack(visualStack);
+
+    // ═══ VIDEO BASE ═══
+    if (videoClip) {
+      const local = computeLocalTime(videoClip, time);
+      const sameSrc = srcMatches(video, videoClip.url);
 
       if (!sameSrc) {
-        // Wrong source — full sync (slower path, rare with preload)
-        syncVideoPosition(topClip, local);
+        syncVideoPosition(videoClip, local);
       } else {
         const drift = Math.abs(video.currentTime - local);
         if (playing) {
-          // During play: only correct BIG drift (>0.5s). Small drift is fine.
           if (drift > 0.5) {
             try { video.currentTime = local; } catch (_) {}
           }
         } else {
-          // Paused: correct precisely
           if (drift > 0.15) {
             try { video.currentTime = local; } catch (_) {}
           }
@@ -259,6 +269,7 @@ export function initPlaybackEngine({ canvas, video, audio, preview, onTick }) {
         pauseVideoIfNeeded();
       }
 
+      // Draw video frame onto canvas (text overlays sit ABOVE this)
       if (preview && typeof preview.redraw === 'function') {
         preview.redraw();
       } else {
@@ -268,7 +279,7 @@ export function initPlaybackEngine({ canvas, video, audio, preview, onTick }) {
         }
       }
     } else {
-      // 🆕 No video clip here → preload next one while paused
+      // No video in stack → black base (text/image/sticker overlays still show)
       pauseVideoIfNeeded();
       preloadUpcomingVideo(time);
       drawBlack();
@@ -325,7 +336,6 @@ export function initPlaybackEngine({ canvas, video, audio, preview, onTick }) {
     if (playheadTime >= duration - 0.01) playheadTime = 0;
     playing = true;
     lastRealTime = performance.now();
-    // Trigger an immediate render so play() of video is called ASAP
     renderFrame(playheadTime);
     rafId = requestAnimationFrame(tick);
     document.dispatchEvent(new CustomEvent('playback:state', { detail: { playing: true } }));

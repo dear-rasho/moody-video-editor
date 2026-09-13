@@ -1,9 +1,17 @@
 // ================================================================
 //  js/features/adjustments.js
-//  Self-contained Adjustments Panel
-//  21 sliders (-100..+100, default 0) with per-pixel canvas processing.
-//  Contain-fit preserved via window.__previewContainRect.
+//  Adjustments panel — creates / updates 'adjustment' effect layers.
+//  Pixel processing happens in effectRenderer.js
 // ================================================================
+
+import { featuresRouter } from './featuresRouter.js';
+import {
+  getSelectedEffectLayer,
+  hasSelectedLayer,
+  createEffectLayer,
+  updateEffectLayer,
+  findEffectLayerById
+} from '../workspace/effectLayer.js';
 
 export const featureKey = 'adjustments';
 
@@ -31,33 +39,66 @@ const ADJUSTMENTS = [
   { key: 'skinTones',   label: 'Skin Tones'  }
 ];
 
-const state = {};
-ADJUSTMENTS.forEach(a => { state[a.key] = 0; });
-
-let sliderRefs = {};
-let rafPending = false;
-
-// ─── Contain-fit draw helper ───────────────────────────────────
-// ─── Contain-fit draw helper ───────────────────────────────────
-// ─── Ratio-aware draw helper ───────────────────────────────────
-function drawVideoContained(ctx, video, canvas) {
-  if (typeof window.__previewDrawVideo === 'function') {
-    window.__previewDrawVideo(ctx, video, canvas);
-    return;
-  }
-  // Fallback (previewCanvas not initialized yet)
-  ctx.fillStyle = '#000';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  const rectFn = window.__previewContainRect;
-  const r = rectFn
-    ? rectFn(video.videoWidth, video.videoHeight, canvas.width, canvas.height)
-    : { x: 0, y: 0, w: canvas.width, h: canvas.height };
-  try {
-    ctx.drawImage(video, r.x, r.y, r.w, r.h);
-  } catch (_) {}
+function makeDefaults() {
+  const s = {};
+  ADJUSTMENTS.forEach(a => { s[a.key] = 0; });
+  return s;
 }
 
+let panelState = makeDefaults();
+let editingLayer = null;
+let sliderRefs = {};
+
+// ─── Router install ───────────────────────────────────────────
+(function installAdjustmentsRenderer() {
+  if (featuresRouter.__adjustInstalled) return;
+  featuresRouter.__adjustInstalled = true;
+  const _orig = featuresRouter.render.bind(featuresRouter);
+  featuresRouter.render = function (view) {
+    if (view.renderMode === 'adjustmentsPanel') {
+      this.title.textContent = view.title;
+      this.backButton.hidden = view.level === 0;
+      this.shelf.classList.remove('circle-shelf');
+      this.shelf.style.cssText = '';
+      this.shelf.replaceChildren();
+      renderTo(this.shelf);
+      return;
+    }
+    return _orig(view);
+  };
+})();
+
+const CSS_ID = 'adjustments-styles';
+function injectStyles() {
+  if (document.getElementById(CSS_ID)) return;
+  const s = document.createElement('style');
+  s.id = CSS_ID;
+  s.textContent = `
+    .aj-panel { display:flex; flex-direction:column; gap:8px; padding:8px 6px 14px; overflow-y:auto; max-height:72vh; width:100%; box-sizing:border-box; }
+    .aj-warn { padding:10px 12px; background:rgba(255,107,107,0.12); border:1px solid var(--danger); border-radius:8px; font-size:12px; color:var(--danger); font-weight:700; }
+    .aj-badge { padding:8px 12px; background:rgba(255,209,102,0.15); border:1px solid #ffd166; border-radius:8px; font-size:11px; color:#ffd166; font-weight:700; }
+    .aj-row { display:flex; flex-direction:column; gap:6px; padding:10px 12px; background:var(--surface-2); border:1px solid var(--border); border-radius:10px; }
+    .aj-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+    .aj-label { font-size:12px; font-weight:600; color:var(--text); }
+    .aj-right { display:flex; align-items:center; gap:8px; }
+    .aj-val { font-size:12px; font-weight:600; min-width:40px; text-align:right; color:var(--muted); font-variant-numeric:tabular-nums; }
+    .aj-reset { background:transparent; border:0; color:var(--muted); font-size:14px; cursor:pointer; padding:0 2px; opacity:0.7; }
+    .aj-slider { width:100%; accent-color:var(--accent); height:4px; cursor:pointer; }
+  `;
+  document.head.appendChild(s);
+}
+
+// ─── Router entry ─────────────────────────────────────────────
 export function open({ router }) {
+  const sel = getSelectedEffectLayer('adjustment');
+  if (sel && sel.clip.effectState && sel.clip.effectState.adjustments) {
+    panelState = Object.assign(makeDefaults(), sel.clip.effectState.adjustments);
+    editingLayer = sel;
+  } else {
+    panelState = makeDefaults();
+    editingLayer = null;
+  }
+
   router.openLevel('adjustments', [], {
     title: 'Adjustments',
     level: 2,
@@ -65,307 +106,94 @@ export function open({ router }) {
   });
 }
 
+// ─── Render ───────────────────────────────────────────────────
 export function renderTo(container) {
+  injectStyles();
   container.replaceChildren();
-  container.style.cssText =
-    'display:flex;flex-direction:column;gap:8px;padding:8px 6px 14px;' +
-    'overflow-y:auto;max-height:72vh;width:100%;';
 
+  const panel = document.createElement('div');
+  panel.className = 'aj-panel';
   sliderRefs = {};
+
+  if (!hasSelectedLayer()) {
+    const w = document.createElement('div');
+    w.className = 'aj-warn';
+    w.textContent = '⚠️ Select a timeline layer first';
+    panel.appendChild(w);
+  } else if (editingLayer) {
+    const b = document.createElement('div');
+    b.className = 'aj-badge';
+    b.textContent = '✏️ Editing adjustment layer';
+    panel.appendChild(b);
+  }
 
   ADJUSTMENTS.forEach(adj => {
     const row = document.createElement('div');
-    row.style.cssText =
-      'display:flex;flex-direction:column;gap:6px;padding:10px 12px;' +
-      'background:var(--surface-2);border:1px solid var(--border);border-radius:10px;';
+    row.className = 'aj-row';
 
-    const header = document.createElement('div');
-    header.style.cssText =
-      'display:flex;align-items:center;justify-content:space-between;gap:8px;';
+    const head = document.createElement('div');
+    head.className = 'aj-head';
 
     const label = document.createElement('span');
+    label.className = 'aj-label';
     label.textContent = adj.label;
-    label.style.cssText =
-      'font-size:12px;font-weight:600;color:var(--text);letter-spacing:0.02em;';
 
     const right = document.createElement('div');
-    right.style.cssText = 'display:flex;align-items:center;gap:8px;';
+    right.className = 'aj-right';
 
-    // ✅ Restore from persisted state
-    const initialValue = state[adj.key] || 0;
+    const v = panelState[adj.key] || 0;
 
-    const valueDisplay = document.createElement('span');
-    valueDisplay.textContent = initialValue > 0 ? `+${initialValue}` : `${initialValue}`;
-    valueDisplay.style.cssText =
-      'font-size:12px;font-weight:600;min-width:40px;text-align:right;' +
-      'color:var(--muted);font-variant-numeric:tabular-nums;';
+    const val = document.createElement('span');
+    val.className = 'aj-val';
+    val.textContent = v > 0 ? '+' + v : String(v);
 
-    const resetBtn = document.createElement('button');
-    resetBtn.type = 'button';
-    resetBtn.textContent = '↺';
-    resetBtn.setAttribute('aria-label', `Reset ${adj.label}`);
-    resetBtn.style.cssText =
-      'background:transparent;border:0;color:var(--muted);font-size:14px;' +
-      'cursor:pointer;padding:0 2px;opacity:0.7;';
-
-    resetBtn.addEventListener('click', (e) => {
+    const rst = document.createElement('button');
+    rst.type = 'button';
+    rst.className = 'aj-reset';
+    rst.textContent = '↺';
+    rst.addEventListener('click', (e) => {
       e.stopPropagation();
-      state[adj.key] = 0;
+      panelState[adj.key] = 0;
       const ref = sliderRefs[adj.key];
-      if (ref) {
-        ref.slider.value = 0;
-        ref.valueDisplay.textContent = '0';
-      }
-      scheduleApply();
+      if (ref) { ref.slider.value = 0; ref.val.textContent = '0'; }
+      applyToLayer();
     });
 
-    right.append(valueDisplay, resetBtn);
-    header.append(label, right);
+    right.append(val, rst);
+    head.append(label, right);
 
-    const slider = document.createElement('input');
-    slider.type = 'range';
-    slider.min = -100;
-    slider.max = 100;
-    slider.step = 1;
-    slider.value = initialValue;    // ✅ Restore
-    slider.style.cssText =
-      'width:100%;accent-color:var(--accent);height:4px;cursor:pointer;';
+    const sl = document.createElement('input');
+    sl.type = 'range';
+    sl.min = -100; sl.max = 100; sl.step = 1;
+    sl.value = v;
+    sl.className = 'aj-slider';
 
-    slider.addEventListener('input', () => {
-      const val = parseInt(slider.value, 10);
-      state[adj.key] = val;
-      valueDisplay.textContent = val > 0 ? `+${val}` : `${val}`;
-      scheduleApply();
+    sl.addEventListener('input', () => {
+      const n = parseInt(sl.value, 10);
+      panelState[adj.key] = n;
+      val.textContent = n > 0 ? '+' + n : String(n);
+      applyToLayer();
     });
 
-    row.append(header, slider);
-    container.appendChild(row);
+    row.append(head, sl);
+    panel.appendChild(row);
 
-    sliderRefs[adj.key] = { slider, valueDisplay };
+    sliderRefs[adj.key] = { slider: sl, val: val };
   });
 
-  // ✅ Re-apply existing adjustments when panel reopens
-  const anyActive = ADJUSTMENTS.some(a => state[a.key] !== 0);
-  if (anyActive) scheduleApply();
+  container.appendChild(panel);
 }
 
-function scheduleApply() {
-  if (rafPending) return;
-  rafPending = true;
-  requestAnimationFrame(() => {
-    rafPending = false;
-    applyAdjustments();
-  });
-}
+// ─── Apply to layer ───────────────────────────────────────────
+function applyToLayer() {
+  if (!hasSelectedLayer()) return;
 
+  const adjustments = Object.assign({}, panelState);
 
-function applyAdjustments() {
-  const canvas = document.querySelector('#preview-canvas');
-  const video  = document.querySelector('#preview-video');
-  if (!canvas) return;
-
-  // ✅ Only apply when video is actually ready — avoids cumulative
-  //    double-processing on the canvas.
-  if (!video || video.readyState < 2 || !video.videoWidth) return;
-
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  if (!ctx) return;
-
-  const temp = document.createElement('canvas');
-  temp.width  = canvas.width;
-  temp.height = canvas.height;
-  const tCtx = temp.getContext('2d', { willReadFrequently: true });
-
-  drawVideoContained(tCtx, video, canvas);   // always fresh from video
-
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(temp, 0, 0);
-
-  const anyActive = ADJUSTMENTS.some(a => state[a.key] !== 0);
-  if (!anyActive) return;
-
-  // ... rest unchanged (the pixel loop)
-
-  const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const data = imgData.data;
-  const w = canvas.width;
-  const h = canvas.height;
-  const s = state;
-  const clamp = (v) => v < 0 ? 0 : v > 255 ? 255 : v;
-
-  const brightnessAmt = s.brightness / 100;
-  const contrastAmt   = s.contrast   / 100;
-  const exposureAmt   = Math.pow(2, s.exposure / 100);
-  const whitesAmt     = s.whites     / 100;
-  const blacksAmt     = s.blacks     / 100;
-  const shadowsAmt    = s.shadows    / 100;
-  const highlightsAmt = s.highlights / 100;
-  const clarityAmt    = s.clarity    / 100;
-  const saturationAmt = s.saturation / 100;
-  const vibranceAmt   = s.vibrance   / 100;
-  const temperatureAmt= s.temperature/ 100;
-  const tintAmt       = s.tint       / 100;
-  const noiseAmt      = s.noise      / 100;
-  const sharpenAmt    = s.sharpen    / 100;
-  const vignetteAmt   = s.vignette   / 100;
-  const redsAmt       = s.reds       / 100;
-  const yellowsAmt    = s.yellows    / 100;
-  const greensAmt     = s.greens     / 100;
-  const bluesAmt      = s.blues      / 100;
-  const purplesAmt    = s.purples    / 100;
-  const skinAmt       = s.skinTones  / 100;
-
-  const anyColorAdj =
-    redsAmt || yellowsAmt || greensAmt || bluesAmt || purplesAmt || skinAmt;
-
-  const cx = w / 2;
-  const cy = h / 2;
-  const maxDist = Math.sqrt(cx * cx + cy * cy) || 1;
-
-  for (let i = 0; i < data.length; i += 4) {
-    let r = data[i], g = data[i + 1], b = data[i + 2];
-    const pixelIndex = i / 4;
-    const px = pixelIndex % w;
-    const py = (pixelIndex - px) / w;
-
-    const lum = 0.299 * r + 0.587 * g + 0.114 * b;
-
-    if (brightnessAmt !== 0) { const add = brightnessAmt * 110; r += add; g += add; b += add; }
-    if (exposureAmt !== 1) { r *= exposureAmt; g *= exposureAmt; b *= exposureAmt; }
-    if (contrastAmt !== 0) {
-      const f = 1 + contrastAmt;
-      r = (r - 128) * f + 128; g = (g - 128) * f + 128; b = (b - 128) * f + 128;
-    }
-    if (whitesAmt !== 0) {
-      const wt = Math.max(0, (lum - 128) / 127);
-      const add = whitesAmt * wt * 110;
-      r += add; g += add; b += add;
-    }
-    if (blacksAmt !== 0) {
-      const wt = Math.max(0, (128 - lum) / 128);
-      const add = -blacksAmt * wt * 110;
-      r += add; g += add; b += add;
-    }
-    if (shadowsAmt !== 0) {
-      const wt = Math.max(0, (128 - lum) / 128);
-      const add = shadowsAmt * wt * 90;
-      r += add; g += add; b += add;
-    }
-    if (highlightsAmt !== 0) {
-      const wt = Math.max(0, (lum - 128) / 127);
-      const add = highlightsAmt * wt * 90;
-      r += add; g += add; b += add;
-    }
-    if (clarityAmt !== 0) {
-      const wt = 1 - Math.abs(lum - 128) / 128;
-      const f = 1 + clarityAmt * wt * 0.7;
-      r = (r - 128) * f + 128; g = (g - 128) * f + 128; b = (b - 128) * f + 128;
-    }
-    if (saturationAmt !== 0) {
-      const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-      const f = 1 + saturationAmt;
-      r = gray + (r - gray) * f; g = gray + (g - gray) * f; b = gray + (b - gray) * f;
-    }
-    if (vibranceAmt !== 0) {
-      const maxC = Math.max(r, g, b);
-      const minC = Math.min(r, g, b);
-      const sat  = (maxC - minC) / 255;
-      const boost = vibranceAmt * (1 - sat) * 0.9;
-      const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-      r = gray + (r - gray) * (1 + boost);
-      g = gray + (g - gray) * (1 + boost);
-      b = gray + (b - gray) * (1 + boost);
-    }
-    if (temperatureAmt !== 0) { r += temperatureAmt * 35; b -= temperatureAmt * 35; }
-    if (tintAmt !== 0) { g -= tintAmt * 28; r += tintAmt * 12; b += tintAmt * 12; }
-
-    r = clamp(r); g = clamp(g); b = clamp(b);
-
-    if (anyColorAdj) {
-      const hsl   = rgbToHsl(r, g, b);
-      const hue   = hsl.h;
-      const sat   = hsl.s;
-      const light = hsl.l;
-
-      if (redsAmt !== 0) {
-        let wt = hueWeight(hue, 345, 360);
-        if (!wt) wt = hueWeight(hue, 0, 25);
-        if (wt > 0) { const k = redsAmt * wt; r += k * 70; g -= k * 18; b -= k * 18; }
-      }
-      if (yellowsAmt !== 0) {
-        const wt = hueWeight(hue, 40, 75);
-        if (wt > 0) { const k = yellowsAmt * wt; r += k * 50; g += k * 50; b -= k * 30; }
-      }
-      if (greensAmt !== 0) {
-        const wt = hueWeight(hue, 80, 170);
-        if (wt > 0) { const k = greensAmt * wt; g += k * 70; r -= k * 18; b -= k * 18; }
-      }
-      if (bluesAmt !== 0) {
-        const wt = hueWeight(hue, 180, 260);
-        if (wt > 0) { const k = bluesAmt * wt; b += k * 70; r -= k * 18; g -= k * 12; }
-      }
-      if (purplesAmt !== 0) {
-        const wt = hueWeight(hue, 260, 330);
-        if (wt > 0) { const k = purplesAmt * wt; r += k * 45; b += k * 45; g -= k * 22; }
-      }
-      if (skinAmt !== 0) {
-        if (hue >= 10 && hue <= 45 && sat >= 0.12 && sat <= 0.7 &&
-            light >= 0.2 && light <= 0.9) {
-          const center = 27;
-          const half = 18;
-          const wt = Math.max(0, 1 - Math.abs(hue - center) / half);
-          if (wt > 0) { const k = skinAmt * wt; r += k * 40; g += k * 16; b -= k * 10; }
-        }
-      }
-    }
-
-    if (sharpenAmt !== 0) {
-      const f = 1 + sharpenAmt * 0.18;
-      r = (r - 128) * f + 128; g = (g - 128) * f + 128; b = (b - 128) * f + 128;
-    }
-    if (noiseAmt !== 0) {
-      const grain = (Math.random() - 0.5) * noiseAmt * 45;
-      r += grain; g += grain; b += grain;
-    }
-    if (vignetteAmt !== 0) {
-      const dx = px - cx;
-      const dy = py - cy;
-      const d  = Math.sqrt(dx * dx + dy * dy) / maxDist;
-      const v  = 1 - Math.max(0, d - 0.4) * vignetteAmt * 1.8;
-      r *= v; g *= v; b *= v;
-    }
-
-    data[i]     = clamp(r);
-    data[i + 1] = clamp(g);
-    data[i + 2] = clamp(b);
+  if (editingLayer && editingLayer.clip && editingLayer.clip.__effectId) {
+    updateEffectLayer(editingLayer.clip, { adjustments: adjustments });
+  } else {
+    const id = createEffectLayer('adjustment', { adjustments: adjustments }, 'Adjustments');
+    editingLayer = findEffectLayerById(id);
   }
-
-  ctx.putImageData(imgData, 0, 0);
-}
-
-function rgbToHsl(r, g, b) {
-  r /= 255; g /= 255; b /= 255;
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const l = (max + min) / 2;
-  let h = 0, s = 0;
-  if (max !== min) {
-    const d = max - min;
-    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-    switch (max) {
-      case r: h = (g - b) / d + (g < b ? 6 : 0); break;
-      case g: h = (b - r) / d + 2; break;
-      case b: h = (r - g) / d + 4; break;
-    }
-    h *= 60;
-  }
-  return { h, s, l };
-}
-
-function hueWeight(hue, start, end) {
-  if (hue < start || hue > end) return 0;
-  const center = (start + end) / 2;
-  const half = (end - start) / 2;
-  if (half === 0) return 1;
-  return Math.max(0, 1 - Math.abs(hue - center) / half);
 }
