@@ -1,4 +1,3 @@
-import { initLayerDrag } from './workspace/layerDrag.js';
 import { initTextRenderer } from './workspace/textRenderer.js';
 import { featuresRouter } from './features/featuresRouter.js';
 import { initHomeController } from './home/homeController.js';
@@ -17,6 +16,8 @@ import { initKeyframeEngine } from './features/keyframeEngine.js';
 import { initHistory } from './workspace/historyManager.js';
 import { openExportPanel } from './features/export.js';
 import { initEffectRenderer } from './workspace/effectRenderer.js';
+import { initAudioFxRenderer } from './workspace/audioFxRenderer.js';
+import { initLayerDrag } from './workspace/layerDrag.js';
 
 import * as featureModules from './features/index.js';
 
@@ -28,15 +29,13 @@ const appState = {
   timeline: {
     visual: [],
     audio: [],
-    // 🆕 Per-track visibility (visual) — Set of track indices that are HIDDEN
     hiddenVisualTracks: new Set(),
-    // 🆕 Per-track mute (audio) — Set of track indices that are MUTED
     mutedAudioTracks: new Set()
   },
   configurations: {}
 };
 
-// 🆕 Expose appState globally (avoid circular import issues)
+// Expose appState globally (used by feature modules)
 window.__appState = appState;
 
 const elements = {
@@ -68,14 +67,17 @@ function createProject() {
   appState.timeline.audio = [];
   appState.timeline.hiddenVisualTracks = new Set();
   appState.timeline.mutedAudioTracks = new Set();
+
   if (preview) preview.clear();
   const previewAudio = document.querySelector('#preview-audio');
   previewAudio.pause();
   previewAudio.removeAttribute('src');
   previewAudio.load();
+
   if (timeline) timeline.render();
   if (playbackEngine) playbackEngine.seek(0);
   if (previewHud) previewHud.refresh();
+
   document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
   showPage('workspace');
 }
@@ -111,7 +113,7 @@ async function bootstrap() {
     video: previewVideo
   });
 
-  // 🆕 Master playback engine
+  // Master playback engine
   playbackEngine = initPlaybackEngine({
     canvas: previewCanvas,
     video: previewVideo,
@@ -125,8 +127,11 @@ async function bootstrap() {
 
   window.__playbackEngine = playbackEngine;
 
-  // 🆕 Effect renderer — applies CSS filters + pixel effects + motion
+  // Visual effect renderer (CSS filters, motion, pixel effects, text, stickers)
   initEffectRenderer();
+
+  // Audio FX real-time router
+  initAudioFxRenderer();
 
   initMediaLibrary({
     button: document.querySelector('#media-picker-btn'),
@@ -156,7 +161,6 @@ async function bootstrap() {
     audio: document.querySelector('#audio-tracks'),
     state: appState.timeline,
 
-    // 🆕 Per-track visibility toggle (works for ALL visual layers)
     onVisualVisibility: function (label, visible) {
       const trackIdx = Number(label.slice(1)) - 1;
       if (!Number.isFinite(trackIdx)) return;
@@ -165,13 +169,10 @@ async function bootstrap() {
       } else {
         appState.timeline.hiddenVisualTracks.add(trackIdx);
       }
-      // Force a redraw so hidden layer disappears immediately
       if (playbackEngine) playbackEngine.redraw();
-      // Also refresh effects
       document.dispatchEvent(new CustomEvent('effects:refresh'));
     },
 
-    // 🆕 Per-track mute toggle (works for ALL audio layers)
     onAudioMute: function (label, muted) {
       const trackIdx = Number(label.slice(1)) - 1;
       if (!Number.isFinite(trackIdx)) return;
@@ -182,9 +183,7 @@ async function bootstrap() {
       }
     },
 
-    // 🆕 Delete cleanup — DON'T clear preview for effect/text clips
     onDeleteSelected: function (clip, type) {
-      // Only clean up audio element if we just deleted its active source
       if (type === 'audio' || (clip.type && clip.type.indexOf('audio/') === 0)) {
         const curSrc = previewAudio.currentSrc || previewAudio.src || '';
         if (curSrc && clip.url && curSrc.indexOf(clip.url.split('/').pop()) >= 0) {
@@ -193,14 +192,11 @@ async function bootstrap() {
           previewAudio.load();
         }
       }
-      // Remove from media library (only user-imported items have .file)
       if (clip.file) {
         appState.media = appState.media.filter(function (item) {
           return item.url !== clip.url;
         });
       }
-      // Do NOT call preview.clear() — playbackEngine will redraw with
-      // whatever clips remain on the timeline.
       if (playbackEngine) playbackEngine.redraw();
       if (previewHud) previewHud.refresh();
     },
@@ -233,8 +229,10 @@ async function bootstrap() {
     timeDisplay: document.querySelector('#timeline-time'),
     getRulerContainer: function () { return document.querySelector('.timeline-ruler'); }
   });
-  // 🆕 Free-form layer drag (touch + mouse)
+
+  // Free-form layer drag (touch + mouse) — enables up/down reordering
   initLayerDrag();
+
   initPlaybackControls({
     play: document.querySelector('#play-btn'),
     deleteButton: document.querySelector('#delete-btn'),
@@ -243,6 +241,7 @@ async function bootstrap() {
     engine: playbackEngine
   });
 
+  // Runtime text overlay renderer
   initTextRenderer();
 
   registerFeatures();

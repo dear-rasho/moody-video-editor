@@ -7,13 +7,46 @@
 //    - Open / close levels (root → level 1 → level 2)
 //    - Render the feature shelf
 //    - Dispatch to custom panels via `renderMode` (colorWheel,
-//      chromaKey, crop, ratio, text, stickers, filters, adjustments)
+//      chromaKey, crop, ratio, text, stickers, filters, adjustments,
+//      soundeffect, audioeffect)
 //    - Forward user selection to the appropriate module's open()
 //
 //  NOTE: All per-feature logic (sliders, canvas processing, etc.)
 //  lives inside each feature module — NOT here.
 // ================================================================
 
+// ═══════════════════════════════════════════════════════════════
+//  DISPLAY META — pretty labels + icons for feature list
+// ═══════════════════════════════════════════════════════════════
+const FEATURE_META = {
+  music:        { label: 'Music',       icon: '🎵' },
+  effect:       { label: 'Effects',     icon: '✨' },
+  filters:      { label: 'Filters',     icon: '🎨' },
+  overlays:     { label: 'Overlays',    icon: '🎬' },
+  text:         { label: 'Text',        icon: '📝' },
+  textFonts:    { label: 'Fonts',       icon: '🔤' },
+  stickers:     { label: 'Stickers',    icon: '😀' },
+  motion:       { label: 'Motion',      icon: '🎞️' },
+  split:        { label: 'Split',       icon: '✂️' },
+  trim:         { label: 'Trim',        icon: '🎯' },
+  crop:         { label: 'Crop',        icon: '🖼️' },
+  duplicate:    { label: 'Duplicate',   icon: '📋' },
+  freeze:       { label: 'Freeze',      icon: '❄️' },
+  soundeffect:  { label: 'Sound FX',    icon: '🔊' },
+  audioeffect:  { label: 'Audio FX',    icon: '🎙️' },
+  fx:           { label: 'FX',          icon: '⚡' },
+  speed:        { label: 'Speed',       icon: '⏩' },
+  chromakey:    { label: 'Chroma Key',  icon: '🟢' },
+  reverse:      { label: 'Reverse',     icon: '↩️' },
+  ratio:        { label: 'Ratio',       icon: '📐' },
+  adjustments:  { label: 'Adjust',      icon: '🎚️' },
+  colorWheel:   { label: 'Color Wheel', icon: '🌈' },
+  export:       { label: 'Export',      icon: '💾' }
+};
+
+// ═══════════════════════════════════════════════════════════════
+//  MODULE REGISTRY
+// ═══════════════════════════════════════════════════════════════
 const featureModules = new Map();
 let currentView = { level: 0, key: 'root', title: 'Tools', items: [] };
 const parentHistory = [];
@@ -107,7 +140,12 @@ const router = {
       ratioPanel:       './ratio.js',
       textPanel:        './text.js',
       stickersPanel:    './stickers.js',
-      filtersPanel:     './filters.js'
+      filtersPanel:     './filters.js',
+      effectPanel:      './effect.js',
+      soundeffectPanel: './soundeffect.js',
+      audioeffectPanel: './audioeffect.js',
+      speedPanel:       './speed.js',
+      trimPanel:        './trim.js'
     };
 
     if (view.renderMode && CUSTOM_PANELS[view.renderMode]) {
@@ -126,7 +164,15 @@ const router = {
     // ─── Default feature list (level 0 / 1) ──────────────────
     const items = view.items.length
       ? view.items
-      : state.list().map(key => ({ key, label: key }));
+      : state.list().map(key => {
+          const meta = FEATURE_META[key] || {};
+          const mod = state.get(key);
+          return {
+            key,
+            label: (mod && mod.featureLabel) || meta.label || key,
+            icon:  (mod && mod.featureIcon)  || meta.icon  || '◆'
+          };
+        });
 
     for (const item of items) {
       const button = document.createElement('button');
