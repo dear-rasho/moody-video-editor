@@ -4,7 +4,7 @@
 //    - CSS filters (brightness, contrast, sat, hue, etc.)
 //    - Motion transforms (shake, bounce, pulse, glitch)
 //    - Pixel effects (adjustments, colorWheel, chroma)
-//    - Text overlays
+//    - Text overlays (with animations)
 //    - Sticker overlays
 // ================================================================
 
@@ -37,7 +37,7 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime)
     }
   }
 
-  // ─── 2) CSS filter string from effect/filter layers ───────
+  // ─── 2) CSS filter string ─────────────────────────────────
   let cssFilter = '';
   for (let i = 0; i < active.length; i++) {
     const st = active[i].clip.effectState;
@@ -80,7 +80,7 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime)
 
   try { ctx.filter = 'none'; } catch (_) {}
 
-  // ─── 5) Pixel effects (adjustments / colorWheel / chroma) ─
+  // ─── 5) Pixel effects ─────────────────────────────────────
   const pixelEntries = [];
   for (let i = 0; i < active.length; i++) {
     const st = active[i].clip.effectState;
@@ -107,19 +107,21 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime)
     }
   }
 
-  // ─── 6) Text overlays (topmost wins) ──────────────────────
-  let topText = null;
-  let topTextTrack = -1;
+  // ─── 6) Text overlays — ALL active, bottom-to-top ─────────
+  const textClips = [];
   for (let i = 0; i < active.length; i++) {
     const c = active[i].clip;
-    if (c.__textId && active[i].trackIndex > topTextTrack) {
-      topText = c;
-      topTextTrack = active[i].trackIndex;
+    if (c.__textId && c.textState) {
+      textClips.push({ clip: c, trackIndex: active[i].trackIndex });
     }
   }
-  if (topText && topText.textState) {
-    try { drawTextOverlay(ctx, W, H, topText.textState); }
-    catch (e) { console.warn('text overlay draw failed:', e); }
+  textClips.sort((a, b) => a.trackIndex - b.trackIndex);
+
+  for (let i = 0; i < textClips.length; i++) {
+    const { clip } = textClips[i];
+    try {
+      drawTextOverlay(ctx, W, H, clip.textState, timelineTime, clip);
+    } catch (e) { console.warn('text overlay draw failed:', e); }
   }
 
   // ─── 7) Stickers ──────────────────────────────────────────
@@ -196,10 +198,24 @@ function computeMotionRaw(m, time) {
   return null;
 }
 
-// ─── Text overlay draw ────────────────────────────────────────
-function drawTextOverlay(ctx, W, H, ts) {
-  const content = ts.content || '';
-  if (!content) return;
+// ─── Text overlay draw (with animation) ───────────────────────
+function drawTextOverlay(ctx, W, H, ts, timelineTime, clip) {
+  const fullContent = ts.content || '';
+  if (!fullContent) return;
+
+  const anim = ts.animation || 'none';
+  const animDur = ts.animationDuration != null ? ts.animationDuration : 0.6;
+  const clipStart = clip && Number.isFinite(clip.startTime) ? clip.startTime : 0;
+  const elapsed = Math.max(0, timelineTime - clipStart);
+  const animState = computeTextAnimState(anim, elapsed, animDur, fullContent);
+
+  let content = fullContent;
+  if (animState.visibleChars != null) {
+    content = fullContent.slice(0, animState.visibleChars);
+    if (!content) return;
+  }
+
+  if (animState.opacity <= 0.001) return;
 
   const scaleFactor = W / 400;
   const fontSize = (ts.fontSize || 36) * scaleFactor;
@@ -216,12 +232,23 @@ function drawTextOverlay(ctx, W, H, ts) {
   const x = W * ((ts.positionX != null ? ts.positionX : 50) / 100);
   const y = H * ((ts.positionY != null ? ts.positionY : 50) / 100);
 
-  ctx.translate(x, y);
-  if (ts.rotation) ctx.rotate(ts.rotation * Math.PI / 180);
-  const scale = (ts.scale != null ? ts.scale : 100) / 100;
-  if (scale !== 1) ctx.scale(scale, scale);
+  ctx.translate(x + (animState.tx || 0) * scaleFactor,
+                y + (animState.ty || 0) * scaleFactor);
 
-  ctx.globalAlpha = (ts.opacity != null ? ts.opacity : 100) / 100;
+  const totalRot = (ts.rotation || 0) + (animState.rot || 0);
+  if (totalRot) ctx.rotate(totalRot * Math.PI / 180);
+
+  const userScale = (ts.scale != null ? ts.scale : 100) / 100;
+  const animScale = animState.scale != null ? animState.scale : 1;
+  const finalScale = userScale * animScale;
+  if (finalScale !== 1) ctx.scale(finalScale, finalScale);
+
+  const userOpacity = (ts.opacity != null ? ts.opacity : 100) / 100;
+  ctx.globalAlpha = userOpacity * animState.opacity;
+
+  if (animState.blur > 0) {
+    try { ctx.filter = 'blur(' + (animState.blur * scaleFactor) + 'px)'; } catch (_) {}
+  }
 
   if (ts.shadowEnabled) {
     ctx.shadowColor = ts.shadowColor || '#000';
@@ -240,7 +267,7 @@ function drawTextOverlay(ctx, W, H, ts) {
 
   if (ts.gradientEnabled) {
     const angleRad = ((ts.gradientAngle || 90) * Math.PI) / 180;
-    const halfW = (content.length * fontSize * 0.3);
+    const halfW = content.length * fontSize * 0.3;
     const gx = Math.cos(angleRad) * halfW;
     const gy = Math.sin(angleRad) * halfW;
     try {
@@ -258,6 +285,123 @@ function drawTextOverlay(ctx, W, H, ts) {
   try { ctx.fillText(content, 0, 0); } catch (_) {}
 
   ctx.restore();
+
+  try { ctx.filter = 'none'; } catch (_) {}
+}
+
+// ─── Animation state computation ──────────────────────────────
+function computeTextAnimState(anim, elapsed, dur, fullText) {
+  const state = { opacity: 1, tx: 0, ty: 0, scale: 1, rot: 0, blur: 0,
+                  visibleChars: null };
+  if (!anim || anim === 'none') return state;
+
+  const p = Math.max(0, Math.min(1, elapsed / Math.max(0.1, dur)));
+
+  switch (anim) {
+    case 'fadeIn':      state.opacity = p; break;
+    case 'fadeUp':      state.opacity = p; state.ty = (1 - p) * 24; break;
+    case 'fadeDown':    state.opacity = p; state.ty = (1 - p) * -24; break;
+    case 'slideLeft':   state.opacity = p; state.tx = (1 - p) * -80; break;
+    case 'slideRight':  state.opacity = p; state.tx = (1 - p) * 80; break;
+    case 'slideUp':     state.opacity = p; state.ty = (1 - p) * 80; break;
+    case 'slideDown':   state.opacity = p; state.ty = (1 - p) * -80; break;
+
+    case 'popIn': {
+      const eo = easeOutBack(p);
+      state.scale = Math.max(0.01, eo);
+      state.opacity = Math.min(1, p * 2.5);
+      break;
+    }
+    case 'bounceIn': {
+      const eo = easeOutBounce(p);
+      state.scale = Math.max(0.01, eo);
+      state.opacity = Math.min(1, p * 2.5);
+      break;
+    }
+    case 'zoomIn':
+      state.opacity = p;
+      state.scale = 0.3 + 0.7 * p;
+      break;
+    case 'zoomOut':
+      state.opacity = p;
+      state.scale = 2 - p;
+      break;
+
+    case 'flip3DX':
+    case 'flip3DY': {
+      state.scale = 0.01 + 0.99 * Math.abs(Math.cos((1 - p) * Math.PI / 2));
+      state.opacity = Math.min(1, p * 2);
+      break;
+    }
+    case 'rotate3D':
+      state.rot = p * 360;
+      break;
+
+    case 'pulse':
+      state.scale = 1 + Math.sin(elapsed * 3) * 0.1;
+      break;
+    case 'shake':
+      state.tx = Math.sin(elapsed * 40) * 6;
+      break;
+    case 'wave':
+      state.ty = Math.sin(elapsed * 6) * 8;
+      break;
+    case 'bounceWave':
+      state.ty = -Math.abs(Math.sin(elapsed * 4)) * 18;
+      break;
+
+    case 'flicker': {
+      const vals = [1, 0.25, 1, 0.5, 1, 0.15, 1, 0.4, 1, 0.2, 1];
+      const i = Math.min(vals.length - 1, Math.floor(p * vals.length));
+      state.opacity = vals[i];
+      break;
+    }
+
+    case 'cinematicBlur': {
+      const e = Math.min(1, p / 0.6);
+      state.blur = (1 - e) * 18;
+      state.opacity = Math.min(1, p * 1.5);
+      break;
+    }
+
+    case 'glitch': {
+      state.tx = (Math.random() - 0.5) * 6;
+      state.ty = (Math.random() - 0.5) * 4;
+      break;
+    }
+
+    case 'typewriter': {
+      const total = fullText.length;
+      state.visibleChars = Math.floor(p * total);
+      break;
+    }
+
+    case 'decoder': {
+      const total = fullText.length;
+      state.visibleChars = Math.min(total, Math.floor(p * total * 1.3));
+      break;
+    }
+
+    case 'scribble': {
+      // Fade-in from 0.2 → 1 (approximation)
+      state.opacity = 0.2 + 0.8 * p;
+      break;
+    }
+  }
+  return state;
+}
+
+function easeOutBack(t) {
+  const c1 = 1.70158, c3 = c1 + 1;
+  return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+}
+
+function easeOutBounce(t) {
+  const n1 = 7.5625, d1 = 2.75;
+  if (t < 1 / d1) return n1 * t * t;
+  if (t < 2 / d1) return n1 * (t -= 1.5 / d1) * t + 0.75;
+  if (t < 2.5 / d1) return n1 * (t -= 2.25 / d1) * t + 0.9375;
+  return n1 * (t -= 2.625 / d1) * t + 0.984375;
 }
 
 // ─── Sticker overlay draw ─────────────────────────────────────

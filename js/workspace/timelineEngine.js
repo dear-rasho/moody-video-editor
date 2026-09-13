@@ -2,9 +2,6 @@
 //  js/workspace/timelineEngine.js
 //  Unlimited-layer timeline. Fires 'editor:timeline-changed' on
 //  every mutation so historyManager can snapshot.
-//
-//  Uses timelineScaler.js for ALL sizing / zoom / ruler math.
-//  Uses trimHandles.js for drag-to-trim on selected clips.
 // ================================================================
 
 import {
@@ -27,7 +24,6 @@ import {
   LABEL_WIDTH
 } from './timelineScaler.js';
 
-// 🆕 Trim handles
 import { attachTrimHandles } from './trimHandles.js';
 
 export function initTimelineEngine(config) {
@@ -45,7 +41,7 @@ export function initTimelineEngine(config) {
   let selected = null;
   let draggedTrack = null;
   let draggedClip = null;
-  let _rendering = false;              // re-entry guard
+  let _rendering = false;
 
   const DEFAULT_CLIP_SEC = 3;
 
@@ -100,10 +96,7 @@ export function initTimelineEngine(config) {
     return 0;
   }
 
-  // Duration = max(video duration, furthest clip end), min 1s.
   // Duration = furthest clip end on the timeline.
-  // Does NOT use video.duration so that trimming actually shrinks
-  // the timeline.
   function computeDuration() {
     let furthestEnd = 0;
 
@@ -117,7 +110,6 @@ export function initTimelineEngine(config) {
       }
     }
 
-    // If no clips exist, fall back to video.duration (initial load only)
     if (furthestEnd === 0) {
       const video = document.querySelector('#preview-video');
       if (video && Number.isFinite(video.duration) && video.duration > 0) {
@@ -205,28 +197,38 @@ export function initTimelineEngine(config) {
     labelText.textContent = label;
 
     if (group === 'visual') {
+      const hiddenSet = state.hiddenVisualTracks || new Set();
+      const isHidden = hiddenSet.has(trackIndex);
+
+      if (isHidden) track.classList.add('layer-hidden');
+
       const vis = document.createElement('button');
       vis.className = 'layer-toggle';
       vis.type = 'button';
-      vis.textContent = '\u25C9';
+      vis.textContent = isHidden ? '\u25CB' : '\u25C9';
       vis.setAttribute('aria-label', 'Toggle ' + label + ' visibility');
       vis.addEventListener('click', function () {
-        const hidden = track.classList.toggle('layer-hidden');
-        vis.textContent = hidden ? '\u25CB' : '\u25C9';
-        if (onVisualVisibility) onVisualVisibility(label, !hidden);
+        const nowHidden = track.classList.toggle('layer-hidden');
+        vis.textContent = nowHidden ? '\u25CB' : '\u25C9';
+        if (onVisualVisibility) onVisualVisibility(label, !nowHidden);
       });
       name.appendChild(labelText);
       name.appendChild(vis);
     } else {
+      const mutedSet = state.mutedAudioTracks || new Set();
+      const isMuted = mutedSet.has(trackIndex);
+
+      if (isMuted) track.classList.add('layer-muted');
+
       const mute = document.createElement('button');
       mute.type = 'button';
       mute.className = 'layer-toggle';
-      mute.textContent = '\uD83D\uDD0A';
+      mute.textContent = isMuted ? '\uD83D\uDD07' : '\uD83D\uDD0A';
       mute.setAttribute('aria-label', 'Mute ' + label);
       mute.addEventListener('click', function () {
-        const muted = track.classList.toggle('layer-muted');
-        mute.textContent = muted ? '\uD83D\uDD07' : '\uD83D\uDD0A';
-        if (onAudioMute) onAudioMute(label, muted);
+        const nowMuted = track.classList.toggle('layer-muted');
+        mute.textContent = nowMuted ? '\uD83D\uDD07' : '\uD83D\uDD0A';
+        if (onAudioMute) onAudioMute(label, nowMuted);
       });
       name.appendChild(labelText);
       name.appendChild(mute);
@@ -259,13 +261,11 @@ export function initTimelineEngine(config) {
         el.classList.add('selected');
       }
 
-      // 🆕 Attach drag-trim handles (visible when clip is selected)
       attachTrimHandles(el, clip);
 
       (function (capturedIndex) {
         el.addEventListener('mousedown', function (e) {
           if (e.button !== 0) return;
-          // Ignore if user grabbed a trim handle
           if (e.target && e.target.classList &&
               e.target.classList.contains('trim-handle')) return;
 
@@ -333,7 +333,6 @@ export function initTimelineEngine(config) {
       rulerContainer.appendChild(marker);
     }
 
-    // Always mark exact timeline end.
     if (count * step < m.duration - 1e-6) {
       const marker = document.createElement('div');
       marker.className = 'ruler-marker ruler-marker-end';
@@ -372,8 +371,9 @@ export function initTimelineEngine(config) {
       _rendering = false;
     }
   }
-// add media
-   function addMedia(items) {
+
+  // ─── Add media ────────────────────────────────────────────────
+  function addMedia(items) {
     const atTime = Number(getPlayheadTime()) || 0;
 
     for (let i = 0; i < items.length; i++) {
@@ -390,7 +390,6 @@ export function initTimelineEngine(config) {
       ensureMinLayers(list,
         trackType === 'visual' ? DEFAULT_VISUAL_LAYERS : DEFAULT_AUDIO_LAYERS);
 
-      // 🆕 Shared id linking this video + its auto-generated audio
       const linkedId = isVideo
         ? 'lk-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7)
         : null;
@@ -450,7 +449,7 @@ export function initTimelineEngine(config) {
     notifyChanged();
   }
 
-  // ─── Metadata sync (real duration + source total) ─────────────
+  // ─── Metadata sync ────────────────────────────────────────────
   const previewVideoEl = document.querySelector('#preview-video');
   if (previewVideoEl) {
     previewVideoEl.addEventListener('loadedmetadata', render);
@@ -465,7 +464,6 @@ export function initTimelineEngine(config) {
 
       let changed = false;
 
-      // ─── Visual clips ───
       for (let t = 0; t < state.visual.length; t++) {
         const track = state.visual[t];
         if (!Array.isArray(track)) continue;
@@ -473,13 +471,11 @@ export function initTimelineEngine(config) {
           const clip = track[c];
           if (!clip || clip.url !== src) continue;
 
-          // 🆕 Remember real source length for right-trim limit
           clip.__sourceTotalDuration = real;
 
           const hasSourceIn = Number.isFinite(clip.sourceIn) && clip.sourceIn > 0.01;
           const hasTrimFlag = clip.__trimmed === true;
 
-          // Only auto-extend if the clip was never manually trimmed
           if (!hasSourceIn && !hasTrimFlag &&
               Math.abs((clip.duration || 0) - real) > 0.05) {
             clip.duration = real;
@@ -491,7 +487,6 @@ export function initTimelineEngine(config) {
         }
       }
 
-      // ─── Auto-generated audio clips ───
       for (let t = 0; t < state.audio.length; t++) {
         const track = state.audio[t];
         if (!Array.isArray(track)) continue;

@@ -1,18 +1,15 @@
 // ================================================================
 //  js/workspace/textRenderer.js
-//  Runtime renderer for ALL text clips on the timeline.
-//  Shows only the top text clip that contains the current playhead.
+//  Renders ALL active text clips simultaneously (multi-layer).
+//  Respects hidden tracks.
 // ================================================================
 
-import { appState } from '../app.js';
 import { applyAnimation } from '../features/animations.js';
 
-let overlayEl = null;
-let lastRenderedId = null;
-let lastAnimationKey = null;
+const overlays = new Map(); // textId -> { el, lastAnimKey }
+let wrapEl = null;
 
 const CSS_ID = 'text-renderer-styles';
-
 function injectStyles() {
   if (document.getElementById(CSS_ID)) return;
   const s = document.createElement('style');
@@ -20,7 +17,6 @@ function injectStyles() {
   s.textContent = `
     .tx-overlay {
       position: absolute;
-      z-index: 45;
       pointer-events: none;
       white-space: pre-wrap;
       word-break: break-word;
@@ -34,23 +30,10 @@ function injectStyles() {
   document.head.appendChild(s);
 }
 
-function ensureOverlay() {
-  const wrap = document.querySelector('#preview-canvas-wrap');
-  if (!wrap) return null;
-  if (!overlayEl || !wrap.contains(overlayEl)) {
-    overlayEl = document.createElement('div');
-    overlayEl.className = 'tx-overlay';
-    wrap.appendChild(overlayEl);
-  }
-  return overlayEl;
-}
-
-function hideOverlay() {
-  if (overlayEl) overlayEl.style.display = 'none';
-}
-
-function showOverlay() {
-  if (overlayEl) overlayEl.style.display = '';
+function ensureWrap() {
+  if (wrapEl && document.body.contains(wrapEl)) return wrapEl;
+  wrapEl = document.querySelector('#preview-canvas-wrap');
+  return wrapEl;
 }
 
 // ─── Public: apply a textState to an overlay element ──────────
@@ -106,89 +89,109 @@ export function applyTextStyle(el, ts) {
     : '';
 }
 
-// ─── Find topmost text clip at time ───────────────────────────
-export function getTopTextClipAt(time) {
+// ─── Get ALL active text clips at time (respects hidden) ─────
+export function getActiveTextClipsAt(time) {
+  const appState = window.__appState;
+  if (!appState) return [];
+
   const tracks = appState.timeline.visual || [];
-  let best = null;
-  let bestIdx = -1;
+  const hidden = appState.timeline.hiddenVisualTracks || new Set();
+  const result = [];
+
   for (let t = 0; t < tracks.length; t++) {
+    if (hidden.has(t)) continue;
     const track = tracks[t];
     if (!Array.isArray(track)) continue;
+
     for (let c = 0; c < track.length; c++) {
       const clip = track[c];
       if (!clip || !clip.__textId) continue;
       const s = Number.isFinite(clip.startTime) ? clip.startTime : 0;
       const d = Number.isFinite(clip.duration) ? clip.duration : 0;
       if (time >= s && time < s + d) {
-        if (t > bestIdx) { best = clip; bestIdx = t; }
+        result.push({ clip, trackIndex: t });
+        break;
       }
     }
   }
-  return best;
+  return result;
 }
 
-// ─── Render at a given timeline time ──────────────────────────
+// Kept for compatibility
+export function getTopTextClipAt(time) {
+  const active = getActiveTextClipsAt(time);
+  if (!active.length) return null;
+  return active[active.length - 1].clip;
+}
+
+// ─── Render all active text clips at a given timeline time ────
 export function renderAtTime(time) {
   injectStyles();
-  const clip = getTopTextClipAt(time);
+  const wrap = ensureWrap();
+  if (!wrap) return;
 
-  if (!clip) {
-    lastRenderedId = null;
-    lastAnimationKey = null;
-    hideOverlay();
-    return;
+  const active = getActiveTextClipsAt(time);
+  const seen = new Set();
+
+  for (let i = 0; i < active.length; i++) {
+    const { clip, trackIndex } = active[i];
+    const id = clip.__textId;
+    seen.add(id);
+
+    let entry = overlays.get(id);
+    if (!entry || !document.body.contains(entry.el)) {
+      const el = document.createElement('div');
+      el.className = 'tx-overlay';
+      el.dataset.textId = id;
+      wrap.appendChild(el);
+      entry = { el, lastAnimKey: null };
+      overlays.set(id, entry);
+    }
+
+    const ts = clip.textState || {};
+    applyTextStyle(entry.el, ts);
+    entry.el.style.zIndex = String(40 + trackIndex);
+    entry.el.style.display = '';
+
+    const animKey = ts.animation || 'none';
+    const isNew = entry.lastAnimKey === null;
+    if (isNew || animKey !== entry.lastAnimKey) {
+      const dur = ts.animationDuration != null ? ts.animationDuration : 0.6;
+      applyAnimation(entry.el, animKey, dur);
+      entry.lastAnimKey = animKey;
+    }
   }
 
-  const el = ensureOverlay();
-  if (!el) return;
-
-  const ts = clip.textState || {};
-  const animKey = ts.animation || 'none';
-  const isNewClip = clip.__textId !== lastRenderedId;
-
-  // Full restyle if clip changed OR animation needs restart
-  applyTextStyle(el, ts);
-
-  if (isNewClip || animKey !== lastAnimationKey) {
-    // Restart animation on new clip
-    const dur = ts.animationDuration != null ? ts.animationDuration : 0.6;
-    applyAnimation(el, animKey, dur);
-    lastAnimationKey = animKey;
-  }
-
-  showOverlay();
-  lastRenderedId = clip.__textId;
+  // Remove overlays for clips no longer active
+  overlays.forEach(function (entry, id) {
+    if (!seen.has(id)) {
+      try { entry.el.remove(); } catch (_) {}
+      overlays.delete(id);
+    }
+  });
 }
 
-// ─── Force re-render (state changed while paused) ─────────────
+// ─── Force re-render (clears animation state so it replays) ───
 export function forceRerender() {
+  overlays.forEach(function (entry) {
+    entry.lastAnimKey = null;
+  });
   const eng = window.__playbackEngine;
-  const t = eng ? eng.getTime() : 0;
-  lastRenderedId = null;
-  lastAnimationKey = null;
-  renderAtTime(t);
+  renderAtTime(eng ? eng.getTime() : 0);
 }
 
-// ─── Called by the editor panel after in-panel changes ────────
+// ─── Called by editor panel after in-panel changes ────────────
 export function refreshCurrent() {
   const eng = window.__playbackEngine;
-  const t = eng ? eng.getTime() : 0;
-  const clip = getTopTextClipAt(t);
-  if (!clip) { hideOverlay(); return; }
-  const el = ensureOverlay();
-  if (!el) return;
-  applyTextStyle(el, clip.textState || {});
-  showOverlay();
+  renderAtTime(eng ? eng.getTime() : 0);
 }
 
-// ─── Remove overlay entirely ──────────────────────────────────
+// ─── Remove overlays ──────────────────────────────────────────
 export function removeOverlay() {
-  if (overlayEl) {
-    overlayEl.remove();
-    overlayEl = null;
-  }
-  lastRenderedId = null;
-  lastAnimationKey = null;
+  overlays.forEach(function (entry) {
+    try { entry.el.remove(); } catch (_) {}
+  });
+  overlays.clear();
 }
 
 // ─── Init ─────────────────────────────────────────────────────
@@ -204,7 +207,10 @@ export function initTextRenderer() {
     forceRerender();
   });
 
-  // Initial paint
+  document.addEventListener('effects:refresh', function () {
+    forceRerender();
+  });
+
   const eng = window.__playbackEngine;
   renderAtTime(eng ? eng.getTime() : 0);
 }

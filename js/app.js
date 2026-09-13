@@ -1,3 +1,4 @@
+import { initLayerDrag } from './workspace/layerDrag.js';
 import { initTextRenderer } from './workspace/textRenderer.js';
 import { featuresRouter } from './features/featuresRouter.js';
 import { initHomeController } from './home/homeController.js';
@@ -232,7 +233,8 @@ async function bootstrap() {
     timeDisplay: document.querySelector('#timeline-time'),
     getRulerContainer: function () { return document.querySelector('.timeline-ruler'); }
   });
-
+  // 🆕 Free-form layer drag (touch + mouse)
+  initLayerDrag();
   initPlaybackControls({
     play: document.querySelector('#play-btn'),
     deleteButton: document.querySelector('#delete-btn'),
