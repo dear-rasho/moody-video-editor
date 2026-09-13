@@ -1,12 +1,13 @@
 // ================================================================
 //  js/features/export.js
 //  Full-screen export panel + REAL render via WebCodecs.
-//  - MP4: fast render, timeline-based duration
+//  - MP4: fast render with video effects + audio FX layers applied
 //  - PNG: numbered frame sequence into a chosen folder
 //  - Supports up to 4K
 // ================================================================
 
 import { renderFrameToCanvas } from '../workspace/exportRenderer.js';
+import { getBuilder } from '../workspace/audioFxBuilders.js';
 
 export const featureKey = 'export';
 
@@ -64,11 +65,9 @@ function getQualityOptions() {
   return QUALITY_TIERS.map(function (t) {
     const res = computeResolution(t.ref, r.w, r.h);
     return {
-      key: t.key,
-      label: t.label,
+      key: t.key, label: t.label,
       text: t.label + ': ' + res.width + ' × ' + res.height,
-      width: res.width,
-      height: res.height
+      width: res.width, height: res.height
     };
   });
 }
@@ -222,7 +221,6 @@ function renderPanel() {
   closeBtn.type = 'button';
   closeBtn.className = 'exp-close';
   closeBtn.textContent = '✕';
-  closeBtn.setAttribute('aria-label', 'Close');
   closeBtn.addEventListener('click', closeExportPanel);
   const title = document.createElement('div');
   title.className = 'exp-title';
@@ -405,7 +403,7 @@ function buildAudioInfoField() {
   label.textContent = 'Audio Export';
   const help = document.createElement('div');
   help.className = 'exp-help';
-  help.textContent = 'Exports audio trimmed to the video clip range.';
+  help.textContent = 'Exports audio trimmed to the video clip range, with Audio FX layers applied.';
   field.append(label, help);
   return field;
 }
@@ -500,6 +498,8 @@ function computeTimelineEnd() {
     for (let c = 0; c < track.length; c++) {
       const clip = track[c];
       if (!clip) continue;
+      if (clip.__audioFxId) continue;      // FX layers don't extend timeline
+      if (clip.__soundId) continue;        // generated SFX
       const s = Number.isFinite(clip.startTime) ? clip.startTime : 0;
       const d = Number.isFinite(clip.duration) ? clip.duration : 0;
       const end = s + d;
@@ -536,25 +536,40 @@ function findVideoClip(videoEl) {
   return null;
 }
 
+// Collect all Audio FX layers that overlap [rangeStart, rangeEnd]
+function getAudioFxLayersInRange(rangeStart, rangeEnd) {
+  const appState = window.__appState;
+  if (!appState) return [];
+  const result = [];
+  const tracks = appState.timeline.audio || [];
+  for (let t = 0; t < tracks.length; t++) {
+    const track = tracks[t];
+    if (!Array.isArray(track)) continue;
+    for (let c = 0; c < track.length; c++) {
+      const clip = track[c];
+      if (!clip || !clip.__audioFxId) continue;
+      const s = Number.isFinite(clip.startTime) ? clip.startTime : 0;
+      const d = Number.isFinite(clip.duration) ? clip.duration : 0;
+      const e = s + d;
+      if (e <= rangeStart || s >= rangeEnd) continue;
+      result.push({
+        start: Math.max(s, rangeStart),
+        end: Math.min(e, rangeEnd),
+        key: clip.__audioFxKey
+      });
+    }
+  }
+  return result;
+}
+
 // ═══════════════════════════════════════════════════════════════
-//  CODEC CANDIDATES (progressive: from high res down to fallback)
+//  CODEC CANDIDATES
 // ═══════════════════════════════════════════════════════════════
 function getCodecCandidates(W, H) {
   const maxDim = Math.max(W, H);
-
-  if (maxDim <= 1920) {
-    // 1080p and below
-    return ['avc1.640028', 'avc1.4d0028', 'avc1.42E01E'];
-  }
-  if (maxDim <= 2560) {
-    // 2K
-    return ['avc1.640032', 'avc1.64002A', 'avc1.4d0032', 'avc1.4d0028'];
-  }
-  if (maxDim <= 3840) {
-    // 4K
-    return ['avc1.640034', 'avc1.640033', 'avc1.640032', 'avc1.4d0033', 'avc1.4d0032'];
-  }
-  // Above 4K
+  if (maxDim <= 1920) return ['avc1.640028', 'avc1.4d0028', 'avc1.42E01E'];
+  if (maxDim <= 2560) return ['avc1.640032', 'avc1.64002A', 'avc1.4d0032', 'avc1.4d0028'];
+  if (maxDim <= 3840) return ['avc1.640034', 'avc1.640033', 'avc1.640032', 'avc1.4d0033', 'avc1.4d0032'];
   return ['avc1.640034', 'avc1.640033'];
 }
 
@@ -576,41 +591,29 @@ function onExportClick() {
 async function exportPngSequence(baseName) {
   const videoEl = document.querySelector('#preview-video');
   if (!videoEl || !videoEl.src) { showToast('Load a video first', false); return; }
-
-  if (!window.showDirectoryPicker) {
-    showToast('Folder export needs Chrome or Edge', false);
-    return;
-  }
+  if (!window.showDirectoryPicker) { showToast('Folder export needs Chrome or Edge', false); return; }
 
   const timelineEnd = computeTimelineEnd();
   const fps = Number(settings.fps) || 30;
   const totalFrames = Math.max(1, Math.round(timelineEnd * fps));
 
-  // Ask user for folder
   let dirHandle = null;
   try {
     dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
   } catch (e) {
     if (e && e.name === 'AbortError') return;
-    console.warn('Directory picker failed:', e);
     showToast('Folder selection failed', false);
     return;
   }
   if (!dirHandle) return;
 
-  const hasWebCodecs =
-    typeof VideoDecoder !== 'undefined' &&
-    typeof EncodedVideoChunk !== 'undefined';
-
-  if (!hasWebCodecs) {
-    showToast('PNG sequence needs WebCodecs (Chrome/Edge)', false);
-    return;
-  }
+  const hasWebCodecs = typeof VideoDecoder !== 'undefined' && typeof EncodedVideoChunk !== 'undefined';
+  if (!hasWebCodecs) { showToast('PNG sequence needs WebCodecs', false); return; }
 
   try {
     await exportPngSequenceFast(dirHandle, baseName, totalFrames, fps);
   } catch (e) {
-    console.error('PNG sequence export failed:', e);
+    console.error('PNG seq failed:', e);
     showToast('Export failed: ' + (e && e.message ? e.message : 'unknown'), false);
     hideProgress();
   }
@@ -622,17 +625,11 @@ async function exportPngSequenceFast(dirHandle, baseName, totalFrames, fps) {
   const q = getCurrentQuality();
   const W = q.width;
   const H = q.height;
-
   const timelineEnd = computeTimelineEnd();
   const frameInterval = 1 / fps;
 
-  // Find clip mapping
   const matchedClip = findVideoClip(videoEl);
-  let clipSourceIn = 0;
-  let clipStartTime = 0;
-  let clipDuration = 0;
-  let clipEnd = 0;
-
+  let clipSourceIn = 0, clipStartTime = 0, clipDuration = 0, clipEnd = 0;
   if (matchedClip) {
     clipSourceIn = Number.isFinite(matchedClip.sourceIn) ? matchedClip.sourceIn : 0;
     clipStartTime = Number.isFinite(matchedClip.startTime) ? matchedClip.startTime : 0;
@@ -640,14 +637,6 @@ async function exportPngSequenceFast(dirHandle, baseName, totalFrames, fps) {
     clipEnd = clipStartTime + clipDuration;
   }
 
-  console.log('[pngseq] timelineEnd=' + timelineEnd +
-              ' fps=' + fps +
-              ' totalFrames=' + totalFrames +
-              ' clip=' + JSON.stringify(matchedClip ? {
-                start: clipStartTime, dur: clipDuration, sourceIn: clipSourceIn
-              } : null));
-
-  // Fetch + parse
   showProgress(0.02, 'Reading source…', '');
   const resp = await fetch(videoEl.src);
   const sourceAB = await resp.arrayBuffer();
@@ -659,18 +648,12 @@ async function exportPngSequenceFast(dirHandle, baseName, totalFrames, fps) {
   const videoSamples = [];
 
   await new Promise((resolve, reject) => {
-    let ready = false;
-    let lastCount = 0;
-    let stableChecks = 0;
-
+    let ready = false, lastCount = 0, stableChecks = 0;
     mp4box.onError = (e) => { if (!ready) reject(new Error('mp4box: ' + e)); };
-
     mp4box.onSamples = (trackId, user, samples) => {
-      if (!videoTrackInfo) return;
-      if (trackId !== videoTrackInfo.id) return;
+      if (!videoTrackInfo || trackId !== videoTrackInfo.id) return;
       for (let i = 0; i < samples.length; i++) videoSamples.push(samples[i]);
     };
-
     mp4box.onReady = (info) => {
       fileDuration = info.duration / info.timescale;
       videoTrackInfo = info.videoTracks[0] || null;
@@ -680,20 +663,15 @@ async function exportPngSequenceFast(dirHandle, baseName, totalFrames, fps) {
         mp4box.start();
         ready = true;
       } catch (e) { reject(e); return; }
-
       const check = () => {
         if (videoSamples.length === lastCount) {
           stableChecks++;
           if (stableChecks >= 3) { resolve(); return; }
-        } else {
-          stableChecks = 0;
-          lastCount = videoSamples.length;
-        }
+        } else { stableChecks = 0; lastCount = videoSamples.length; }
         setTimeout(check, 30);
       };
       setTimeout(check, 80);
     };
-
     mp4box.appendBuffer(sourceAB);
     mp4box.flush();
   });
@@ -702,10 +680,8 @@ async function exportPngSequenceFast(dirHandle, baseName, totalFrames, fps) {
   if (!videoSamples.length) throw new Error('No samples');
 
   if (!matchedClip || clipDuration <= 0) {
-    clipSourceIn = 0;
-    clipStartTime = 0;
-    clipDuration = fileDuration;
-    clipEnd = fileDuration;
+    clipSourceIn = 0; clipStartTime = 0;
+    clipDuration = fileDuration; clipEnd = fileDuration;
   }
 
   const description = getDecoderDescription(mp4box, videoTrackInfo.id, MP4Box, sourceAB);
@@ -719,18 +695,13 @@ async function exportPngSequenceFast(dirHandle, baseName, totalFrames, fps) {
   };
 
   const canvas = document.createElement('canvas');
-  canvas.width = W;
-  canvas.height = H;
+  canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
 
-  // Target timestamps
   const targetTimes = [];
   for (let i = 0; i < totalFrames; i++) targetTimes.push(i * frameInterval);
-
-  // Filename padding
   const padLen = Math.max(1, String(totalFrames).length);
 
-  // Write queue with backpressure
   let pendingWrites = 0;
   let writeChain = Promise.resolve();
   const MAX_PENDING = 8;
@@ -742,15 +713,12 @@ async function exportPngSequenceFast(dirHandle, baseName, totalFrames, fps) {
         const blob = await blobPromise;
         if (!blob) return;
         const name = String(frameIdx + 1).padStart(padLen, '0') + '.png';
-        const fileHandle = await dirHandle.getFileHandle(name, { create: true });
-        const writable = await fileHandle.createWritable();
-        await writable.write(blob);
-        await writable.close();
-      } catch (e) {
-        console.warn('write frame failed:', e);
-      } finally {
-        pendingWrites--;
-      }
+        const fh = await dirHandle.getFileHandle(name, { create: true });
+        const w = await fh.createWritable();
+        await w.write(blob);
+        await w.close();
+      } catch (e) { console.warn('write frame:', e); }
+      finally { pendingWrites--; }
     });
   }
 
@@ -763,48 +731,25 @@ async function exportPngSequenceFast(dirHandle, baseName, totalFrames, fps) {
       try {
         const sourceTime = frame.timestamp / 1e6;
         const timelineTime = sourceTime - clipSourceIn + clipStartTime;
+        if (timelineTime < clipStartTime - 0.02) { frame.close(); return; }
+        if (timelineTime >= clipEnd + 0.02) { frame.close(); return; }
 
-        // Skip frames before clip start
-        if (timelineTime < clipStartTime - 0.02) {
-          frame.close();
-          return;
-        }
-        // Skip frames past clip end
-        if (timelineTime >= clipEnd + 0.02) {
-          frame.close();
-          return;
-        }
-
-        // Emit any missing target times before this frame (as black or last content)
         while (nextTargetIdx < totalFrames &&
                targetTimes[nextTargetIdx] < timelineTime - 0.001) {
-          const tt = targetTimes[nextTargetIdx];
-          emitFrame(tt, null, nextTargetIdx);
+          emitFrame(targetTimes[nextTargetIdx], null, nextTargetIdx);
           nextTargetIdx++;
         }
-
-        // Emit target frames up to and including this frame's time
         while (nextTargetIdx < totalFrames &&
                targetTimes[nextTargetIdx] <= timelineTime + 0.001) {
-          const tt = targetTimes[nextTargetIdx];
-          emitFrame(tt, frame, nextTargetIdx);
+          emitFrame(targetTimes[nextTargetIdx], frame, nextTargetIdx);
           nextTargetIdx++;
         }
-
         frame.close();
 
-        const p = timelineEnd > 0
-          ? Math.max(0, Math.min(1, timelineTime / timelineEnd))
-          : 0;
-        showProgress(
-          0.05 + p * 0.9,
-          'Rendering frame ' + nextTargetIdx + '/' + totalFrames,
-          'PNG sequence'
-        );
-      } catch (e) {
-        console.warn('png frame error:', e);
-        try { frame.close(); } catch (_) {}
-      }
+        const p = timelineEnd > 0 ? Math.max(0, Math.min(1, timelineTime / timelineEnd)) : 0;
+        showProgress(0.05 + p * 0.9,
+                     'Rendering frame ' + nextTargetIdx + '/' + totalFrames, 'PNG sequence');
+      } catch (e) { console.warn('png frame:', e); try { frame.close(); } catch (_) {} }
     },
     error: function (e) { decoderError = e; console.error('Decoder:', e); }
   });
@@ -813,10 +758,8 @@ async function exportPngSequenceFast(dirHandle, baseName, totalFrames, fps) {
     try {
       renderFrameToCanvas(ctx, W, H, sourceFrame || null, timelineTime, timelineTime);
     } catch (_) {
-      ctx.fillStyle = '#000';
-      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
     }
-    // Snapshot canvas pixels synchronously
     const blobPromise = new Promise(function (resolve) {
       try { canvas.toBlob(function (b) { resolve(b); }, 'image/png'); }
       catch (_) { resolve(null); }
@@ -824,37 +767,26 @@ async function exportPngSequenceFast(dirHandle, baseName, totalFrames, fps) {
     queueWrite(blobPromise, idx);
   }
 
-  try {
-    decoder.configure(decoderConfig);
-  } catch (e) {
-    throw new Error('Decoder configure failed: ' + e.message);
-  }
+  try { decoder.configure(decoderConfig); }
+  catch (e) { throw new Error('Decoder configure failed: ' + e.message); }
 
-  // Find first keyframe
   let startIdx = -1;
   for (let i = 0; i < videoSamples.length; i++) {
     if (videoSamples[i].is_sync) { startIdx = i; break; }
   }
   if (startIdx < 0) throw new Error('No keyframe');
 
-  // ─── Emit LEADING black frames [0, clipStartTime) ────────
   while (nextTargetIdx < totalFrames &&
          targetTimes[nextTargetIdx] < clipStartTime - 0.001) {
     emitFrame(targetTimes[nextTargetIdx], null, nextTargetIdx);
     nextTargetIdx++;
   }
 
-  // Feed samples
   for (let i = startIdx; i < videoSamples.length; i++) {
     if (decoder.state === 'closed') break;
     if (decoderError) break;
-
-    while (decoder.decodeQueueSize > 25 && decoder.state === 'configured') {
-      await sleep(5);
-    }
-    while (pendingWrites > MAX_PENDING) {
-      await sleep(10);
-    }
+    while (decoder.decodeQueueSize > 25 && decoder.state === 'configured') await sleep(5);
+    while (pendingWrites > MAX_PENDING) await sleep(10);
 
     const s = videoSamples[i];
     try {
@@ -879,16 +811,13 @@ async function exportPngSequenceFast(dirHandle, baseName, totalFrames, fps) {
 
   if (decoderError) throw decoderError;
 
-  // ─── Emit TRAILING black frames [clipEnd, timelineEnd) ───
   while (nextTargetIdx < totalFrames) {
     emitFrame(targetTimes[nextTargetIdx], null, nextTargetIdx);
     nextTargetIdx++;
   }
 
-  // Wait for all writes to finish
   showProgress(0.98, 'Writing files…', nextTargetIdx + '/' + totalFrames);
   await writeChain;
-
   hideProgress();
   showToast('Saved ' + totalFrames + ' PNG files');
 }
@@ -900,10 +829,8 @@ async function exportAudio(filename) {
   const videoEl = document.querySelector('#preview-video');
   if (!videoEl || !videoEl.src) { showToast('Load a video first', false); return; }
 
-  const hasAudioEncoder = typeof AudioEncoder !== 'undefined' &&
-                          typeof AudioData !== 'undefined' &&
-                          typeof AudioContext !== 'undefined';
-  if (hasAudioEncoder) {
+  const hasAE = typeof AudioEncoder !== 'undefined' && typeof AudioData !== 'undefined' && typeof AudioContext !== 'undefined';
+  if (hasAE) {
     try { await exportAudioFast(filename); return; }
     catch (e) { console.warn('Audio fast failed:', e); }
   }
@@ -915,25 +842,38 @@ async function exportAudioFast(filename) {
   const clip = findVideoClip(videoEl);
   const sourceIn = clip ? (Number.isFinite(clip.sourceIn) ? clip.sourceIn : 0) : 0;
   const clipDur  = clip && Number.isFinite(clip.duration) ? clip.duration : 0;
+  const clipStart = clip && Number.isFinite(clip.startTime) ? clip.startTime : 0;
 
   showProgress(0.05, 'Decoding audio…', '');
-
   const resp = await fetch(videoEl.src);
   const ab = await resp.arrayBuffer();
   const AC = window.AudioContext || window.webkitAudioContext;
   const ac = new AC();
-  let audioBuffer;
-  try { audioBuffer = await ac.decodeAudioData(ab); }
+  let rawBuffer;
+  try { rawBuffer = await ac.decodeAudioData(ab); }
   finally { try { ac.close(); } catch (_) {} }
 
+  // 🆕 Apply audio FX layers
+  const fxLayers = getAudioFxLayersInRange(clipStart, clipStart + clipDur);
+  let processedBuffer = rawBuffer;
+  if (fxLayers.length) {
+    showProgress(0.15, 'Applying audio FX…', '');
+    try {
+      processedBuffer = await applyAudioFxLayers(rawBuffer, fxLayers, sourceIn, clipDur, clipStart);
+    } catch (e) {
+      console.warn('Audio FX offline failed:', e);
+      processedBuffer = rawBuffer;
+    }
+  }
+
   const targetRate = 48000;
-  const numCh = Math.min(2, audioBuffer.numberOfChannels || 1);
-  const srcRate = audioBuffer.sampleRate;
+  const numCh = Math.min(2, processedBuffer.numberOfChannels || 1);
+  const srcRate = processedBuffer.sampleRate;
 
   const startSample = Math.floor(sourceIn * srcRate);
   const endSample = clipDur > 0
-    ? Math.min(audioBuffer.length, Math.floor((sourceIn + clipDur) * srcRate))
-    : audioBuffer.length;
+    ? Math.min(processedBuffer.length, Math.floor((sourceIn + clipDur) * srcRate))
+    : processedBuffer.length;
   const totalFrames = Math.max(0, endSample - startSample);
   if (totalFrames === 0) throw new Error('Empty audio range');
 
@@ -943,8 +883,7 @@ async function exportAudioFast(filename) {
 
   const target = new ArrayBufferTarget();
   const muxer = new Muxer({
-    target: target,
-    fastStart: 'in-memory',
+    target: target, fastStart: 'in-memory',
     audio: { codec: 'aac', numberOfChannels: numCh, sampleRate: targetRate },
     firstTimestampBehavior: 'offset'
   });
@@ -956,14 +895,12 @@ async function exportAudioFast(filename) {
     error: function (e) { console.warn('AudioEncoder', e); }
   });
   audioEncoder.configure({
-    codec: 'mp4a.40.2',
-    sampleRate: targetRate,
-    numberOfChannels: numCh,
-    bitrate: 128000
+    codec: 'mp4a.40.2', sampleRate: targetRate,
+    numberOfChannels: numCh, bitrate: 128000
   });
 
   const channels = [];
-  for (let c = 0; c < numCh; c++) channels.push(audioBuffer.getChannelData(c));
+  for (let c = 0; c < numCh; c++) channels.push(processedBuffer.getChannelData(c));
 
   const chunkFrames = 1024;
   let offset = 0;
@@ -980,7 +917,7 @@ async function exportAudioFast(filename) {
         } else {
           const srcIdx = srcStart + i * (srcRate / targetRate);
           const i0 = Math.floor(srcIdx);
-          const i1 = Math.min(audioBuffer.length - 1, i0 + 1);
+          const i1 = Math.min(processedBuffer.length - 1, i0 + 1);
           const frac = srcIdx - i0;
           planar[dstOff + i] = (src[i0] || 0) * (1 - frac) + (src[i1] || 0) * frac;
         }
@@ -988,10 +925,8 @@ async function exportAudioFast(filename) {
     }
     try {
       const ad = new AudioData({
-        format: 'f32-planar',
-        sampleRate: targetRate,
-        numberOfFrames: len,
-        numberOfChannels: numCh,
+        format: 'f32-planar', sampleRate: targetRate,
+        numberOfFrames: len, numberOfChannels: numCh,
         timestamp: Math.round((offset / targetRate) * 1e6),
         data: planar
       });
@@ -999,7 +934,7 @@ async function exportAudioFast(filename) {
       ad.close();
     } catch (e) { console.warn('audio chunk', e); }
     offset += len;
-    showProgress(0.1 + 0.85 * (offset / totalFrames), 'Encoding…', '');
+    showProgress(0.5 + 0.45 * (offset / totalFrames), 'Encoding…', '');
   }
 
   try { await audioEncoder.flush(); } catch (_) {}
@@ -1021,8 +956,7 @@ async function exportAudioRecorder(filename) {
   const clip = videoEl ? findVideoClip(videoEl) : null;
   const sourceIn = clip && Number.isFinite(clip.sourceIn) ? clip.sourceIn : 0;
   const clipDur  = clip && Number.isFinite(clip.duration) ? clip.duration : 0;
-  const duration = clipDur > 0 ? clipDur
-    : (Number.isFinite(audioEl.duration) ? audioEl.duration : 10);
+  const duration = clipDur > 0 ? clipDur : (Number.isFinite(audioEl.duration) ? audioEl.duration : 10);
 
   const stream = audioEl.captureStream();
   let mime = '';
@@ -1068,7 +1002,6 @@ async function exportAudioRecorder(filename) {
 async function exportVideo(filename, fmt) {
   const videoEl = document.querySelector('#preview-video');
   if (!videoEl || !videoEl.src) { showToast('Load a video first', false); return; }
-
   if (fmt.key !== 'mp4') return exportVideoRecorder(filename, fmt);
 
   const hasWebCodecs =
@@ -1077,15 +1010,10 @@ async function exportVideo(filename, fmt) {
     typeof AudioEncoder !== 'undefined' &&
     typeof AudioData !== 'undefined' &&
     typeof EncodedVideoChunk !== 'undefined';
+  if (!hasWebCodecs) { showToast('Using recorder'); return exportVideoRecorder(filename, fmt); }
 
-  if (!hasWebCodecs) {
-    showToast('Using recorder');
-    return exportVideoRecorder(filename, fmt);
-  }
-
-  try {
-    await exportVideoFast(filename);
-  } catch (e) {
+  try { await exportVideoFast(filename); }
+  catch (e) {
     console.error('Fast render failed:', e);
     showToast('Fast render failed — using recorder…', false);
     await sleep(500);
@@ -1101,8 +1029,7 @@ async function exportVideoFast(filename) {
 
   const videoEl = document.querySelector('#preview-video');
   const q = getCurrentQuality();
-  const W = q.width;
-  const H = q.height;
+  const W = q.width, H = q.height;
   const fps = Number(settings.fps) || 30;
   const frameInterval = 1 / fps;
   const bitrateBps = (settings.bitrateKbps || 10000) * 1000;
@@ -1118,11 +1045,6 @@ async function exportVideoFast(filename) {
     clipDuration = Number.isFinite(matchedClip.duration) ? matchedClip.duration : 0;
     clipEnd = clipStartTime + clipDuration;
   }
-
-  console.log('[export] timelineEnd=' + timelineEnd +
-              ' clip=' + JSON.stringify(matchedClip ? {
-                start: clipStartTime, dur: clipDuration, sourceIn: clipSourceIn
-              } : null));
 
   showProgress(0.02, 'Reading source…', '');
   const resp = await fetch(videoEl.src);
@@ -1169,10 +1091,8 @@ async function exportVideoFast(filename) {
   if (!videoSamples.length) throw new Error('No samples');
 
   if (!matchedClip || clipDuration <= 0) {
-    clipSourceIn = 0;
-    clipStartTime = 0;
-    clipDuration = fileDuration;
-    clipEnd = fileDuration;
+    clipSourceIn = 0; clipStartTime = 0;
+    clipDuration = fileDuration; clipEnd = fileDuration;
   }
 
   const description = getDecoderDescription(mp4box, videoTrackInfo.id, MP4Box, sourceAB);
@@ -1185,11 +1105,9 @@ async function exportVideoFast(filename) {
     description: description
   };
 
-  // Muxer
   const target = new ArrayBufferTarget();
   const muxerOpts = {
-    target: target,
-    fastStart: 'in-memory',
+    target: target, fastStart: 'in-memory',
     video: { codec: 'avc', width: W, height: H },
     firstTimestampBehavior: 'offset'
   };
@@ -1199,7 +1117,6 @@ async function exportVideoFast(filename) {
   }
   const muxer = new Muxer(muxerOpts);
 
-  // Video encoder
   let frameCount = 0;
   const keyFrameEvery = Math.max(1, Math.round(fps * 2));
   let encoderError = null;
@@ -1222,64 +1139,44 @@ async function exportVideoFast(filename) {
     error: (e) => { encoderError = e; console.error('VideoEncoder:', e); }
   });
 
-  // Try codec candidates, verify with isConfigSupported
   let encoderConfigured = false;
   const codecCandidates = getCodecCandidates(W, H);
   for (let ci = 0; ci < codecCandidates.length; ci++) {
     const codecStr = codecCandidates[ci];
     const config = {
-      codec: codecStr,
-      width: W,
-      height: H,
-      bitrate: bitrateBps,
-      framerate: fps,
+      codec: codecStr, width: W, height: H,
+      bitrate: bitrateBps, framerate: fps,
       avc: { format: 'avc' }
     };
-
     try {
       if (typeof VideoEncoder.isConfigSupported === 'function') {
         const support = await VideoEncoder.isConfigSupported(config);
-        if (!support || !support.supported) {
-          console.warn('Codec unsupported:', codecStr);
-          continue;
-        }
+        if (!support || !support.supported) continue;
       }
       videoEncoder.configure(config);
       encoderConfigured = true;
-      console.log('[export] Encoder codec:', codecStr, 'at', W + 'x' + H);
+      console.log('[export] Encoder codec:', codecStr, W + 'x' + H);
       break;
-    } catch (e) {
-      console.warn('Codec configure failed:', codecStr, e.message);
-    }
+    } catch (_) {}
   }
-
-  // Retry without avc format if all failed
   if (!encoderConfigured) {
     for (let ci = 0; ci < codecCandidates.length; ci++) {
-      const codecStr = codecCandidates[ci];
       try {
         videoEncoder.configure({
-          codec: codecStr,
-          width: W,
-          height: H,
-          bitrate: bitrateBps,
-          framerate: fps
+          codec: codecCandidates[ci], width: W, height: H,
+          bitrate: bitrateBps, framerate: fps
         });
         encoderConfigured = true;
-        console.log('[export] Encoder codec (no avc flag):', codecStr);
         break;
       } catch (_) {}
     }
   }
-
   if (!encoderConfigured) {
-    throw new Error('No supported H.264 encoder for ' + W + 'x' + H +
-                    '. Try a lower quality.');
+    throw new Error('No supported H.264 encoder for ' + W + 'x' + H);
   }
 
   const canvas = document.createElement('canvas');
-  canvas.width = W;
-  canvas.height = H;
+  canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
 
   function emitBlackFrame(timelineTime) {
@@ -1297,13 +1194,9 @@ async function exportVideoFast(filename) {
     frameCount++;
   }
 
-  // Leading black frames
   if (clipStartTime > 0.005) {
     let t = 0;
-    while (t < clipStartTime - 0.001) {
-      emitBlackFrame(t);
-      t += frameInterval;
-    }
+    while (t < clipStartTime - 0.001) { emitBlackFrame(t); t += frameInterval; }
   }
 
   let decoderError = null;
@@ -1313,7 +1206,6 @@ async function exportVideoFast(filename) {
       try {
         const sourceTime = frame.timestamp / 1e6;
         const timelineTime = sourceTime - clipSourceIn + clipStartTime;
-
         if (timelineTime < clipStartTime - 0.03) { frame.close(); return; }
         if (timelineTime >= clipEnd) { frame.close(); return; }
 
@@ -1329,16 +1221,10 @@ async function exportVideoFast(filename) {
         frame.close();
         frameCount++;
 
-        const p = timelineEnd > 0
-          ? Math.max(0, Math.min(1, timelineTime / timelineEnd))
-          : 0;
+        const p = timelineEnd > 0 ? Math.max(0, Math.min(1, timelineTime / timelineEnd)) : 0;
         showProgress(0.05 + p * 0.9,
-                     'Rendering… ' + Math.round(p * 100) + '%',
-                     'Frame ' + frameCount);
-      } catch (e) {
-        console.warn('frame error:', e);
-        try { frame.close(); } catch (_) {}
-      }
+                     'Rendering… ' + Math.round(p * 100) + '%', 'Frame ' + frameCount);
+      } catch (e) { console.warn('frame err:', e); try { frame.close(); } catch (_) {} }
     },
     error: function (e) { decoderError = e; console.error('VideoDecoder:', e); }
   });
@@ -1355,9 +1241,7 @@ async function exportVideoFast(filename) {
   for (let i = startIdx; i < videoSamples.length; i++) {
     if (decoder.state === 'closed') break;
     if (decoderError) break;
-    while (decoder.decodeQueueSize > 25 && decoder.state === 'configured') {
-      await sleep(5);
-    }
+    while (decoder.decodeQueueSize > 25 && decoder.state === 'configured') await sleep(5);
     const s = videoSamples[i];
     try {
       decoder.decode(new EncodedVideoChunk({
@@ -1380,20 +1264,18 @@ async function exportVideoFast(filename) {
   try { await decoder.flush(); } catch (_) {}
   try { decoder.close(); } catch (_) {}
 
-  // Trailing black frames
   if (clipEnd < timelineEnd - 0.005) {
     let t = clipEnd;
-    while (t < timelineEnd - 0.001) {
-      emitBlackFrame(t);
-      t += frameInterval;
-    }
+    while (t < timelineEnd - 0.001) { emitBlackFrame(t); t += frameInterval; }
   }
 
-  // Audio
+  // 🆕 AUDIO with FX
   if (hasAudio) {
     try {
-      await encodeAudioFromURL(videoEl.src, muxer, audioTrackInfo,
-                               clipSourceIn, clipDuration, clipStartTime);
+      await encodeAudioFromURL(
+        videoEl.src, muxer, audioTrackInfo,
+        clipSourceIn, clipDuration, clipStartTime
+      );
     } catch (e) { console.warn('Audio failed:', e); }
   }
 
@@ -1413,28 +1295,45 @@ async function exportVideoFast(filename) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  Audio encoder (with timeline offset)
+//  AUDIO ENCODER (with FX applied)
 // ═══════════════════════════════════════════════════════════════
 async function encodeAudioFromURL(url, muxer, audioTrackInfo, sourceIn, clipDur, timelineStart) {
   const resp = await fetch(url);
   const ab = await resp.arrayBuffer();
   const AC = window.AudioContext || window.webkitAudioContext;
   const ac = new AC();
-  let audioBuffer;
-  try { audioBuffer = await ac.decodeAudioData(ab); }
+  let rawBuffer;
+  try { rawBuffer = await ac.decodeAudioData(ab); }
   catch (e) { try { ac.close(); } catch (_) {} throw e; }
   try { ac.close(); } catch (_) {}
 
+  // 🆕 Get FX layers in this range
+  const fxLayers = getAudioFxLayersInRange(
+    timelineStart, timelineStart + clipDur
+  );
+
+  let processedBuffer = rawBuffer;
+  if (fxLayers.length) {
+    console.log('[export] Applying', fxLayers.length, 'Audio FX layer(s)');
+    try {
+      processedBuffer = await applyAudioFxLayers(
+        rawBuffer, fxLayers, sourceIn, clipDur, timelineStart
+      );
+    } catch (e) {
+      console.warn('Audio FX offline render failed:', e);
+      processedBuffer = rawBuffer;
+    }
+  }
+
   const targetRate = 48000;
-  const numCh = Math.min(2, audioBuffer.numberOfChannels || 1);
-  const srcRate = audioBuffer.sampleRate;
+  const numCh = Math.min(2, processedBuffer.numberOfChannels || 1);
+  const srcRate = processedBuffer.sampleRate;
 
   const startSample = Math.max(0, Math.floor((sourceIn || 0) * srcRate));
   const endSample = (clipDur && clipDur > 0)
-    ? Math.min(audioBuffer.length, Math.floor(((sourceIn || 0) + clipDur) * srcRate))
-    : audioBuffer.length;
+    ? Math.min(processedBuffer.length, Math.floor(((sourceIn || 0) + clipDur) * srcRate))
+    : processedBuffer.length;
   const totalFrames = Math.max(0, endSample - startSample);
-
   if (totalFrames === 0) throw new Error('Empty audio range');
 
   const audioEncoder = new AudioEncoder({
@@ -1444,19 +1343,16 @@ async function encodeAudioFromURL(url, muxer, audioTrackInfo, sourceIn, clipDur,
     error: function (e) { console.warn('AudioEncoder', e); }
   });
   audioEncoder.configure({
-    codec: 'mp4a.40.2',
-    sampleRate: targetRate,
-    numberOfChannels: numCh,
-    bitrate: 128000
+    codec: 'mp4a.40.2', sampleRate: targetRate,
+    numberOfChannels: numCh, bitrate: 128000
   });
 
   const chunkFrames = 1024;
   const channels = [];
-  for (let c = 0; c < numCh; c++) channels.push(audioBuffer.getChannelData(c));
+  for (let c = 0; c < numCh; c++) channels.push(processedBuffer.getChannelData(c));
 
   const timeOffset = Number.isFinite(timelineStart) ? timelineStart : 0;
   let offset = 0;
-
   while (offset < totalFrames) {
     const len = Math.min(chunkFrames, totalFrames - offset);
     const planar = new Float32Array(len * numCh);
@@ -1470,7 +1366,7 @@ async function encodeAudioFromURL(url, muxer, audioTrackInfo, sourceIn, clipDur,
         } else {
           const srcIdx = srcStart + i * (srcRate / targetRate);
           const i0 = Math.floor(srcIdx);
-          const i1 = Math.min(audioBuffer.length - 1, i0 + 1);
+          const i1 = Math.min(processedBuffer.length - 1, i0 + 1);
           const frac = srcIdx - i0;
           planar[dstOff + i] = (src[i0] || 0) * (1 - frac) + (src[i1] || 0) * frac;
         }
@@ -1478,10 +1374,8 @@ async function encodeAudioFromURL(url, muxer, audioTrackInfo, sourceIn, clipDur,
     }
     try {
       const ad = new AudioData({
-        format: 'f32-planar',
-        sampleRate: targetRate,
-        numberOfFrames: len,
-        numberOfChannels: numCh,
+        format: 'f32-planar', sampleRate: targetRate,
+        numberOfFrames: len, numberOfChannels: numCh,
         timestamp: Math.round((timeOffset + offset / targetRate) * 1e6),
         data: planar
       });
@@ -1496,23 +1390,104 @@ async function encodeAudioFromURL(url, muxer, audioTrackInfo, sourceIn, clipDur,
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  Raw MP4 atom parser for avcC/hvcC
+//  APPLY AUDIO FX LAYERS OFFLINE
+//  Splits clip duration into segments; each segment either uses
+//  a specific FX chain or plays dry.
+// ═══════════════════════════════════════════════════════════════
+async function applyAudioFxLayers(inputBuffer, fxRanges, sourceIn, clipDur, timelineStart) {
+  const sr = inputBuffer.sampleRate;
+  const numCh = Math.min(2, inputBuffer.numberOfChannels || 1);
+  const outLen = Math.max(1, Math.ceil(clipDur * sr));
+
+  const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  if (!OAC) throw new Error('OfflineAudioContext not available');
+
+  const ac = new OAC(numCh, outLen, sr);
+
+  // Build segment boundaries in TIMELINE space
+  const points = new Set([timelineStart, timelineStart + clipDur]);
+  for (const fx of fxRanges) {
+    points.add(fx.start);
+    points.add(fx.end);
+  }
+  const sorted = [...points].sort((a, b) => a - b);
+
+  const segments = [];
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const s = sorted[i];
+    const e = sorted[i + 1];
+    if (e <= s) continue;
+    let key = null;
+    for (const fx of fxRanges) {
+      if (fx.start <= s && fx.end >= e) { key = fx.key; break; }
+    }
+    segments.push({ start: s, end: e, key });
+  }
+
+  console.log('[export-audio-fx] segments:', segments);
+
+  // Add a small fade to avoid clicks at segment boundaries
+  const FADE_SEC = 0.01;
+  const FADE_SAMPLES = Math.max(1, Math.floor(FADE_SEC * sr));
+
+  for (const seg of segments) {
+    const segDur = seg.end - seg.start;
+    if (segDur <= 0.001) continue;
+
+    // Source local time for this segment
+    const localStart = sourceIn + (seg.start - timelineStart);
+    const sSamp = Math.max(0, Math.floor(localStart * sr));
+    const eSamp = Math.min(inputBuffer.length, Math.floor((localStart + segDur) * sr));
+    const samples = Math.max(1, eSamp - sSamp);
+
+    const segBuf = ac.createBuffer(numCh, samples, sr);
+    for (let c = 0; c < numCh; c++) {
+      const srcCh = inputBuffer.getChannelData(Math.min(c, inputBuffer.numberOfChannels - 1));
+      const dstCh = segBuf.getChannelData(c);
+      for (let i = 0; i < samples; i++) {
+        let v = srcCh[sSamp + i] || 0;
+        // fade-in
+        if (i < FADE_SAMPLES) v *= i / FADE_SAMPLES;
+        // fade-out
+        const rem = samples - i;
+        if (rem < FADE_SAMPLES) v *= rem / FADE_SAMPLES;
+        dstCh[i] = v;
+      }
+    }
+
+    const src = ac.createBufferSource();
+    src.buffer = segBuf;
+
+    let tail = src;
+    if (seg.key) {
+      const build = getBuilder(seg.key);
+      if (build) {
+        try { tail = build(ac, src) || src; }
+        catch (e) { console.warn('FX build failed:', e); tail = src; }
+      }
+    }
+    tail.connect(ac.destination);
+
+    // Start at segment offset within output buffer
+    const startAtOutput = seg.start - timelineStart;
+    src.start(Math.max(0, startAtOutput));
+  }
+
+  return await ac.startRendering();
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Decoder description — raw MP4 atom parser
 // ═══════════════════════════════════════════════════════════════
 function getDecoderDescription(mp4box, trackId, MP4Box, sourceBuffer) {
   try {
     if (sourceBuffer && sourceBuffer.byteLength > 0) {
       const avcC = extractBoxPayload(sourceBuffer, 'avcC');
-      if (avcC && avcC.length > 4) {
-        console.log('avcC extracted, len=' + avcC.length);
-        return avcC;
-      }
+      if (avcC && avcC.length > 4) return avcC;
       const hvcC = extractBoxPayload(sourceBuffer, 'hvcC');
-      if (hvcC && hvcC.length > 4) {
-        console.log('hvcC extracted, len=' + hvcC.length);
-        return hvcC;
-      }
+      if (hvcC && hvcC.length > 4) return hvcC;
     }
-  } catch (e) { console.warn('atom extract failed:', e); }
+  } catch (e) { console.warn('atom extract:', e); }
   return undefined;
 }
 
@@ -1595,12 +1570,9 @@ async function exportVideoRecorder(filename, fmt) {
   if (!videoEl || !videoEl.src) { showToast('Load a video first', false); return; }
 
   const q = getCurrentQuality();
-  const W = q.width;
-  const H = q.height;
-
+  const W = q.width, H = q.height;
   const exportCanvas = document.createElement('canvas');
-  exportCanvas.width = W;
-  exportCanvas.height = H;
+  exportCanvas.width = W; exportCanvas.height = H;
   const ectx = exportCanvas.getContext('2d', { alpha: false, willReadFrequently: true });
 
   const fps = Number(settings.fps) || 30;
