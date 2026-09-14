@@ -1,9 +1,9 @@
 // ================================================================
 //  js/workspace/layerDrag.js
-//  - Drag CLIP → move single clip with strict no-overlap auto-track
-//    + mirrored linked audio (video V1→V2 moves audio A1→A2)
-//  - Drag TRACK LABEL → ripple reorder + mirror linked audio
-//  - FIX: click no longer resets clip to timeline start
+//  - Drag CLIP horizontally → move with snap (start/end/playhead)
+//  - Drag CLIP vertically → move to another track
+//  - Drag CLIP BETWEEN track edges → INSERT as new layer (ripple)
+//  - Drag TRACK LABEL → reorder + mirror linked audio
 // ================================================================
 
 import { getPixelsPerSecond } from './timelineScaler.js';
@@ -12,56 +12,15 @@ const DRAG_THRESHOLD_PX = 8;
 const REVERT_THRESHOLD_PX = 12;
 const CSS_ID = 'layer-drag-styles';
 
-// 🆕 Snap constants (drag-drop)
+// Snap constants (horizontal)
 const SNAP_ENTER_PX = 14;
 const SNAP_RELEASE_PX = 28;
 
+// Insert-zone detection
+const INSERT_ZONE_PX = 14;
+
 let dragState = null;
 let globalInited = false;
-
-// ═══════════════════════════════════════════════════════════════
-//  🆕 SNAP HELPERS (drag-drop)
-// ═══════════════════════════════════════════════════════════════
-function getDragSnapTargets(excludeClip) {
-  const targets = [];
-  const appState = window.__appState;
-  if (!appState) return targets;
-  const allTracks = [].concat(
-    appState.timeline.visual || [],
-    appState.timeline.audio || []
-  );
-  for (let t = 0; t < allTracks.length; t++) {
-    const track = allTracks[t];
-    if (!Array.isArray(track)) continue;
-    for (let c = 0; c < track.length; c++) {
-      const clip = track[c];
-      if (!clip || clip === excludeClip) continue;
-      const s = Number.isFinite(clip.startTime) ? clip.startTime : 0;
-      const d = Number.isFinite(clip.duration) ? clip.duration : 0;
-      targets.push({ time: s, type: 'start', clip: clip });
-      targets.push({ time: s + d, type: 'end', clip: clip });
-    }
-  }
-  const eng = window.__playbackEngine;
-  if (eng && typeof eng.getTime === 'function') {
-    const ph = eng.getTime();
-    if (Number.isFinite(ph)) targets.push({ time: ph, type: 'playhead', clip: null });
-  }
-  return targets;
-}
-
-function ensureSnapGuide() {
-  let guide = document.querySelector('.layer-drag-snap-guide');
-  if (!guide) {
-    const matrix = document.querySelector('#timeline-matrix');
-    if (!matrix) return null;
-    guide = document.createElement('div');
-    guide.className = 'trim-snap-guide layer-drag-snap-guide';
-    guide.style.display = 'none';
-    matrix.appendChild(guide);
-  }
-  return guide;
-}
 
 export function initLayerDrag() {
   if (globalInited) return;
@@ -152,7 +111,7 @@ function injectStyles() {
       cursor: grabbing !important;
     }
 
-    /* 🆕 Snap visual (fallback if trimHandles not loaded) */
+    /* Snap visual (horizontal drag) */
     .clip.snap-active {
       outline-color: #22c55e !important;
       box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.4) !important;
@@ -167,6 +126,40 @@ function injectStyles() {
       pointer-events: none;
       z-index: 99998;
     }
+
+    /* 🆕 Insert-between-layers indicator (horizontal green line) */
+    .insert-indicator {
+      position: absolute;
+      left: 0;
+      right: 0;
+      height: 4px;
+      background: #22c55e;
+      box-shadow:
+        0 0 12px rgba(34, 197, 94, 0.95),
+        0 0 4px rgba(34, 197, 94, 1);
+      z-index: 9999;
+      pointer-events: none;
+      display: none;
+      animation: insert-pulse 1.2s ease-in-out infinite;
+    }
+    @keyframes insert-pulse {
+      0%, 100% { opacity: 1; }
+      50%      { opacity: 0.65; }
+    }
+    .insert-indicator::before,
+    .insert-indicator::after {
+      content: '';
+      position: absolute;
+      top: 50%;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: #22c55e;
+      transform: translateY(-50%);
+      box-shadow: 0 0 8px rgba(34, 197, 94, 0.95);
+    }
+    .insert-indicator::before { left: 6px; }
+    .insert-indicator::after  { right: 6px; }
   `;
   document.head.appendChild(s);
 }
@@ -186,6 +179,121 @@ function killDraggable(viewport) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+//  SNAP HELPERS (horizontal drag)
+// ═══════════════════════════════════════════════════════════════
+function getDragSnapTargets(excludeClip) {
+  const targets = [];
+  const appState = window.__appState;
+  if (!appState) return targets;
+  const allTracks = [].concat(
+    appState.timeline.visual || [],
+    appState.timeline.audio || []
+  );
+  for (let t = 0; t < allTracks.length; t++) {
+    const track = allTracks[t];
+    if (!Array.isArray(track)) continue;
+    for (let c = 0; c < track.length; c++) {
+      const clip = track[c];
+      if (!clip || clip === excludeClip) continue;
+      const s = Number.isFinite(clip.startTime) ? clip.startTime : 0;
+      const d = Number.isFinite(clip.duration) ? clip.duration : 0;
+      targets.push({ time: s,     type: 'start', clip: clip });
+      targets.push({ time: s + d, type: 'end',   clip: clip });
+    }
+  }
+  const eng = window.__playbackEngine;
+  if (eng && typeof eng.getTime === 'function') {
+    const ph = eng.getTime();
+    if (Number.isFinite(ph)) targets.push({ time: ph, type: 'playhead', clip: null });
+  }
+  return targets;
+}
+
+function ensureSnapGuide() {
+  let guide = document.querySelector('.layer-drag-snap-guide');
+  if (!guide) {
+    const matrix = document.querySelector('#timeline-matrix');
+    if (!matrix) return null;
+    guide = document.createElement('div');
+    guide.className = 'trim-snap-guide layer-drag-snap-guide';
+    guide.style.display = 'none';
+    matrix.appendChild(guide);
+  }
+  return guide;
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  🆕 INSERT INDICATOR (horizontal green line between tracks)
+// ═══════════════════════════════════════════════════════════════
+function detectInsertZone(clientX, clientY, group) {
+  const container = group === 'visual'
+    ? document.querySelector('#visual-tracks')
+    : document.querySelector('#audio-tracks');
+  if (!container) return null;
+
+  const tracks = container.querySelectorAll('.track');
+  if (!tracks.length) return null;
+
+  // Check top edges of all tracks
+  for (let i = 0; i < tracks.length; i++) {
+    const trackEl = tracks[i];
+    const rect = trackEl.getBoundingClientRect();
+    const trackIdx = Number(trackEl.dataset.trackIndex);
+
+    if (Math.abs(clientY - rect.top) <= INSERT_ZONE_PX) {
+      return {
+        group: group,
+        insertIndex: trackIdx + 1,   // Insert above this track
+        y: rect.top,
+        container: container
+      };
+    }
+  }
+
+  // Check bottom edge of the last track (below everything)
+  const lastTrack = tracks[tracks.length - 1];
+  const lastRect = lastTrack.getBoundingClientRect();
+  const lastIdx = Number(lastTrack.dataset.trackIndex);
+  if (Math.abs(clientY - lastRect.bottom) <= INSERT_ZONE_PX) {
+    return {
+      group: group,
+      insertIndex: lastIdx,   // Insert below last = at its own index
+      y: lastRect.bottom,
+      container: container
+    };
+  }
+
+  return null;
+}
+
+function showInsertIndicator(zone) {
+  if (!zone || !zone.container) return;
+  const container = zone.container;
+
+  if (getComputedStyle(container).position === 'static') {
+    container.style.position = 'relative';
+  }
+
+  let line = container.querySelector('.insert-indicator');
+  if (!line) {
+    line = document.createElement('div');
+    line.className = 'insert-indicator';
+    container.appendChild(line);
+  }
+
+  const containerRect = container.getBoundingClientRect();
+  const y = zone.y - containerRect.top;
+  line.style.top = y + 'px';
+  line.style.display = 'block';
+}
+
+function clearInsertIndicator() {
+  document.querySelectorAll('.insert-indicator').forEach(n => {
+    n.style.display = 'none';
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  POINTER DOWN
 // ═══════════════════════════════════════════════════════════════
 function onPointerDown(e) {
@@ -196,7 +304,7 @@ function onPointerDown(e) {
   if (e.target.closest && e.target.closest('.transition-marker')) return;
   if (e.target.closest && e.target.closest('.layer-toggle')) return;
 
-  // ─── Track label drag ────────────────────────────────────
+  // Track label drag
   const labelEl = e.target.closest && e.target.closest('.track-label');
   if (labelEl) {
     const trackEl = labelEl.closest('.track');
@@ -222,7 +330,7 @@ function onPointerDown(e) {
     return;
   }
 
-  // ─── Clip drag ───────────────────────────────────────────
+  // Clip drag
   const clipEl = e.target.closest && e.target.closest('.clip');
   if (!clipEl) return;
   const trackEl = clipEl.closest('.track');
@@ -258,11 +366,12 @@ function onPointerDown(e) {
     pps: getPixelsPerSecond(),
     pointerId: e.pointerId,
     pendingStartTime: null,
-    // 🆕 Snap state
     snapTargets: getDragSnapTargets(clip),
     activeSnap: null,
-    clipDuration: Number.isFinite(clip.duration) ? clip.duration : 3
+    clipDuration: Number.isFinite(clip.duration) ? clip.duration : 3,
+    insertZone: null
   };
+
   window.addEventListener('pointermove', onPointerMove);
   window.addEventListener('pointerup', onPointerUp);
   window.addEventListener('pointercancel', onPointerUp);
@@ -317,7 +426,7 @@ function onPointerUp(e) {
   window.removeEventListener('pointerup', onPointerUp);
   window.removeEventListener('pointercancel', onPointerUp);
 
-  // ─── Track label drag ────────────────────────────────────
+  // Track label drag
   if (state.mode === 'track') {
     clearDropHighlight();
     const dx = e.clientX - state.startClientX;
@@ -341,37 +450,38 @@ function onPointerUp(e) {
     return;
   }
 
-  // ─── CLICK (no drag) ─────────────────────────────────────
+  // Click (no drag)
   if (!state.mode) {
-    // 🆕 Do NOT clear styles or re-render on a plain click
-    // — just restore any drag-active classes and select
     state.clipEl.classList.remove('layer-drag-active');
     document.body.classList.remove('layer-drag-active');
     const vp = document.querySelector('#timeline-viewport');
     if (vp) { vp.style.overflowX = ''; vp.style.touchAction = ''; }
     clearDropHighlight();
+    clearInsertIndicator();
     selectClip(state.clipEl);
     return;
   }
 
-  exitDragMode(state);
+  // 🆕 INSERT MODE — drop between layers
+  if (state.mode === 'v' && state.insertZone) {
+    exitDragMode(state);
+    clearInsertIndicator();
+    commitInsertBetween(state, state.insertZone);
+    return;
+  }
 
-  // ─── Horizontal drag commit ──────────────────────────────
+  exitDragMode(state);
+  clearInsertIndicator();
+
+  // Horizontal drag commit
   if (state.mode === 'h') {
     const dxPx = Math.abs(e.clientX - state.startClientX);
     if (dxPx < REVERT_THRESHOLD_PX || state.pendingStartTime == null) {
-      // Too small → revert (visual only, no state change)
       state.clipEl.style.left = (state.startStartTime * state.pps) + 'px';
       document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
       reselectByUrl(state.clip.url);
       return;
     }
-    // 🆕 Clear snap visual before commit
-    state.clipEl.classList.remove('snap-active');
-    const g = document.querySelector('.layer-drag-snap-guide');
-    if (g) g.style.display = 'none';
-
-    // Commit
     state.clip.startTime = state.pendingStartTime;
     propagateToLinked(state.clip);
     state.clip.__trimmed = true;
@@ -379,7 +489,8 @@ function onPointerUp(e) {
     reselectByUrl(state.clip.url);
     return;
   }
-  // ─── Vertical drag commit ────────────────────────────────
+
+  // Vertical drag commit (regular move to another track)
   const elUnder = document.elementFromPoint(e.clientX, e.clientY);
   const targetTrack = elUnder && elUnder.closest ? elUnder.closest('.track') : null;
   if (targetTrack) {
@@ -488,6 +599,82 @@ function mirrorLinkedToTrackIndex(clip, targetIdx) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+//  🆕 COMMIT INSERT BETWEEN LAYERS (RIPPLE)
+// ═══════════════════════════════════════════════════════════════
+function commitInsertBetween(state, zone) {
+  const appState = window.__appState;
+  if (!appState) return;
+
+  const group = state.group;
+  const list = appState.timeline[group];
+  if (!Array.isArray(list)) return;
+
+  const sourceTrackIdx = state.startTrackIdx;
+  const sourceClipIdx = state.startClipIdx;
+  const sourceTrack = list[sourceTrackIdx];
+  if (!Array.isArray(sourceTrack)) return;
+
+  const clip = sourceTrack[sourceClipIdx];
+  if (!clip) return;
+
+  // Capture linked clip BEFORE moving anything
+  let linkedClip = null;
+  let linkedTrackIdx = -1;
+  let otherGroup = null;
+  if (clip.__linkedId) {
+    otherGroup = group === 'visual' ? 'audio' : 'visual';
+    const otherList = appState.timeline[otherGroup];
+    if (Array.isArray(otherList)) {
+      for (let t = 0; t < otherList.length; t++) {
+        const track = otherList[t];
+        if (!Array.isArray(track)) continue;
+        for (let c = 0; c < track.length; c++) {
+          if (track[c] && track[c].__linkedId === clip.__linkedId) {
+            linkedClip = track[c];
+            linkedTrackIdx = t;
+            break;
+          }
+        }
+        if (linkedClip) break;
+      }
+    }
+  }
+
+  // Remove clip from source
+  sourceTrack.splice(sourceClipIdx, 1);
+
+  // Clamp target index
+  let targetIdx = Math.max(0, Math.min(zone.insertIndex, list.length));
+
+  // Insert new track at target index
+  list.splice(targetIdx, 0, [clip]);
+
+  // Handle linked clip in other group
+  if (linkedClip && otherGroup) {
+    const otherList = appState.timeline[otherGroup];
+    if (Array.isArray(otherList)) {
+      if (linkedTrackIdx >= 0 && linkedTrackIdx < otherList.length) {
+        const lt = otherList[linkedTrackIdx];
+        if (Array.isArray(lt)) {
+          const li = lt.indexOf(linkedClip);
+          if (li >= 0) lt.splice(li, 1);
+        }
+      }
+      while (otherList.length < targetIdx) otherList.push([]);
+      otherList.splice(targetIdx, 0, [linkedClip]);
+    }
+  }
+
+  state.clip.__trimmed = true;
+  document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
+
+  const layerLabel = (group === 'visual' ? 'V' : 'A') + (targetIdx + 1);
+  showToast('Inserted as new layer ' + layerLabel);
+
+  setTimeout(() => reselectByUrl(state.clip.url), 60);
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  CLIP DRAG COMMIT — OVERLAP-AWARE + LINKED MIRROR
 // ═══════════════════════════════════════════════════════════════
 function commitVerticalMove(state, targetTrackEl) {
@@ -518,12 +705,7 @@ function commitVerticalMove(state, targetTrackEl) {
   srcTrack.splice(idxInSrc, 1);
 
   const freeIdx = findNearestFreeTrackIndex(
-    list,
-    intendedTargetIdx,
-    clipStart,
-    clipEnd,
-    state.clip,
-    state.startTrackIdx
+    list, intendedTargetIdx, clipStart, clipEnd, state.clip, state.startTrackIdx
   );
 
   if (freeIdx === state.startTrackIdx) {
@@ -549,7 +731,6 @@ function commitVerticalMove(state, targetTrackEl) {
   }
   dstTrack.splice(insertIdx, 0, state.clip);
 
-  // Mirror linked clip
   let mirrored = false;
   if (state.clip.__linkedId) {
     mirrored = mirrorLinkedToTrackIndex(state.clip, freeIdx);
@@ -573,13 +754,11 @@ function commitVerticalMove(state, targetTrackEl) {
 function propagateToLinked(clip) {
   const appState = window.__appState;
   if (!appState || !clip.__linkedId) return;
-
   const linkedId = clip.__linkedId;
   const allTracks = [].concat(
     appState.timeline.visual || [],
     appState.timeline.audio || []
   );
-
   for (let t = 0; t < allTracks.length; t++) {
     const track = allTracks[t];
     if (!Array.isArray(track)) continue;
@@ -601,7 +780,7 @@ function enterDragMode() {
   const vp = document.querySelector('#timeline-viewport');
   if (vp) { vp.style.overflowX = 'hidden'; vp.style.touchAction = 'none'; }
 }
-// drag mode
+
 function exitDragMode(state) {
   document.body.classList.remove('layer-drag-active');
   if (state && state.clipEl) {
@@ -612,7 +791,6 @@ function exitDragMode(state) {
     state.clipEl.style.opacity = '';
     state.clipEl.style.zIndex = '';
   }
-  // 🆕 Hide snap guide
   const g = document.querySelector('.layer-drag-snap-guide');
   if (g) g.style.display = 'none';
 
@@ -636,7 +814,6 @@ function applyHorizontalDrag(clientX) {
   const dxPx = clientX - s.startClientX;
   let newStart = Math.max(0, s.startStartTime + dxPx / s.pps);
 
-  // ─── 🆕 SNAP: Start edge + End edge ───
   const enterSec   = SNAP_ENTER_PX   / Math.max(1, s.pps);
   const releaseSec = SNAP_RELEASE_PX / Math.max(1, s.pps);
   const clipEnd = newStart + s.clipDuration;
@@ -645,7 +822,6 @@ function applyHorizontalDrag(clientX) {
   let snapDelta = 0;
 
   if (s.snapTargets && s.snapTargets.length) {
-    // Release check (hysteresis)
     if (s.activeSnap) {
       const checkVal = s.activeSnap.edge === 'start' ? newStart : clipEnd;
       const dist = Math.abs(checkVal - s.activeSnap.time);
@@ -656,32 +832,21 @@ function applyHorizontalDrag(clientX) {
         s.activeSnap = null;
       }
     }
-
-    // Find new snap
     if (!snappedTo) {
-      let best = null;
-      let bestDist = enterSec;
-      let bestEdge = null;
-      let bestDelta = 0;
-
+      let best = null, bestDist = enterSec, bestEdge = null, bestDelta = 0;
       for (let i = 0; i < s.snapTargets.length; i++) {
         const t = s.snapTargets[i];
         const dStart = Math.abs(t.time - newStart);
         if (dStart < bestDist) {
-          bestDist = dStart;
-          best = t;
-          bestEdge = 'start';
+          bestDist = dStart; best = t; bestEdge = 'start';
           bestDelta = t.time - newStart;
         }
         const dEnd = Math.abs(t.time - clipEnd);
         if (dEnd < bestDist) {
-          bestDist = dEnd;
-          best = t;
-          bestEdge = 'end';
+          bestDist = dEnd; best = t; bestEdge = 'end';
           bestDelta = t.time - clipEnd;
         }
       }
-
       if (best) {
         snappedTo = { time: best.time, type: best.type, clip: best.clip, edge: bestEdge };
         snapDelta = bestDelta;
@@ -690,15 +855,12 @@ function applyHorizontalDrag(clientX) {
     }
   }
 
-  if (snappedTo) {
-    newStart = Math.max(0, newStart + snapDelta);
-  }
+  if (snappedTo) newStart = Math.max(0, newStart + snapDelta);
 
   s.pendingStartTime = newStart;
   s.clipEl.style.transition = 'none';
   s.clipEl.style.left = (newStart * s.pps) + 'px';
 
-  // ─── 🆕 Content width expand (clip "gaib" na ho) ───
   const contentEl = s.clipEl.parentElement;
   if (contentEl) {
     const clipW = s.clipEl.offsetWidth || 0;
@@ -709,12 +871,11 @@ function applyHorizontalDrag(clientX) {
     contentEl.style.minWidth = needWidth + 'px';
   }
 
-  // ─── 🆕 Visual feedback ───
   const guide = ensureSnapGuide();
   if (snappedTo) {
     s.clipEl.classList.add('snap-active');
     if (guide) {
-      const guideX = 80 + snappedTo.time * s.pps; // LABEL_WIDTH = 80
+      const guideX = 80 + snappedTo.time * s.pps;
       guide.style.left = guideX + 'px';
       guide.style.display = 'block';
     }
@@ -732,6 +893,16 @@ function applyVerticalDrag(clientX, clientY) {
   s.clipEl.style.transform = 'translateY(' + dy + 'px)';
   s.clipEl.style.opacity = '0.6';
   clearDropHighlight();
+
+  // 🆕 Insert zone has priority
+  const insertZone = detectInsertZone(clientX, clientY, s.group);
+  if (insertZone) {
+    s.insertZone = insertZone;
+    showInsertIndicator(insertZone);
+    return;
+  }
+  s.insertZone = null;
+  clearInsertIndicator();
 
   const elUnder = document.elementFromPoint(clientX, clientY);
   const targetTrack = elUnder && elUnder.closest ? elUnder.closest('.track') : null;
@@ -817,7 +988,7 @@ function showToast(msg) {
   ].join(';');
   document.body.appendChild(el);
   requestAnimationFrame(() => { el.style.opacity = '1'; });
-  setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.remove(), 200); }, 1400);
+  setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.remove(), 200); }, 1600);
 }
 
 function forceCleanup() {
@@ -829,4 +1000,5 @@ function forceCleanup() {
   window.removeEventListener('pointercancel', onPointerUp);
   if (state.mode && state.mode !== 'track') exitDragMode(state);
   clearDropHighlight();
+  clearInsertIndicator();
 }

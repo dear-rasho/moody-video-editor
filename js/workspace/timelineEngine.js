@@ -116,6 +116,17 @@ export function initTimelineEngine(config) {
     document.dispatchEvent(new CustomEvent('editor:clip-selected'));
   });
 
+   // ═══════════════════════════════════════════════════════════
+  //  🆕 FIX: Timeline minimum 40 minutes
+  //
+  //  Pehle: Ruler sirf content tak extend hota tha → drag-drop
+  //         karte waqt ruler shrink/expand hota → jhatka lagta
+  //
+  //  Ab:    40 min minimum → ruler stable, drag-drop smooth
+  //         Agar content 40 min se zyada ho, to expand karega
+  // ═══════════════════════════════════════════════════════════
+  const MIN_TIMELINE_DURATION_SEC = 40 * 60; // 40 minutes = 2400 sec
+
   function computeDuration() {
     let furthestEnd = 0;
     const allTracks = state.visual.concat(state.audio);
@@ -127,16 +138,22 @@ export function initTimelineEngine(config) {
         if (r.end > furthestEnd) furthestEnd = r.end;
       }
     }
+
+    // Agar content nahi hai, video duration check karo
     if (furthestEnd === 0) {
       const video = document.querySelector('#preview-video');
       if (video && Number.isFinite(video.duration) && video.duration > 0) {
-        return video.duration;
+        furthestEnd = video.duration;
       }
-      return 1;
     }
+
+    // 🆕 Minimum 40 minute — ruler stable rahega
+    if (furthestEnd < MIN_TIMELINE_DURATION_SEC) {
+      return MIN_TIMELINE_DURATION_SEC;
+    }
+
     return furthestEnd;
   }
-
   function rangesOverlap(aS, aE, bS, bE) {
     return aS < bE && bS < aE;
   }
