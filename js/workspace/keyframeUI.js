@@ -93,15 +93,28 @@ export function initKeyframeUI(buttonEl) {
 
   btnEl.addEventListener('click', onButtonClick);
 
-  document.addEventListener('playback:tick', refresh);
+   document.addEventListener('playback:tick', refresh);
   document.addEventListener('playback:state', refresh);
   document.addEventListener('editor:timeline-changed', refresh);
   document.addEventListener('keyframe:changed', refresh);
   document.addEventListener('transform:changed', refresh);
 
+  // 🆕 Selection change pe bhi ◆ button ka state update karo
+  document.addEventListener('editor:clip-selected', refresh);
+
   document.addEventListener('playback:tick', scheduleMarkers);
   document.addEventListener('editor:timeline-changed', scheduleMarkers);
   document.addEventListener('keyframe:changed', scheduleMarkers);
+
+  // ═══════════════════════════════════════════════════════════
+  //  🆕 FIX: Clip select/deselect hone pe markers redraw karo
+  //
+  //  Pehle: clip pe click karne se markers wapas nahi aate the
+  //         (kyunki koi event fire nahi hota tha)
+  //
+  //  Ab:    editor:clip-selected fire hota hai → markers redraw
+  // ═══════════════════════════════════════════════════════════
+  document.addEventListener('editor:clip-selected', scheduleMarkers);
 
   refresh();
   scheduleMarkers();

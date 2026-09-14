@@ -106,10 +106,15 @@ export function initTimelineEngine(config) {
         document.querySelectorAll('.clip.linked-selected').forEach(function (el) {
           el.classList.remove('linked-selected');
         });
-        document.dispatchEvent(new CustomEvent('editor:clip-deselected'));
+              document.dispatchEvent(new CustomEvent('editor:clip-deselected'));
       }
     });
   }
+
+  // 🆕 Deselect ke baad bhi markers redraw karo
+  document.addEventListener('editor:clip-deselected', function () {
+    document.dispatchEvent(new CustomEvent('editor:clip-selected'));
+  });
 
   function computeDuration() {
     let furthestEnd = 0;
@@ -359,7 +364,7 @@ export function initTimelineEngine(config) {
               });
             });
           }
-
+           document.dispatchEvent(new CustomEvent('editor:clip-selected'));
           e.preventDefault();
         });
       })(ci);

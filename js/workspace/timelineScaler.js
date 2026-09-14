@@ -1,15 +1,28 @@
 // ================================================================
 //  js/workspace/timelineScaler.js
 //  Single source of truth for timeline scaling.
+//
+//  🆕 NEW MAPPING (logarithmic):
+//     Slider UI:  10 → 100   (compact, familiar)
+//     Zoom value: 0.10x → 700x  (0.10x se 700x = 70,000%)
+//
+//  Isse:
+//    • Slider user-friendly rehta hai (10-100 range)
+//    • Poori 700x tak ka zoom milta hai
+//    • Low zoom pe fine control, high zoom pe still reachable
 // ================================================================
 
 export const LABEL_WIDTH   = 80;
-export const MIN_ZOOM      = 0.10;
-export const MAX_ZOOM      = 10.00;
-export const DEFAULT_ZOOM  = 1.00;
+export const MIN_ZOOM      = 0.10;    // 10% (absolute min)
+export const MAX_ZOOM      = 700.00;  // 70,000% (absolute max)
+export const DEFAULT_ZOOM  = 1.00;    // 100% (1x)
+
+// Slider UI range (compact)
+export const SLIDER_MIN    = 10;
+export const SLIDER_MAX    = 100;
 
 const MIN_PPS = 0.05;
-const MAX_PPS = 400;
+const MAX_PPS = 800;
 const MIN_LABEL_GAP_PX = 56;
 
 let zoom            = DEFAULT_ZOOM;
@@ -19,6 +32,26 @@ let sliderEl        = null;
 let valueEl         = null;
 const listeners     = new Set();
 
+// ═══════════════════════════════════════════════════════════════
+//  MAPPING: slider value ↔ zoom value (logarithmic)
+// ═══════════════════════════════════════════════════════════════
+function sliderToZoom(sliderValue) {
+  const v = Math.max(SLIDER_MIN, Math.min(SLIDER_MAX, Number(sliderValue) || SLIDER_MIN));
+  const t = (v - SLIDER_MIN) / (SLIDER_MAX - SLIDER_MIN);
+  const logMin = Math.log(MIN_ZOOM);
+  const logMax = Math.log(MAX_ZOOM);
+  return Math.exp(logMin + (logMax - logMin) * t);
+}
+
+function zoomToSlider(zoomValue) {
+  const z = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Number(zoomValue) || DEFAULT_ZOOM));
+  const t = (Math.log(z) - Math.log(MIN_ZOOM)) / (Math.log(MAX_ZOOM) - Math.log(MIN_ZOOM));
+  return Math.round(SLIDER_MIN + (SLIDER_MAX - SLIDER_MIN) * t);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  VIEWPORT
+// ═══════════════════════════════════════════════════════════════
 function getViewportContentWidth() {
   const el = viewportEl || document.querySelector('#timeline-viewport');
   if (!el) return 400;
@@ -26,6 +59,9 @@ function getViewportContentWidth() {
   return Math.max(120, w - LABEL_WIDTH);
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  INIT
+// ═══════════════════════════════════════════════════════════════
 export function initTimelineScaler(opts = {}) {
   viewportEl = opts.viewport   || null;
   sliderEl   = opts.slider     || null;
@@ -33,8 +69,8 @@ export function initTimelineScaler(opts = {}) {
 
   if (sliderEl && !sliderEl.__tlScalerBound) {
     sliderEl.addEventListener('input', () => {
-      const pct = parseInt(sliderEl.value, 10);
-      setZoom(pct / 100);
+      const sliderVal = parseInt(sliderEl.value, 10);
+      setZoom(sliderToZoom(sliderVal));
     });
     sliderEl.__tlScalerBound = true;
   }
@@ -52,6 +88,9 @@ export function initTimelineScaler(opts = {}) {
   return api;
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  DURATION
+// ═══════════════════════════════════════════════════════════════
 export function setDuration(seconds) {
   const sec  = Number(seconds);
   const next = (Number.isFinite(sec) && sec > 0) ? sec : 0;
@@ -63,6 +102,9 @@ export function setDuration(seconds) {
 
 export function getDuration() { return durationSeconds; }
 
+// ═══════════════════════════════════════════════════════════════
+//  ZOOM
+// ═══════════════════════════════════════════════════════════════
 export function setZoom(z) {
   let next = Number(z);
   if (!Number.isFinite(next)) next = DEFAULT_ZOOM;
@@ -81,12 +123,24 @@ export function resetZoom()       { return setZoom(DEFAULT_ZOOM); }
 
 function syncSliderUI() {
   if (sliderEl) {
-    const pct = Math.round(zoom * 100);
-    if (parseInt(sliderEl.value, 10) !== pct) sliderEl.value = String(pct);
+    const sliderVal = zoomToSlider(zoom);
+    if (parseInt(sliderEl.value, 10) !== sliderVal) {
+      sliderEl.value = String(sliderVal);
+    }
   }
-  if (valueEl) valueEl.textContent = Math.round(zoom * 100) + '%';
+  if (valueEl) valueEl.textContent = formatZoomLabel(zoom);
 }
 
+function formatZoomLabel(z) {
+  if (!Number.isFinite(z)) z = 1;
+  if (z < 10) return z.toFixed(2) + 'x';
+  if (z < 100) return z.toFixed(1) + 'x';
+  return Math.round(z) + 'x';
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  SCALE / POSITION
+// ═══════════════════════════════════════════════════════════════
 export function getPixelsPerSecond() {
   if (durationSeconds <= 0) return 60;
   const vw      = getViewportContentWidth();
@@ -126,8 +180,11 @@ export function computeClipRect(clip) {
   };
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  RULER
+// ═══════════════════════════════════════════════════════════════
 const STEP_CANDIDATES = [
-  0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30,
+  0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30,
   60, 120, 300, 600, 900, 1800, 3600, 7200
 ];
 
@@ -143,8 +200,10 @@ export function getRulerStep() {
 export function formatRulerTime(seconds, step) {
   const s = Math.max(0, Number(seconds) || 0);
   const smallStep = step > 0 && step < 1;
+  const verySmallStep = step > 0 && step < 0.1;
 
   if (s < 60) {
+    if (verySmallStep) return s.toFixed(2) + 's';
     if (smallStep) return s.toFixed(1) + 's';
     return Math.round(s) + 's';
   }
@@ -159,13 +218,21 @@ export function formatRulerTime(seconds, step) {
     return h + ':' + mm + ':' + ss;
   }
 
-  let remStr = rem < 10
-    ? '0' + (Math.round(rem * 10) / 10)
-    : String(Math.round(rem * 10) / 10);
-  if (remStr.endsWith('.0')) remStr = remStr.slice(0, -2);
+  let remStr;
+  if (verySmallStep) {
+    remStr = rem < 10 ? '0' + rem.toFixed(2) : rem.toFixed(2);
+  } else {
+    remStr = rem < 10
+      ? '0' + (Math.round(rem * 10) / 10)
+      : String(Math.round(rem * 10) / 10);
+    if (remStr.endsWith('.0')) remStr = remStr.slice(0, -2);
+  }
   return m + ':' + remStr;
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  LISTENERS
+// ═══════════════════════════════════════════════════════════════
 export function onChange(fn) {
   if (typeof fn !== 'function') return () => {};
   listeners.add(fn);
@@ -180,6 +247,9 @@ function emitChange() {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  API
+// ═══════════════════════════════════════════════════════════════
 const api = {
   init: initTimelineScaler,
   setDuration,
@@ -199,10 +269,14 @@ const api = {
   getRulerStep,
   formatRulerTime,
   onChange,
+  sliderToZoom,
+  zoomToSlider,
   LABEL_WIDTH,
   MIN_ZOOM,
   MAX_ZOOM,
-  DEFAULT_ZOOM
+  DEFAULT_ZOOM,
+  SLIDER_MIN,
+  SLIDER_MAX
 };
 
 export default api;
