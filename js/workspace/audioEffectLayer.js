@@ -38,7 +38,7 @@ export function createAudioFxLayer(effectKey, label, duration) {
 
   document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
 
-  // Auto-select
+  // Auto-select the newly created FX layer
   requestAnimationFrame(() => {
     requestAnimationFrame(() => selectAudioFxLayerByUrl(clip.url));
   });
@@ -120,7 +120,7 @@ export function removeAudioFxLayer(clip) {
   return false;
 }
 
-// ─── Select ───────────────────────────────────────────────────
+// ─── Select by URL ────────────────────────────────────────────
 export function selectAudioFxLayerByUrl(url) {
   const appState = getState();
   if (!appState || !url) return false;

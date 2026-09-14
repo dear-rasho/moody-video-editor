@@ -1,9 +1,7 @@
 // ================================================================
 //  js/workspace/ratioControl.js
-//  Ratio dropdown in the control bar.
-//  - Changes preview wrapper size
-//  - Updates window.__offlineEditorRatio for export
-//  - No dependence on layer selection
+//  Ratio dropdown in control bar.
+//  Updates preview wrapper size AND window.__offlineEditorRatio.
 // ================================================================
 
 const STORAGE_KEY = 'offline-editor-ratio-v2';
@@ -40,7 +38,6 @@ export function initRatioControl(selectEl) {
     currentKey = selectEl.value;
     try { localStorage.setItem(STORAGE_KEY, currentKey); } catch (_) {}
 
-    // 🆕 Update global ratio FIRST, then apply layout
     updateGlobal();
     applyRatio();
 
@@ -58,7 +55,6 @@ export function initRatioControl(selectEl) {
   const video = document.querySelector('#preview-video');
   if (video) {
     video.addEventListener('loadedmetadata', () => {
-      // Refresh global ratio (video dims may have changed for 'original')
       updateGlobal();
       if (currentKey === 'original') applyRatio();
     });
@@ -69,7 +65,6 @@ export function initRatioControl(selectEl) {
     applyRatio();
   }, 50);
 
-  // Expose getter (used by other modules if needed)
   window.__getEditorRatio = () => {
     const r = RATIOS[currentKey];
     if (r.w && r.h) return { key: currentKey, w: r.w, h: r.h };
@@ -82,7 +77,6 @@ export function initRatioControl(selectEl) {
 
 function updateGlobal() {
   window.__offlineEditorRatio = window.__getEditorRatio();
-  console.log('[ratio] global updated:', window.__offlineEditorRatio);
 }
 
 function applyRatio() {

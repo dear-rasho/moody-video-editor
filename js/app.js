@@ -1,3 +1,9 @@
+// ================================================================
+//  js/app.js — Master bootstrap
+//  Wires: preview, playback, timeline, effects, keyframes,
+//         transitions, audio FX, magnet, ratio control.
+// ================================================================
+
 import { initTextRenderer } from './workspace/textRenderer.js';
 import { featuresRouter } from './features/featuresRouter.js';
 import { initHomeController } from './home/homeController.js';
@@ -26,14 +32,17 @@ import * as keyframeStore from './workspace/keyframeStore.js';
 
 import * as featureModules from './features/index.js';
 
+// ═══════════════════════════════════════════════════════════════
+//  APP STATE
+// ═══════════════════════════════════════════════════════════════
 const appState = {
   page: 'dashboard',
   project: null,
   history: [],
   media: [],
   timeline: {
-    visual: [],
-    audio: [],
+    visual: [],       // Array of tracks. Each track is array of clips.
+    audio: [],        // Same shape.
     hiddenVisualTracks: new Set(),
     mutedAudioTracks: new Set()
   },
@@ -42,6 +51,9 @@ const appState = {
 
 window.__appState = appState;
 
+// ═══════════════════════════════════════════════════════════════
+//  DOM REFERENCES
+// ═══════════════════════════════════════════════════════════════
 const elements = {
   dashboard: document.querySelector('#dashboard-page'),
   workspace: document.querySelector('#workspace-page'),
@@ -52,20 +64,30 @@ const elements = {
   featureBack: document.querySelector('#feature-back-btn')
 };
 
-let preview;
-let previewHud;
-let timeline;
-let timelinePlayhead;
-let playbackEngine;
+let preview = null;
+let previewHud = null;
+let timeline = null;
+let timelinePlayhead = null;
+let playbackEngine = null;
 
+// ═══════════════════════════════════════════════════════════════
+//  PAGE NAVIGATION
+// ═══════════════════════════════════════════════════════════════
 function showPage(page) {
   appState.page = page;
   elements.dashboard.classList.toggle('is-current', page === 'dashboard');
   elements.workspace.classList.toggle('is-current', page === 'workspace');
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  CREATE NEW PROJECT
+// ═══════════════════════════════════════════════════════════════
 function createProject() {
-  appState.project = { id: crypto.randomUUID(), name: 'Untitled Project', createdAt: Date.now() };
+  appState.project = {
+    id: crypto.randomUUID(),
+    name: 'Untitled Project',
+    createdAt: Date.now()
+  };
   appState.media = [];
   appState.timeline.visual = [];
   appState.timeline.audio = [];
@@ -86,6 +108,9 @@ function createProject() {
   showPage('workspace');
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  REGISTER FEATURES
+// ═══════════════════════════════════════════════════════════════
 function registerFeatures() {
   for (const [key, module] of Object.entries(featureModules)) {
     if (module && module.featureKey) {
@@ -94,7 +119,11 @@ function registerFeatures() {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  BOOTSTRAP
+// ═══════════════════════════════════════════════════════════════
 async function bootstrap() {
+  // ─── Home / dashboard ──────────────────────────────────────
   initHomeController({ onNewProject: createProject });
   initRecentProjects(document.querySelector('#recent-projects-grid'));
   initTemplatesShelf(document.querySelector('#templates-shelf'));
@@ -104,21 +133,24 @@ async function bootstrap() {
   const previewAudio = document.querySelector('#preview-audio');
   const previewCanvas = document.querySelector('#preview-canvas');
 
+  // ─── Preview canvas ────────────────────────────────────────
   preview = initPreviewCanvas({
     canvas: previewCanvas,
     video: previewVideo,
     empty: document.querySelector('#preview-empty')
   });
-
   window.__previewCanvasInstance = preview;
 
+  // ─── Keyframe engine (speed + sticker) ─────────────────────
   initKeyframeEngine({ video: previewVideo });
 
+  // ─── HUD (elapsed / total) ─────────────────────────────────
   previewHud = initPreviewHud({
     wrap: document.querySelector('#preview-canvas-wrap'),
     video: previewVideo
   });
 
+  // ─── Playback engine (master clock) ────────────────────────
   playbackEngine = initPlaybackEngine({
     canvas: previewCanvas,
     video: previewVideo,
@@ -129,12 +161,15 @@ async function bootstrap() {
       if (previewHud) previewHud.refresh();
     }
   });
-
   window.__playbackEngine = playbackEngine;
 
+  // ─── Effect renderer (visual effects, live) ────────────────
   initEffectRenderer();
+
+  // ─── Audio FX renderer (real-time audio routing) ───────────
   initAudioFxRenderer();
 
+  // ─── Media library (import + duration probe) ───────────────
   initMediaLibrary({
     button: document.querySelector('#media-picker-btn'),
     input: document.querySelector('#media-file-input'),
@@ -157,6 +192,7 @@ async function bootstrap() {
     }
   });
 
+  // ─── Timeline engine ───────────────────────────────────────
   timeline = initTimelineEngine({
     viewport: document.querySelector('#timeline-viewport'),
     visual: document.querySelector('#visual-tracks'),
@@ -203,6 +239,7 @@ async function bootstrap() {
     zoomSlider: document.querySelector('#zoom-slider')
   });
 
+  // ─── Quick layer buttons (V+ / A+) ─────────────────────────
   injectQuickLayerButtons(
     document.querySelector('#control-bar'),
     {
@@ -211,12 +248,14 @@ async function bootstrap() {
     }
   );
 
+  // ─── History (undo/redo) ───────────────────────────────────
   initHistory({
     timeline: appState.timeline,
     undoButton: document.querySelector('#undo-btn'),
     redoButton: document.querySelector('#redo-btn')
   });
 
+  // ─── Playhead (visual) ─────────────────────────────────────
   timelinePlayhead = initTimelinePlayhead({
     element: document.querySelector('#timeline-playhead'),
     matrix: document.querySelector('#timeline-matrix'),
@@ -226,8 +265,10 @@ async function bootstrap() {
     getRulerContainer: function () { return document.querySelector('.timeline-ruler'); }
   });
 
+  // ─── Layer drag (up/down/left/right) ───────────────────────
   initLayerDrag();
 
+  // ─── Playback controls (play/pause/delete) ─────────────────
   initPlaybackControls({
     play: document.querySelector('#play-btn'),
     deleteButton: document.querySelector('#delete-btn'),
@@ -236,12 +277,13 @@ async function bootstrap() {
     engine: playbackEngine
   });
 
+  // ─── Ratio control ─────────────────────────────────────────
   initRatioControl(document.querySelector('#ratio-select'));
 
-  // 🆕 Keyframe store on window
+  // ─── Keyframe store exposed globally ───────────────────────
   window.__keyframeStore = keyframeStore;
 
-  // 🆕 Keyframe UI
+  // ─── Keyframe UI (◆ button + markers) ──────────────────────
   initKeyframeUI(document.querySelector('#keyframe-btn'));
 
   window.__keyframeUI = {
@@ -253,14 +295,16 @@ async function bootstrap() {
     window.__selectedKeyframe = e.detail || null;
   });
 
-  // 🆕 Magnet tool
+  // ─── Magnet tool ───────────────────────────────────────────
   initMagnetTool(document.querySelector('#magnet-btn'));
 
-  // 🆕 Transition markers
+  // ─── Transition markers ────────────────────────────────────
   initTransitionMarkers();
 
+  // ─── Text renderer (multi-layer with keyframe sampling) ────
   initTextRenderer();
 
+  // ─── Register feature modules ──────────────────────────────
   registerFeatures();
   featuresRouter.init({
     shelf: elements.featureShelf,
@@ -268,6 +312,7 @@ async function bootstrap() {
     backButton: elements.featureBack
   });
 
+  // ─── Back button + export button ───────────────────────────
   elements.workspaceBack.addEventListener('click', function () { showPage('dashboard'); });
 
   const exportBtn = document.querySelector('#export-btn');
@@ -278,6 +323,7 @@ async function bootstrap() {
     });
   }
 
+  // ─── Start on dashboard ────────────────────────────────────
   showPage('dashboard');
 }
 

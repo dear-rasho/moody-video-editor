@@ -1,8 +1,7 @@
 // ================================================================
 //  js/workspace/previewHud.js
 //  Overlay HUD: elapsed time / aspect ratio / TOTAL TIME.
-//  Total time now reflects the TIMELINE duration (post-trim),
-//  not the video file's source duration.
+//  Total = TIMELINE duration (post-trim).
 // ================================================================
 
 const HUD_CSS_ID = 'preview-hud-styles';
@@ -81,10 +80,10 @@ function aspectRatioLabel(w, h) {
   ];
   for (const r of COMMON) {
     const ar = r.w / r.h;
-    if (Math.abs(ar - target) / ar < 0.02) return `${r.w}:${r.h}`;
+    if (Math.abs(ar - target) / ar < 0.02) return r.w + ':' + r.h;
   }
   const g = gcd(w, h);
-  return `${Math.round(w / g)}:${Math.round(h / g)}`;
+  return Math.round(w / g) + ':' + Math.round(h / g);
 }
 
 export function initPreviewHud({ wrap, video }) {
@@ -116,14 +115,12 @@ export function initPreviewHud({ wrap, video }) {
   hud.append(elapsed, right);
   wrap.appendChild(hud);
 
-  // 🆕 Prefer playbackEngine's timeline duration over raw video.duration
   function getTimelineDuration() {
     const eng = window.__playbackEngine;
     if (eng && typeof eng.getDuration === 'function') {
       const d = eng.getDuration();
       if (Number.isFinite(d) && d > 0) return d;
     }
-    // Fallback: video element's duration (only when no timeline)
     return Number.isFinite(video.duration) ? video.duration : 0;
   }
 
@@ -142,18 +139,14 @@ export function initPreviewHud({ wrap, video }) {
     ratio.textContent = aspectRatioLabel(video.videoWidth, video.videoHeight);
   }
 
-  // Listen to engine ticks (fires 60x/sec during playback + on seek)
   document.addEventListener('playback:tick', refresh);
+  document.addEventListener('editor:timeline-changed', refresh);
 
-  // Fallback: video events (for when engine is idle)
   const events = [
     'timeupdate','loadedmetadata','durationchange',
     'seeking','seeked','play','pause','ended','emptied'
   ];
   events.forEach(ev => video.addEventListener(ev, refresh));
-
-  // Timeline changes → refresh (trim changes total duration)
-  document.addEventListener('editor:timeline-changed', refresh);
 
   refresh();
 

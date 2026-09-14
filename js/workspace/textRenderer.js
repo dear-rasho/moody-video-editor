@@ -1,7 +1,10 @@
 // ================================================================
 //  js/workspace/textRenderer.js
-//  Renders ALL active text clips + samples keyframes.
-//  Text stays on ONE LINE during animation (no auto-wrap).
+//  Renders active text clips — respects layer hierarchy.
+//
+//  🆕 RULE: Text at track Ti is only visible if it's ABOVE the
+//           top-most video/image clip. If a video sits on a higher
+//           track, the text is hidden (behind video).
 // ================================================================
 
 import { applyAnimation } from '../features/animations.js';
@@ -19,15 +22,12 @@ function injectStyles() {
     .tx-overlay {
       position: absolute;
       pointer-events: none;
-      /* 🆕 Respect user newlines ONLY — no auto-wrap during animation */
       white-space: pre;
-      /* No word-break */
       max-width: none;
       line-height: 1.15;
       user-select: none;
       -webkit-user-select: none;
       will-change: transform, opacity;
-      /* Keep text crisp on scaled/rotated state */
       backface-visibility: hidden;
     }
   `;
@@ -44,7 +44,7 @@ export function applyTextStyle(el, ts) {
   if (!el || !ts) return;
 
   el.textContent = ts.content || '';
-  el.style.fontFamily = `"${ts.fontFamily || 'Arial'}", sans-serif`;
+  el.style.fontFamily = '"' + (ts.fontFamily || 'Arial') + '", sans-serif';
   el.style.fontSize = (ts.fontSize || 36) + 'px';
   el.style.fontWeight = ts.fontWeight || 'normal';
   el.style.fontStyle = ts.fontStyle || 'normal';
@@ -62,15 +62,16 @@ export function applyTextStyle(el, ts) {
   const scalePct = ts.scale != null ? ts.scale : 100;
   const rot = ts.rotation || 0;
 
-  el.style.transformOrigin = `${originX} 50%`;
+  el.style.transformOrigin = originX + ' 50%';
   el.style.transform =
-    `translate(${tx}, -50%) scale(${scalePct / 100}) rotate(${rot}deg)`;
+    'translate(' + tx + ', -50%) scale(' + (scalePct / 100) + ') rotate(' + rot + 'deg)';
 
   el.style.setProperty('--tx-scale', scalePct / 100);
   el.style.setProperty('--tx-rot', rot + 'deg');
 
   if (ts.gradientEnabled) {
-    el.style.background = `linear-gradient(${ts.gradientAngle || 90}deg, ${ts.gradientColor1 || '#ff0066'}, ${ts.gradientColor2 || '#0066ff'})`;
+    el.style.background = 'linear-gradient(' + (ts.gradientAngle || 90) + 'deg, ' +
+      (ts.gradientColor1 || '#ff0066') + ', ' + (ts.gradientColor2 || '#0066ff') + ')';
     el.style.webkitBackgroundClip = 'text';
     el.style.backgroundClip = 'text';
     el.style.color = 'transparent';
@@ -84,12 +85,41 @@ export function applyTextStyle(el, ts) {
   }
 
   el.style.webkitTextStroke = (ts.strokeWidth || 0) > 0
-    ? `${ts.strokeWidth}px ${ts.strokeColor || '#000000'}`
+    ? ts.strokeWidth + 'px ' + (ts.strokeColor || '#000000')
     : '';
 
   el.style.textShadow = ts.shadowEnabled
-    ? `${ts.shadowOffsetX || 0}px ${ts.shadowOffsetY || 0}px ${ts.shadowBlur || 0}px ${ts.shadowColor || '#000000'}`
+    ? (ts.shadowOffsetX || 0) + 'px ' + (ts.shadowOffsetY || 0) + 'px ' +
+      (ts.shadowBlur || 0) + 'px ' + (ts.shadowColor || '#000000')
     : '';
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  🆕 Find the top-most video/image track at time
+// ═══════════════════════════════════════════════════════════════
+function getTopDisplayTrackIndexAt(time) {
+  const appState = window.__appState;
+  if (!appState) return -1;
+
+  const tracks = appState.timeline.visual || [];
+  const hidden = appState.timeline.hiddenVisualTracks || new Set();
+
+  for (let t = tracks.length - 1; t >= 0; t--) {
+    if (hidden.has(t)) continue;
+    const track = tracks[t];
+    if (!Array.isArray(track)) continue;
+    for (let c = 0; c < track.length; c++) {
+      const clip = track[c];
+      if (!clip || !clip.type) continue;
+      const isV = clip.type.indexOf('video/') === 0;
+      const isI = clip.type.indexOf('image/') === 0;
+      if (!isV && !isI) continue;
+      const s = Number.isFinite(clip.startTime) ? clip.startTime : 0;
+      const d = Number.isFinite(clip.duration) ? clip.duration : 0;
+      if (time >= s && time < s + d) return t;
+    }
+  }
+  return -1;
 }
 
 export function getActiveTextClipsAt(time) {
@@ -125,7 +155,6 @@ export function getTopTextClipAt(time) {
   return active[active.length - 1].clip;
 }
 
-// ─── Sample keyframe-animated transform onto text state ───────
 function sampleTextState(clip, time) {
   const ts = clip.textState || {};
   if (!hasAnyKeyframes(clip)) return ts;
@@ -143,6 +172,9 @@ export function renderAtTime(time) {
   const wrap = ensureWrap();
   if (!wrap) return;
 
+  // 🆕 Find top display track (video/image)
+  const topDisplayTrack = getTopDisplayTrackIndexAt(time);
+
   const active = getActiveTextClipsAt(time);
   const seen = new Set();
 
@@ -159,6 +191,17 @@ export function renderAtTime(time) {
       wrap.appendChild(el);
       entry = { el, lastAnimKey: null };
       overlays.set(id, entry);
+    }
+
+    // 🆕 HIERARCHY CHECK
+    // Text is only visible if it's ABOVE the top display clip
+    // (or if there's no display clip at all)
+    const textIsOnTop = (topDisplayTrack < 0) || (trackIndex > topDisplayTrack);
+
+    if (!textIsOnTop) {
+      // Text is behind the video → hide it (video covers it anyway)
+      entry.el.style.display = 'none';
+      continue;
     }
 
     const ts = sampleTextState(clip, time);

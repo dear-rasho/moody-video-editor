@@ -42,7 +42,6 @@ function attachElement(el) {
     return null;
   }
 
-  // Default pass-through
   source.connect(ctx.destination);
 
   const entry = { source, lastOutput: source, effectKey: null };

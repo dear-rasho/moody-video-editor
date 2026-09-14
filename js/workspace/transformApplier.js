@@ -1,5 +1,6 @@
 // ================================================================
 //  js/workspace/transformApplier.js
+//  Shared transform helpers for preview (CSS) + export (ctx).
 // ================================================================
 
 export function getDefaultTransform() {

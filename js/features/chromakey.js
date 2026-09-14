@@ -1,13 +1,24 @@
 // ================================================================
 //  js/features/chromakey.js
-//  Chroma key panel with 4 properties + interactive color picker.
-//  Ratio-aware redraw via window.__previewDrawVideo.
+//  Chroma Key — creates an effect LAYER.
+//  Color picker + 4 params. Preview + export via effectRenderer.
 // ================================================================
 
-export const featureKey = 'chromakey';
+import { featuresRouter } from './featuresRouter.js';
+import {
+  getSelectedEffectLayer,
+  hasSelectedLayer,
+  createEffectLayer,
+  updateEffectLayer,
+  findEffectLayerById
+} from '../workspace/effectLayer.js';
 
-const state = {
-  keyColor: null,
+export const featureKey = 'chromakey';
+export const featureLabel = 'Chroma Key';
+export const featureIcon = '🟢';
+
+const DEFAULTS = {
+  keyColor: null,       // {r,g,b}
   similarity: 30,
   smoothness: 20,
   spill: 50,
@@ -15,92 +26,72 @@ const state = {
   pickMode: false
 };
 
+let state = Object.assign({}, DEFAULTS);
+let editingLayer = null;
 let panelRefs = {};
-let rafPending = false;
 let loupeEl = null;
 let hoverColor = null;
 
-// ─── Ratio-aware draw helper ───────────────────────────────────
-function drawVideoContained(ctx, video, canvas) {
-  if (typeof window.__previewDrawVideo === 'function') {
-    window.__previewDrawVideo(ctx, video, canvas);
-    return;
-  }
-  // Fallback if previewCanvas hasn't initialised yet
-  ctx.fillStyle = '#000';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  const rectFn = window.__previewContainRect;
-  const r = rectFn
-    ? rectFn(video.videoWidth, video.videoHeight, canvas.width, canvas.height)
-    : { x: 0, y: 0, w: canvas.width, h: canvas.height };
-  try {
-    ctx.drawImage(video, r.x, r.y, r.w, r.h);
-  } catch (_) {}
-}
-
-let _cachedCtx = null;
-let _cachedCanvas = null;
-function getPreviewCtx(canvas) {
-  if (!canvas) return null;
-  if (_cachedCanvas !== canvas) {
-    _cachedCanvas = canvas;
-    try {
-      _cachedCtx = canvas.getContext('2d', { willReadFrequently: true });
-    } catch (_) {
-      _cachedCtx = canvas.getContext('2d');
+// ═══════════════════════════════════════════════════════════════
+//  ROUTER INSTALL
+// ═══════════════════════════════════════════════════════════════
+(function installChromaRenderer() {
+  if (featuresRouter.__chromaInstalled) return;
+  featuresRouter.__chromaInstalled = true;
+  const _origRender = featuresRouter.render.bind(featuresRouter);
+  featuresRouter.render = function (view) {
+    if (view.renderMode === 'chromaKeyPanel') {
+      this.title.textContent = view.title;
+      this.backButton.hidden = view.level === 0;
+      this.shelf.classList.remove('circle-shelf');
+      this.shelf.style.cssText = '';
+      this.shelf.replaceChildren();
+      renderTo(this.shelf);
+      return;
     }
-  }
-  return _cachedCtx;
-}
+    return _origRender(view);
+  };
+})();
 
+// ═══════════════════════════════════════════════════════════════
+//  CSS
+// ═══════════════════════════════════════════════════════════════
 const CSS_ID = 'chromakey-styles';
 function injectStyles() {
   if (document.getElementById(CSS_ID)) return;
-  const style = document.createElement('style');
-  style.id = CSS_ID;
-  style.textContent = `
+  const s = document.createElement('style');
+  s.id = CSS_ID;
+  s.textContent = `
     .ck-panel {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      padding: 8px 0 0;
-      padding-bottom: calc(120px + env(safe-area-inset-bottom, 0px));
-      width: 100%;
-      max-width: 100%;
-      min-width: 0;
-      max-height: 72vh;
-      overflow-y: auto;
-      overflow-x: hidden;
-      -webkit-overflow-scrolling: touch;
-      overscroll-behavior: contain;
-      box-sizing: border-box;
-      scrollbar-width: thin;
-    }
-    .ck-panel::-webkit-scrollbar { width: 4px; }
-    .ck-panel::-webkit-scrollbar-thumb {
-      background: var(--border);
-      border-radius: 3px;
+      display: flex; flex-direction: column; gap: 10px;
+      padding: 8px 0 140px; width: 100%; box-sizing: border-box;
+      overflow-y: auto; max-height: 72vh;
     }
     .ck-panel * { box-sizing: border-box; }
 
-    .ck-color-row {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 6px 10px;
+    .ck-warn {
+      padding: 10px 12px; background: rgba(255,107,107,0.12);
+      border: 1px solid var(--danger); border-radius: 8px;
+      font-size: 12px; color: var(--danger); font-weight: 700;
       margin: 0 8px;
-      background: var(--surface-2);
-      border: 1px solid var(--border);
+    }
+    .ck-badge {
+      padding: 8px 12px; background: rgba(255,209,102,0.15);
+      border: 1px solid #ffd166; border-radius: 8px;
+      font-size: 11px; color: #ffd166; font-weight: 700;
+      margin: 0 8px;
+    }
+
+    /* Color row */
+    .ck-color-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 10px; margin: 0 8px;
+      background: var(--surface-2); border: 1px solid var(--border);
       border-radius: 8px;
-      flex: 0 0 auto;
-      min-width: 0;
     }
     .ck-swatch {
-      width: 32px;
-      height: 32px;
-      border-radius: 6px;
-      border: 2px solid var(--border);
-      flex-shrink: 0;
+      width: 40px; height: 40px; border-radius: 6px;
+      border: 2px solid var(--border); flex-shrink: 0;
       background:
         linear-gradient(45deg, #333 25%, transparent 25%) 0 0 / 8px 8px,
         linear-gradient(-45deg, #333 25%, transparent 25%) 0 4px / 8px 8px,
@@ -109,208 +100,119 @@ function injectStyles() {
         #1a1a1a;
     }
     .ck-color-info {
-      display: flex;
-      flex-direction: column;
-      gap: 1px;
-      flex: 1;
-      min-width: 0;
+      display: flex; flex-direction: column; gap: 2px;
+      flex: 1; min-width: 0;
     }
     .ck-color-label {
-      font-size: 11px;
-      font-weight: 600;
-      color: var(--text);
+      font-size: 11px; font-weight: 700; color: var(--text);
     }
     .ck-color-value {
-      font-size: 10px;
-      color: var(--muted);
+      font-size: 10px; color: var(--muted);
       font-variant-numeric: tabular-nums;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
-    .ck-pick-btn,
-    .ck-clear-btn {
-      padding: 4px 10px;
-      font-size: 11px;
-      min-height: 30px;
-      white-space: nowrap;
-      border-radius: 6px;
-      border: 1px solid var(--border);
-      background: var(--surface);
-      color: var(--text);
-      cursor: pointer;
-      font-weight: 600;
-      flex-shrink: 0;
+    .ck-pick-btn, .ck-clear-btn {
+      padding: 6px 12px; min-height: 32px;
+      border-radius: 6px; border: 1px solid var(--border);
+      background: var(--surface); color: var(--text);
+      cursor: pointer; font-weight: 700; font-size: 12px;
+      font-family: inherit; flex-shrink: 0;
     }
     .ck-pick-btn.active {
-      background: var(--accent);
-      color: #000;
-      border-color: var(--accent);
+      background: var(--accent); color: #000; border-color: var(--accent);
       animation: ck-pulse 1s ease-in-out infinite;
     }
     @keyframes ck-pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.6; }
+      0%, 100% { opacity: 1; } 50% { opacity: 0.6; }
     }
 
-    .ck-shelf-wrap {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      width: 100%;
-      min-width: 0;
-      padding: 0 8px;
-      overflow: hidden;
-      flex: 0 0 auto;
-    }
-    .ck-shelf-hint {
-      font-size: 9px;
-      color: var(--muted);
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-      opacity: 0.6;
-      padding: 0 2px;
-    }
+    /* Params shelf — horizontal scrollable */
     .ck-shelf {
-      display: flex;
-      gap: 8px;
-      width: 100%;
-      min-width: 0;
-      overflow-x: auto;
-      overflow-y: hidden;
-      padding: 2px 0 8px;
+      display: flex; gap: 8px; width: 100%;
+      overflow-x: auto; overflow-y: hidden;
+      padding: 2px 8px 10px;
       scroll-snap-type: x proximity;
       -webkit-overflow-scrolling: touch;
-      overscroll-behavior-x: contain;
-      scrollbar-width: thin;
-      touch-action: pan-x;
+      scrollbar-width: thin; touch-action: pan-x;
     }
-    .ck-shelf::-webkit-scrollbar { height: 4px; }
-    .ck-shelf::-webkit-scrollbar-thumb {
-      background: var(--border);
-      border-radius: 3px;
-    }
+    .ck-shelf::-webkit-scrollbar { height: 5px; }
+    .ck-shelf::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
     .ck-card {
-      flex: 0 0 200px;
-      width: 200px;
-      padding: 10px 12px;
-      background: var(--surface-2);
-      border: 1px solid var(--border);
+      flex: 0 0 200px; width: 200px; padding: 10px 12px;
+      background: var(--surface-2); border: 1px solid var(--border);
       border-radius: 10px;
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
+      display: flex; flex-direction: column; gap: 6px;
       scroll-snap-align: start;
     }
-    .ck-card.is-intensity {
-      border-color: var(--accent);
-    }
     .ck-card-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 6px;
-      min-height: 18px;
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 6px; min-height: 18px;
     }
     .ck-card-label {
-      font-size: 12px;
-      font-weight: 700;
-      color: var(--text);
-      line-height: 1.1;
-      white-space: nowrap;
-    }
-    .ck-card.is-intensity .ck-card-label {
-      font-size: 13px;
+      font-size: 12px; font-weight: 700; color: var(--text);
     }
     .ck-card-value {
-      font-size: 12px;
-      font-weight: 700;
-      color: var(--accent);
+      font-size: 12px; font-weight: 700; color: var(--accent);
       font-variant-numeric: tabular-nums;
-      line-height: 1.1;
-      flex-shrink: 0;
-    }
-    .ck-card.is-intensity .ck-card-value {
-      font-size: 13px;
     }
     .ck-card-slider {
-      width: 100%;
-      accent-color: var(--accent);
-      height: 4px;
-      cursor: pointer;
-      margin: 0;
-      touch-action: pan-x;
-    }
-    .ck-card.is-intensity .ck-card-slider {
-      height: 5px;
+      width: 100%; accent-color: var(--accent);
+      height: 5px; cursor: pointer;
     }
     .ck-card-hint {
-      font-size: 9px;
-      color: var(--muted);
-      line-height: 1.2;
-      opacity: 0.6;
-      min-height: 22px;
+      font-size: 10px; color: var(--muted);
+      line-height: 1.2; min-height: 22px; opacity: 0.75;
     }
 
+    /* Loupe */
     .ck-loupe {
-      position: fixed;
-      width: 78px;
-      height: 78px;
-      border-radius: 50%;
-      border: 3px solid #ffffff;
-      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.7), 0 0 0 2px rgba(0, 0, 0, 0.5);
-      pointer-events: none;
-      z-index: 9999;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
+      position: fixed; width: 78px; height: 78px;
+      border-radius: 50%; border: 3px solid #fff;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.7);
+      pointer-events: none; z-index: 9999;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
       background: #000;
       transform: translate(14px, 14px);
-      transition: opacity 0.08s linear;
     }
-    .ck-loupe.hidden { opacity: 0; }
+    .ck-loupe.hidden { display: none; }
     .ck-loupe-color { width: 100%; height: 100%; border-radius: 50%; }
     .ck-loupe-text {
-      position: absolute;
-      bottom: -22px;
-      left: 50%;
+      position: absolute; bottom: -22px; left: 50%;
       transform: translateX(-50%);
-      font-size: 10px;
-      font-weight: 700;
-      color: #fff;
-      background: rgba(0, 0, 0, 0.75);
-      padding: 2px 8px;
-      border-radius: 10px;
+      font-size: 10px; font-weight: 700; color: #fff;
+      background: rgba(0,0,0,0.75);
+      padding: 2px 8px; border-radius: 10px;
       white-space: nowrap;
-      font-variant-numeric: tabular-nums;
-      letter-spacing: 0.03em;
     }
     .ck-picking { cursor: crosshair !important; }
 
-    @media (max-width: 380px) {
-      .ck-panel {
-        padding-bottom: calc(140px + env(safe-area-inset-bottom, 0px));
-      }
-      .ck-card {
-        flex: 0 0 180px;
-        width: 180px;
-        padding: 9px 10px;
-      }
-      .ck-card-label { font-size: 11px; }
-      .ck-card-value { font-size: 11px; }
-      .ck-card.is-intensity .ck-card-label { font-size: 12px; }
-      .ck-card.is-intensity .ck-card-value { font-size: 12px; }
-      .ck-swatch { width: 28px; height: 28px; }
-      .ck-pick-btn, .ck-clear-btn { padding: 3px 8px; font-size: 10px; min-height: 28px; }
+    .ck-remove-btn {
+      padding: 10px 16px; margin: 0 8px; min-height: 44px;
+      background: var(--surface); color: var(--danger);
+      border: 1px solid var(--border); border-radius: 10px;
+      font-size: 13px; font-weight: 700; cursor: pointer;
+      font-family: inherit;
     }
   `;
-  document.head.appendChild(style);
+  document.head.appendChild(s);
 }
 
-// ─── Router entry ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+//  ROUTER ENTRY
+// ═══════════════════════════════════════════════════════════════
 export function open({ router }) {
+  // Load state from existing chroma layer if selected
+  const sel = getSelectedEffectLayer('chroma');
+  if (sel && sel.clip.effectState && sel.clip.effectState.chroma) {
+    state = Object.assign({}, DEFAULTS, sel.clip.effectState.chroma);
+    editingLayer = sel;
+  } else {
+    state = Object.assign({}, DEFAULTS);
+    editingLayer = null;
+  }
+
   router.openLevel('chromakey', [], {
     title: 'Chroma Key',
     level: 2,
@@ -318,19 +220,33 @@ export function open({ router }) {
   });
 }
 
-// ─── Render panel ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+//  RENDER
+// ═══════════════════════════════════════════════════════════════
 export function renderTo(container) {
   injectStyles();
   container.replaceChildren();
 
   const panel = document.createElement('div');
   panel.className = 'ck-panel';
-  container.appendChild(panel);
-  panelRefs = {};
 
-  // ═══════════════════════════════════════════════════════════
-  //  1. COLOR ROW
-  // ═══════════════════════════════════════════════════════════
+  if (!hasSelectedLayer()) {
+    const warn = document.createElement('div');
+    warn.className = 'ck-warn';
+    warn.textContent = '⚠️ Select a timeline layer first';
+    panel.appendChild(warn);
+    container.appendChild(panel);
+    return;
+  }
+
+  if (editingLayer) {
+    const badge = document.createElement('div');
+    badge.className = 'ck-badge';
+    badge.textContent = '✏️ Editing: ' + (editingLayer.clip.name || 'Chroma Key');
+    panel.appendChild(badge);
+  }
+
+  // ─── Color row ─────────────────────────────────────────────
   const colorRow = document.createElement('div');
   colorRow.className = 'ck-color-row';
 
@@ -364,7 +280,8 @@ export function renderTo(container) {
     state.keyColor = null;
     updateSwatchUI(null);
     togglePickMode(false);
-    refreshCanvas();
+    applyToLayer();
+    refreshPreview();
   });
 
   colorRow.append(swatch, colorInfo, pickBtn, clearBtn);
@@ -374,30 +291,20 @@ export function renderTo(container) {
   panelRefs.colorValue = colorValue;
   panelRefs.pickBtn = pickBtn;
 
-  // ═══════════════════════════════════════════════════════════
-  //  2. HORIZONTAL SHELF — all 4 property cards
-  // ═══════════════════════════════════════════════════════════
-  const shelfWrap = document.createElement('div');
-  shelfWrap.className = 'ck-shelf-wrap';
-
-  const shelfHint = document.createElement('div');
-  shelfHint.className = 'ck-shelf-hint';
-  shelfHint.textContent = '← Swipe for more properties →';
-  shelfWrap.appendChild(shelfHint);
-
+  // ─── Params shelf ──────────────────────────────────────────
   const shelf = document.createElement('div');
   shelf.className = 'ck-shelf';
 
   const CARD_DEFS = [
-    { key: 'similarity', label: 'Similarity',        hint: 'Colors close to key color are removed' },
-    { key: 'smoothness', label: 'Smoothness',        hint: 'Softens the edge around removed area' },
-    { key: 'spill',      label: 'Spill Suppression', hint: 'Removes color bleed on subject edges' },
-    { key: 'intensity',  label: 'Intensity',         hint: 'Overall removal strength (0–100%)', isIntensity: true }
+    { key: 'similarity', label: 'Similarity',        hint: 'Colors near key color are removed' },
+    { key: 'smoothness', label: 'Smoothness',        hint: 'Softens edge around removed area' },
+    { key: 'spill',      label: 'Spill Suppression', hint: 'Removes color bleed on edges' },
+    { key: 'intensity',  label: 'Intensity',         hint: 'Overall removal strength' }
   ];
 
   CARD_DEFS.forEach(def => {
     const card = document.createElement('div');
-    card.className = 'ck-card' + (def.isIntensity ? ' is-intensity' : '');
+    card.className = 'ck-card';
 
     const head = document.createElement('div');
     head.className = 'ck-card-head';
@@ -421,7 +328,8 @@ export function renderTo(container) {
     slider.addEventListener('input', () => {
       state[def.key] = parseInt(slider.value, 10);
       value.textContent = state[def.key] + '%';
-      scheduleApply();
+      applyToLayer();
+      refreshPreview();
     });
 
     const hint = document.createElement('div');
@@ -434,23 +342,37 @@ export function renderTo(container) {
     panelRefs[def.key] = { slider, value };
   });
 
-  shelfWrap.appendChild(shelf);
-  panel.appendChild(shelfWrap);
+  panel.appendChild(shelf);
 
-  // ─── Restore UI ───
+  // Remove layer
+  if (editingLayer) {
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'ck-remove-btn';
+    removeBtn.textContent = '🗑 Remove Chroma Layer';
+    removeBtn.addEventListener('click', () => {
+      removeLayer();
+      renderTo(container);
+    });
+    panel.appendChild(removeBtn);
+  }
+
   updateSwatchUI(state.keyColor);
   updatePickButtonUI();
 
-  // Ensure pick mode is OFF when panel opens
   if (state.pickMode) togglePickMode(false);
 
-  // Re-apply existing chroma key if any
-  if (state.keyColor) scheduleApply();
+  container.appendChild(panel);
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  STATE SYNC
+// ═══════════════════════════════════════════════════════════════
 function updateSwatchUI(rgb) {
   if (!panelRefs.swatch) return;
-  panelRefs.swatch.style.background = rgb ? `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})` : '';
+  panelRefs.swatch.style.background = rgb
+    ? `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`
+    : '';
   if (panelRefs.colorValue) {
     panelRefs.colorValue.textContent = rgb
       ? `RGB(${rgb.r}, ${rgb.g}, ${rgb.b})`
@@ -469,6 +391,9 @@ function updatePickButtonUI() {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  PICK MODE (loupe on canvas)
+// ═══════════════════════════════════════════════════════════════
 function togglePickMode(on) {
   state.pickMode = on;
   updatePickButtonUI();
@@ -477,7 +402,6 @@ function togglePickMode(on) {
   if (!canvas) return;
 
   if (on) {
-    refreshCanvas();
     canvas.classList.add('ck-picking');
     canvas.addEventListener('mousemove', onHover);
     canvas.addEventListener('mouseleave', onLeave);
@@ -509,8 +433,7 @@ function clientToPixel(canvas, clientX, clientY) {
 
 function readPixel(canvas, px, py) {
   try {
-    const ctx = getPreviewCtx(canvas);
-    if (!ctx) return null;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     const d = ctx.getImageData(px, py, 1, 1).data;
     return { r: d[0], g: d[1], b: d[2] };
   } catch (_) { return null; }
@@ -526,9 +449,7 @@ function onHover(e) {
   hoverColor = c;
   showLoupe(e.clientX, e.clientY, c);
 }
-
 function onLeave() { hideLoupe(); hoverColor = null; }
-
 function onClick(e) {
   if (!state.pickMode) return;
   e.preventDefault(); e.stopPropagation();
@@ -539,7 +460,6 @@ function onClick(e) {
   if (!c) return;
   applyKeyColor(c);
 }
-
 function onTouchStart(e) {
   if (!state.pickMode) return;
   e.preventDefault();
@@ -552,7 +472,6 @@ function onTouchStart(e) {
   hoverColor = c;
   showLoupe(t.clientX, t.clientY, c);
 }
-
 function onTouchMove(e) {
   if (!state.pickMode) return;
   e.preventDefault();
@@ -565,7 +484,6 @@ function onTouchMove(e) {
   hoverColor = c;
   showLoupe(t.clientX, t.clientY, c);
 }
-
 function onTouchEnd(e) {
   if (!state.pickMode) return;
   e.preventDefault();
@@ -576,7 +494,8 @@ function applyKeyColor(rgb) {
   state.keyColor = { r: rgb.r, g: rgb.g, b: rgb.b };
   updateSwatchUI(state.keyColor);
   togglePickMode(false);
-  scheduleApply();
+  applyToLayer();
+  refreshPreview();
 }
 
 function ensureLoupe() {
@@ -591,105 +510,65 @@ function ensureLoupe() {
   document.body.appendChild(loupeEl);
   return loupeEl;
 }
-
 function showLoupe(clientX, clientY, rgb) {
   const el = ensureLoupe();
   el.classList.remove('hidden');
   el.style.left = clientX + 'px';
   el.style.top = clientY + 'px';
-  el.querySelector('.ck-loupe-color').style.background = `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`;
-  el.querySelector('.ck-loupe-text').textContent = `${rgb.r}, ${rgb.g}, ${rgb.b}`;
+  el.querySelector('.ck-loupe-color').style.background =
+    `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`;
+  el.querySelector('.ck-loupe-text').textContent =
+    `${rgb.r}, ${rgb.g}, ${rgb.b}`;
 }
-
 function hideLoupe() { if (loupeEl) loupeEl.classList.add('hidden'); }
 
-function refreshCanvas() {
-  const canvas = document.querySelector('#preview-canvas');
-  const video = document.querySelector('#preview-video');
-  if (!canvas || !video) return;
-  const ctx = getPreviewCtx(canvas);
-  if (!ctx) return;
-  if (video.readyState >= 2 && video.videoWidth > 0) {
-    drawVideoContained(ctx, video, canvas);
+// ═══════════════════════════════════════════════════════════════
+//  APPLY TO LAYER
+// ═══════════════════════════════════════════════════════════════
+function applyToLayer() {
+  if (!hasSelectedLayer()) return;
+
+  const payload = {
+    chroma: {
+      keyColor: state.keyColor,
+      similarity: state.similarity,
+      smoothness: state.smoothness,
+      spill: state.spill,
+      intensity: state.intensity
+    }
+  };
+
+  if (editingLayer && editingLayer.clip && editingLayer.clip.__effectId) {
+    updateEffectLayer(editingLayer.clip, payload);
+  } else {
+    const id = createEffectLayer('chroma', payload, 'Chroma Key');
+    editingLayer = findEffectLayerById(id);
   }
 }
 
-function scheduleApply() {
-  if (rafPending) return;
-  rafPending = true;
-  requestAnimationFrame(() => {
-    rafPending = false;
-    applyChromaKey();
-  });
+function removeLayer() {
+  if (!editingLayer) return;
+  const appState = window.__appState;
+  if (!appState) return;
+  const tracks = appState.timeline.visual || [];
+  for (let t = 0; t < tracks.length; t++) {
+    const track = tracks[t];
+    if (!Array.isArray(track)) continue;
+    const idx = track.findIndex(c => c && c.__effectId === editingLayer.clip.__effectId);
+    if (idx >= 0) { track.splice(idx, 1); break; }
+  }
+  editingLayer = null;
+  document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
+  document.dispatchEvent(new CustomEvent('effects:refresh'));
 }
 
-function applyChromaKey() {
-  const canvas = document.querySelector('#preview-canvas');
-  const video = document.querySelector('#preview-video');
-  if (!canvas) return;
-  const ctx = getPreviewCtx(canvas);
-  if (!ctx) return;
-
-  // If video is not ready yet, do nothing (avoids cumulative processing)
-  if (!video || video.readyState < 2 || !video.videoWidth) return;
-
-  const temp = document.createElement('canvas');
-  temp.width = canvas.width;
-  temp.height = canvas.height;
-  const tCtx = temp.getContext('2d', { willReadFrequently: true });
-
-  drawVideoContained(tCtx, video, canvas);   // always fresh from video
-
-  if (!state.keyColor) {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(temp, 0, 0);
-    return;
-  }
-
-  const imgData = tCtx.getImageData(0, 0, canvas.width, canvas.height);
-  const data = imgData.data;
-
-  const kr = state.keyColor.r;
-  const kg = state.keyColor.g;
-  const kb = state.keyColor.b;
-  const similarity = state.similarity / 100;
-  const smoothness = state.smoothness / 100;
-  const intensity  = state.intensity / 100;
-  const spillAmt   = state.spill / 100;
-
-  const maxDist = Math.sqrt(3 * 255 * 255) || 1;
-  const simEnd  = similarity;
-  const softEnd = similarity + smoothness;
-
-  for (let i = 0; i < data.length; i += 4) {
-    const r = data[i], g = data[i + 1], b = data[i + 2];
-    const dr = r - kr, dg = g - kg, db = b - kb;
-    const dist = Math.sqrt(dr * dr + dg * dg + db * db) / maxDist;
-
-    let removal = 0;
-    if (dist <= simEnd) {
-      removal = 1;
-    } else if (smoothness > 0 && dist <= softEnd) {
-      removal = 1 - (dist - simEnd) / smoothness;
-    }
-    removal *= intensity;
-
-    if (removal > 0) {
-      data[i + 3] = Math.round(data[i + 3] * (1 - removal));
-    }
-
-    if (spillAmt > 0 && data[i + 3] > 0) {
-      if (dist < softEnd + 0.15) {
-        const proximity = 1 - Math.min(1, dist / (softEnd + 0.15));
-        const blend = spillAmt * proximity * 0.8;
-        const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-        data[i]     = Math.round(r * (1 - blend) + gray * blend);
-        data[i + 1] = Math.round(g * (1 - blend) + gray * blend);
-        data[i + 2] = Math.round(b * (1 - blend) + gray * blend);
-      }
+function refreshPreview() {
+  document.dispatchEvent(new CustomEvent('effects:refresh'));
+  const eng = window.__playbackEngine;
+  if (eng) {
+    const t = eng.getTime();
+    if (typeof window.__applyVisualEffects === 'function') {
+      window.__applyVisualEffects(t);
     }
   }
-
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.putImageData(imgData, 0, 0);
 }

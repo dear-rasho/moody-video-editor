@@ -1,5 +1,7 @@
 // ================================================================
 //  js/features/index.js
+//  Central registry.
+//  Crop removed — functionality lives in Transform panel.
 // ================================================================
 
 import * as music           from './music.js';
@@ -11,9 +13,8 @@ import * as textFonts       from './textFonts.js';
 import * as stickers        from './stickers.js';
 import * as motion          from './motion.js';
 import * as transform       from './transform.js';
-import * as transitions     from './transitions.js';       // 🆕 NEW
+import * as transitions     from './transitions.js';
 import * as trim            from './trim.js';
-import * as crop            from './crop.js';
 import * as duplicate       from './duplicate.js';
 import * as freeze          from './freeze.js';
 import * as soundeffect     from './soundeffect.js';
@@ -35,9 +36,8 @@ export {
   stickers,
   motion,
   transform,
-  transitions,           // 🆕
+  transitions,
   trim,
-  crop,
   duplicate,
   freeze,
   soundeffect,

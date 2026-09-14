@@ -1,7 +1,7 @@
 // ================================================================
 //  js/features/adjustments.js
-//  Adjustments panel — creates / updates 'adjustment' effect layers.
-//  Pixel processing happens in effectRenderer.js
+//  Adjustments panel — creates/updates 'adjustment' effect layers.
+//  Applies DOWNWARD (hierarchy).
 // ================================================================
 
 import { featuresRouter } from './featuresRouter.js';
@@ -14,6 +14,8 @@ import {
 } from '../workspace/effectLayer.js';
 
 export const featureKey = 'adjustments';
+export const featureLabel = 'Adjust';
+export const featureIcon = '🎚️';
 
 const ADJUSTMENTS = [
   { key: 'brightness',  label: 'Brightness'  },
@@ -49,7 +51,6 @@ let panelState = makeDefaults();
 let editingLayer = null;
 let sliderRefs = {};
 
-// ─── Router install ───────────────────────────────────────────
 (function installAdjustmentsRenderer() {
   if (featuresRouter.__adjustInstalled) return;
   featuresRouter.__adjustInstalled = true;
@@ -74,21 +75,23 @@ function injectStyles() {
   const s = document.createElement('style');
   s.id = CSS_ID;
   s.textContent = `
-    .aj-panel { display:flex; flex-direction:column; gap:8px; padding:8px 6px 14px; overflow-y:auto; max-height:72vh; width:100%; box-sizing:border-box; }
-    .aj-warn { padding:10px 12px; background:rgba(255,107,107,0.12); border:1px solid var(--danger); border-radius:8px; font-size:12px; color:var(--danger); font-weight:700; }
-    .aj-badge { padding:8px 12px; background:rgba(255,209,102,0.15); border:1px solid #ffd166; border-radius:8px; font-size:11px; color:#ffd166; font-weight:700; }
-    .aj-row { display:flex; flex-direction:column; gap:6px; padding:10px 12px; background:var(--surface-2); border:1px solid var(--border); border-radius:10px; }
-    .aj-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
-    .aj-label { font-size:12px; font-weight:600; color:var(--text); }
-    .aj-right { display:flex; align-items:center; gap:8px; }
-    .aj-val { font-size:12px; font-weight:600; min-width:40px; text-align:right; color:var(--muted); font-variant-numeric:tabular-nums; }
-    .aj-reset { background:transparent; border:0; color:var(--muted); font-size:14px; cursor:pointer; padding:0 2px; opacity:0.7; }
-    .aj-slider { width:100%; accent-color:var(--accent); height:4px; cursor:pointer; }
+    .aj-panel { display:flex;flex-direction:column;gap:8px;padding:8px 6px 14px;overflow-y:auto;max-height:72vh;width:100%;box-sizing:border-box; }
+    .aj-warn { padding:10px 12px;background:rgba(255,107,107,0.12);border:1px solid var(--danger);border-radius:8px;font-size:12px;color:var(--danger);font-weight:700; }
+    .aj-badge { padding:8px 12px;background:rgba(255,209,102,0.15);border:1px solid #ffd166;border-radius:8px;font-size:11px;color:#ffd166;font-weight:700; }
+    .aj-row { display:flex;flex-direction:column;gap:6px;padding:10px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:10px; }
+    .aj-head { display:flex;align-items:center;justify-content:space-between;gap:8px; }
+    .aj-label { font-size:12px;font-weight:600;color:var(--text); }
+    .aj-right { display:flex;align-items:center;gap:8px; }
+    .aj-val { font-size:12px;font-weight:600;min-width:40px;text-align:right;color:var(--muted);font-variant-numeric:tabular-nums; }
+    .aj-reset { background:transparent;border:0;color:var(--muted);font-size:14px;cursor:pointer;padding:0 2px;opacity:0.7; }
+    .aj-slider { width:100%;accent-color:var(--accent);height:4px;cursor:pointer; }
+    .aj-actions { display:flex;gap:8px;margin-top:4px; }
+    .aj-btn { flex:1;padding:10px 12px;min-height:44px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:10px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit; }
+    .aj-btn.danger { color:var(--danger); }
   `;
   document.head.appendChild(s);
 }
 
-// ─── Router entry ─────────────────────────────────────────────
 export function open({ router }) {
   const sel = getSelectedEffectLayer('adjustment');
   if (sel && sel.clip.effectState && sel.clip.effectState.adjustments) {
@@ -106,7 +109,6 @@ export function open({ router }) {
   });
 }
 
-// ─── Render ───────────────────────────────────────────────────
 export function renderTo(container) {
   injectStyles();
   container.replaceChildren();
@@ -181,13 +183,27 @@ export function renderTo(container) {
     sliderRefs[adj.key] = { slider: sl, val: val };
   });
 
+  if (editingLayer) {
+    const actions = document.createElement('div');
+    actions.className = 'aj-actions';
+    const rmBtn = document.createElement('button');
+    rmBtn.type = 'button';
+    rmBtn.className = 'aj-btn danger';
+    rmBtn.textContent = '🗑 Remove Adjustment Layer';
+    rmBtn.addEventListener('click', () => {
+      removeLayer();
+      const c = document.querySelector('#feature-shelf');
+      if (c) renderTo(c);
+    });
+    actions.appendChild(rmBtn);
+    panel.appendChild(actions);
+  }
+
   container.appendChild(panel);
 }
 
-// ─── Apply to layer ───────────────────────────────────────────
 function applyToLayer() {
   if (!hasSelectedLayer()) return;
-
   const adjustments = Object.assign({}, panelState);
 
   if (editingLayer && editingLayer.clip && editingLayer.clip.__effectId) {
@@ -196,4 +212,22 @@ function applyToLayer() {
     const id = createEffectLayer('adjustment', { adjustments: adjustments }, 'Adjustments');
     editingLayer = findEffectLayerById(id);
   }
+
+  document.dispatchEvent(new CustomEvent('effects:refresh'));
+}
+
+function removeLayer() {
+  if (!editingLayer) return;
+  const appState = window.__appState;
+  if (!appState) return;
+  const tracks = appState.timeline.visual || [];
+  for (let t = 0; t < tracks.length; t++) {
+    const track = tracks[t];
+    if (!Array.isArray(track)) continue;
+    const idx = track.findIndex(c => c && c.__effectId === editingLayer.clip.__effectId);
+    if (idx >= 0) { track.splice(idx, 1); break; }
+  }
+  editingLayer = null;
+  document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
+  document.dispatchEvent(new CustomEvent('effects:refresh'));
 }

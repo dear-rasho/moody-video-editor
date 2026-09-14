@@ -1,6 +1,9 @@
 // ================================================================
 //  js/features/featuresRouter.js
+//  Uses panelState.js for scroll memory + back-button routing.
 // ================================================================
+
+import * as panelState from '../workspace/panelState.js';
 
 const FEATURE_META = {
   music:        { label: 'Music',       icon: '🎵' },
@@ -12,9 +15,8 @@ const FEATURE_META = {
   stickers:     { label: 'Stickers',    icon: '😀' },
   motion:       { label: 'Motion',      icon: '🎞️' },
   transform:    { label: 'Transform',   icon: '🔲' },
-  transitions:  { label: 'Transitions', icon: '⇄' },       // 🆕
+  transitions:  { label: 'Transitions', icon: '⇄' },
   trim:         { label: 'Trim',        icon: '🎯' },
-  crop:         { label: 'Crop',        icon: '🖼️' },
   duplicate:    { label: 'Duplicate',   icon: '📋' },
   freeze:       { label: 'Freeze',      icon: '❄️' },
   soundeffect:  { label: 'Sound FX',    icon: '🔊' },
@@ -31,6 +33,7 @@ const FEATURE_META = {
 const featureModules = new Map();
 let currentView = { level: 0, key: 'root', title: 'Tools', items: [] };
 const parentHistory = [];
+let lastRenderedKey = null;
 
 const state = {
   register(key, module) { featureModules.set(key, module); },
@@ -44,6 +47,7 @@ const router = {
     this.title = title;
     this.backButton = backButton;
     backButton?.addEventListener('click', () => this.back());
+    lastRenderedKey = currentView.key;
     this.render(currentView);
   },
 
@@ -77,6 +81,12 @@ const router = {
   back() {
     const previous = parentHistory.pop();
     if (!previous) return;
+
+    // Clean up any back interceptor of the feature we're leaving
+    if (currentView && currentView.key) {
+      panelState.unregisterBackInterceptor(currentView.key);
+    }
+
     currentView = previous;
     this.shelf.classList.toggle('circle-shelf', currentView.level === 1);
     this.shelf.style.cssText = '';
@@ -93,17 +103,27 @@ const router = {
 
   render(view) {
     if (!this.shelf) return;
+
+    // Save scroll of PREVIOUS feature
+    if (lastRenderedKey && lastRenderedKey !== view.key) {
+      panelState.onFeatureClose(lastRenderedKey, this.shelf);
+    }
+
     this.title.textContent = view.title;
     this.backButton.hidden = view.level === 0;
     this.shelf.classList.toggle('circle-shelf', view.level === 1);
     this.shelf.style.cssText = '';
     this.shelf.replaceChildren();
 
+    const restoreAfter = () => {
+      panelState.restoreScroll(view.key, this.shelf);
+      lastRenderedKey = view.key;
+    };
+
     const CUSTOM_PANELS = {
       colorwheel:       './colorWheel.js',
       adjustmentsPanel: './adjustments.js',
       chromaKeyPanel:   './chromakey.js',
-      cropPanel:        './crop.js',
       textPanel:        './text.js',
       stickersPanel:    './stickers.js',
       filtersPanel:     './filters.js',
@@ -113,16 +133,20 @@ const router = {
       speedPanel:       './speed.js',
       trimPanel:        './trim.js',
       transformPanel:   './transform.js',
-      transitionsPanel: './transitions.js'      // 🆕
+      transitionsPanel: './transitions.js'
     };
 
     if (view.renderMode && CUSTOM_PANELS[view.renderMode]) {
       const modulePath = CUSTOM_PANELS[view.renderMode];
       import(modulePath)
-        .then(mod => { if (mod.renderTo) mod.renderTo(this.shelf, this.title); })
+        .then(mod => {
+          if (mod.renderTo) mod.renderTo(this.shelf, this.title);
+          restoreAfter();
+        })
         .catch((err) => {
           console.error(`Panel load error (${view.renderMode}):`, err);
           this.shelf.textContent = '⚠️ Load failed';
+          lastRenderedKey = view.key;
         });
       return;
     }
@@ -150,6 +174,8 @@ const router = {
       button.addEventListener('click', () => this.select(item));
       this.shelf.append(button);
     }
+
+    restoreAfter();
   },
 
   select(item) {

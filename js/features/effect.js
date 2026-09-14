@@ -1,7 +1,7 @@
 // ================================================================
 //  js/features/effect.js
 //  Effects shelf — creates effect layers as presets.
-//  Includes BOTH color-grade AND motion effects.
+//  Applies DOWNWARD only (hierarchy).
 // ================================================================
 
 import { featuresRouter } from './featuresRouter.js';
@@ -14,12 +14,11 @@ import {
 } from '../workspace/effectLayer.js';
 
 export const featureKey = 'effect';
+export const featureLabel = 'Effects';
+export const featureIcon = '✨';
 
-// ─── Presets ──────────────────────────────────────────────────
-//  'filters' → CSS color grading
-//  'motion'  → animated CSS transform (shake, bounce, etc.)
 const PRESETS = [
-  // ── MOTION EFFECTS (animated) ─────────────────────────────
+  // Motion effects
   { key: 'shake',      label: 'Shake',       icon: '📳', kind: 'motion',
     motion: { type: 'shake', intensity: 90, speed: 1.2 } },
   { key: 'bounce',     label: 'Bounce',      icon: '🏀', kind: 'motion',
@@ -34,7 +33,7 @@ const PRESETS = [
   { key: 'wobble',     label: 'Wobble',      icon: '🔄', kind: 'motion',
     motion: { type: 'rotate', intensity: 80, speed: 1.0 } },
 
-  // ── COLOR GRADE EFFECTS ───────────────────────────────────
+  // Color grades
   { key: 'warm',       label: 'Warm Glow',   icon: '🌅',
     filters: { brightness: 108, contrast: 105, saturation: 115, temperature: 25 } },
   { key: 'cool',       label: 'Cool Blue',   icon: '❄️',
@@ -63,7 +62,6 @@ const PRESETS = [
 
 let editingLayer = null;
 
-// ─── Router install ───────────────────────────────────────────
 (function installEffectRenderer() {
   if (featuresRouter.__effectInstalled) return;
   featuresRouter.__effectInstalled = true;
@@ -82,37 +80,35 @@ let editingLayer = null;
   };
 })();
 
-// ─── CSS ──────────────────────────────────────────────────────
 const CSS_ID = 'effect-styles';
 function injectStyles() {
   if (document.getElementById(CSS_ID)) return;
   const s = document.createElement('style');
   s.id = CSS_ID;
   s.textContent = `
-    .ef-panel { display:flex; flex-direction:column; gap:10px; padding:10px 8px 14px; width:100%; box-sizing:border-box; }
+    .ef-panel { display:flex;flex-direction:column;gap:10px;padding:10px 8px 14px;width:100%;box-sizing:border-box; }
     .ef-panel * { box-sizing:border-box; }
-    .ef-warn { padding:10px 12px; background:rgba(255,107,107,0.12); border:1px solid var(--danger); border-radius:8px; font-size:12px; color:var(--danger); font-weight:700; }
-    .ef-badge { padding:8px 12px; background:rgba(255,209,102,0.15); border:1px solid #ffd166; border-radius:8px; font-size:11px; color:#ffd166; font-weight:700; }
-    .ef-section-label { font-size:10px; font-weight:800; letter-spacing:0.1em; text-transform:uppercase; color:var(--muted); padding:0 4px; opacity:0.7; }
-    .ef-shelf-hint { font-size:9px; color:var(--muted); letter-spacing:0.04em; text-transform:uppercase; opacity:0.6; padding:0 2px; }
-    .ef-shelf { display:flex; gap:8px; width:100%; min-width:0; overflow-x:auto; overflow-y:hidden; padding:2px 2px 10px; scroll-snap-type:x proximity; -webkit-overflow-scrolling:touch; overscroll-behavior-x:contain; scrollbar-width:thin; touch-action:pan-x; }
+    .ef-warn { padding:10px 12px;background:rgba(255,107,107,0.12);border:1px solid var(--danger);border-radius:8px;font-size:12px;color:var(--danger);font-weight:700; }
+    .ef-badge { padding:8px 12px;background:rgba(255,209,102,0.15);border:1px solid #ffd166;border-radius:8px;font-size:11px;color:#ffd166;font-weight:700; }
+    .ef-section-label { font-size:10px;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted);padding:0 4px;opacity:0.7; }
+    .ef-shelf-hint { font-size:9px;color:var(--muted);letter-spacing:0.04em;text-transform:uppercase;opacity:0.6;padding:0 2px; }
+    .ef-shelf { display:flex;gap:8px;width:100%;min-width:0;overflow-x:auto;overflow-y:hidden;padding:2px 2px 10px;scroll-snap-type:x proximity;-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain;scrollbar-width:thin;touch-action:pan-x; }
     .ef-shelf::-webkit-scrollbar { height:5px; }
-    .ef-shelf::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px; }
-    .ef-card { flex:0 0 92px; width:92px; min-height:92px; padding:8px 6px; background:var(--surface-2); border:1px solid var(--border); border-radius:10px; color:var(--text); cursor:pointer; font-family:inherit; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; scroll-snap-align:start; transition:all 0.12s ease; -webkit-tap-highlight-color:transparent; }
+    .ef-shelf::-webkit-scrollbar-thumb { background:var(--border);border-radius:3px; }
+    .ef-card { flex:0 0 92px;width:92px;min-height:92px;padding:8px 6px;background:var(--surface-2);border:1px solid var(--border);border-radius:10px;color:var(--text);cursor:pointer;font-family:inherit;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;scroll-snap-align:start;transition:all 0.12s ease;-webkit-tap-highlight-color:transparent; }
     .ef-card:active { background:var(--surface-3); }
-    .ef-card.active { border-color:var(--accent); box-shadow:inset 0 0 0 1px var(--accent); }
+    .ef-card.active { border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent); }
     .ef-card.motion { border-left:3px solid #a78bfa; }
-    .ef-icon { width:38px; height:38px; border-radius:50%; border:1px solid var(--border); display:grid; place-items:center; font-size:18px; background:var(--surface); }
-    .ef-card.active .ef-icon { background:var(--accent); color:#000; border-color:var(--accent); }
-    .ef-label { font-size:10.5px; font-weight:600; text-align:center; line-height:1.15; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; width:100%; }
-    .ef-actions { display:flex; gap:8px; margin-top:6px; }
-    .ef-btn { flex:1; padding:10px 12px; min-height:44px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:10px; font-size:13px; font-weight:700; cursor:pointer; font-family:inherit; }
+    .ef-icon { width:38px;height:38px;border-radius:50%;border:1px solid var(--border);display:grid;place-items:center;font-size:18px;background:var(--surface); }
+    .ef-card.active .ef-icon { background:var(--accent);color:#000;border-color:var(--accent); }
+    .ef-label { font-size:10.5px;font-weight:600;text-align:center;line-height:1.15;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;width:100%; }
+    .ef-actions { display:flex;gap:8px;margin-top:6px; }
+    .ef-btn { flex:1;padding:10px 12px;min-height:44px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:10px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit; }
     .ef-btn.danger { color:var(--danger); }
   `;
   document.head.appendChild(s);
 }
 
-// ─── Router entry ─────────────────────────────────────────────
 export function open({ router }) {
   editingLayer = getSelectedEffectLayer('effect');
   router.openLevel('effect', [], {
@@ -122,7 +118,6 @@ export function open({ router }) {
   });
 }
 
-// ─── Render ───────────────────────────────────────────────────
 export function renderTo(container) {
   injectStyles();
   container.replaceChildren();
@@ -145,7 +140,6 @@ export function renderTo(container) {
   const activeKey = editingLayer && editingLayer.clip.effectState
     ? editingLayer.clip.effectState.presetKey : null;
 
-  // ─── Motion section ────────────────────────────────────────
   panel.appendChild(buildSectionLabel('Motion (Animated)'));
   panel.appendChild(buildShelf(
     PRESETS.filter(p => p.kind === 'motion'),
@@ -153,7 +147,6 @@ export function renderTo(container) {
     true
   ));
 
-  // ─── Color section ─────────────────────────────────────────
   panel.appendChild(buildSectionLabel('Color Grade'));
   panel.appendChild(buildShelf(
     PRESETS.filter(p => p.kind !== 'motion'),
@@ -161,7 +154,6 @@ export function renderTo(container) {
     false
   ));
 
-  // ─── Remove button ─────────────────────────────────────────
   if (editingLayer) {
     const actions = document.createElement('div');
     actions.className = 'ef-actions';
@@ -223,7 +215,6 @@ function buildShelf(list, activeKey, isMotion) {
   return wrap;
 }
 
-// ─── Apply preset ─────────────────────────────────────────────
 function applyPreset(preset) {
   if (!hasSelectedLayer()) {
     showToast('Select a timeline layer first', false);
@@ -252,11 +243,12 @@ function applyPreset(preset) {
     showToast('Added ' + preset.label + ' layer');
   }
 
+  document.dispatchEvent(new CustomEvent('effects:refresh'));
+
   const c = document.querySelector('#feature-shelf');
   if (c) renderTo(c);
 }
 
-// ─── Remove layer ─────────────────────────────────────────────
 function removeCurrentLayer() {
   if (!editingLayer) return;
   const clip = editingLayer.clip;
@@ -267,28 +259,25 @@ function removeCurrentLayer() {
     const track = allTracks[t];
     if (!Array.isArray(track)) continue;
     const idx = track.findIndex(c => c && c.__effectId === clip.__effectId);
-    if (idx >= 0) {
-      track.splice(idx, 1);
-      break;
-    }
+    if (idx >= 0) { track.splice(idx, 1); break; }
   }
 
   editingLayer = null;
   document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
+  document.dispatchEvent(new CustomEvent('effects:refresh'));
   showToast('Effect layer removed');
 
   const c = document.querySelector('#feature-shelf');
   if (c) renderTo(c);
 }
 
-// ─── Toast ────────────────────────────────────────────────────
 function showToast(msg, ok) {
   if (ok === undefined) ok = true;
   const el = document.createElement('div');
   el.textContent = msg;
   el.style.cssText = [
     'position:fixed','bottom:110px','left:50%',
-    'transform:translateX(-50%) translateY(8px)',
+    'transform:translateX(-50%)',
     'background:' + (ok ? 'rgba(0,0,0,0.9)' : 'rgba(180,40,40,0.92)'),
     'color:#fff','padding:10px 20px','border-radius:22px',
     'font-size:13px','font-weight:600','z-index:9999',
@@ -298,13 +287,13 @@ function showToast(msg, ok) {
     'overflow:hidden','text-overflow:ellipsis'
   ].join(';');
   document.body.appendChild(el);
-  requestAnimationFrame(function () {
+  requestAnimationFrame(() => {
     el.style.opacity = '1';
     el.style.transform = 'translateX(-50%) translateY(0)';
   });
-  setTimeout(function () {
+  setTimeout(() => {
     el.style.opacity = '0';
     el.style.transform = 'translateX(-50%) translateY(8px)';
-    setTimeout(function () { el.remove(); }, 260);
+    setTimeout(() => el.remove(), 260);
   }, 1500);
 }

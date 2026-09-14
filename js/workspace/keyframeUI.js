@@ -1,6 +1,6 @@
 // ================================================================
 //  js/workspace/keyframeUI.js
-//  ◆︎ button + timeline markers + selection state.
+//  Keyframe button + clickable markers + selection state.
 // ================================================================
 
 import {
@@ -52,7 +52,7 @@ function injectStyles() {
       position: absolute;
       inset: 0;
       pointer-events: none;
-      z-index: 20;
+      z-index: 25;
     }
     .kf-marker {
       position: absolute;
@@ -78,9 +78,7 @@ function injectStyles() {
     .kf-marker.selected {
       background: #ff3b3b;
       border-color: #fff;
-      box-shadow:
-        0 0 0 2px #ff3b3b,
-        0 0 12px rgba(255,59,59,0.9);
+      box-shadow: 0 0 0 2px #ff3b3b, 0 0 12px rgba(255,59,59,0.9);
       transform: translateX(-50%) rotate(45deg) scale(1.15);
       z-index: 30;
     }

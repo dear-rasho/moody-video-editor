@@ -1,6 +1,6 @@
 // ================================================================
 //  js/layers/layersManager.js
-//  Layer helpers, CSS injection, V+/A+ buttons.
+//  Layer helpers, CSS injection, V+ / A+ buttons.
 // ================================================================
 
 export const DEFAULT_VISUAL_LAYERS = 3;
@@ -14,13 +14,14 @@ export function injectLayerStyles() {
   s.id = CSS_ID;
   s.textContent = [
     '#media-file-input{position:absolute!important;width:1px!important;height:1px!important;opacity:0!important;pointer-events:none!important;left:-9999px!important;}',
-    '.track-content{position:relative!important;display:block!important;padding:0!important;min-width:0!important;}',
-    '.clip.clip-absolute{position:absolute!important;top:5px;height:calc(100% - 10px);min-width:20px;box-sizing:border-box;}',
+    '.track-content{position:relative!important;display:block!important;padding:0!important;min-width:0!important;overflow:hidden!important;}',
+    '.clip.clip-absolute{position:absolute!important;top:5px;height:calc(100% - 10px);min-width:20px;box-sizing:border-box;z-index:1;}',
     '.clip[data-clip-type^="video/"]{background:#1e40af!important;border-color:#3b82f6!important;color:#fff!important;}',
     '.clip[data-clip-type^="image/"]{background:#ca8a04!important;border-color:#facc15!important;color:#111!important;}',
     '.clip[data-clip-type^="text/"]{background:#be185d!important;border-color:#ec4899!important;color:#fff!important;}',
     '.clip[data-clip-type^="audio/"]{background:#065f46!important;border-color:#10b981!important;color:#fff!important;}',
     '.clip[data-clip-type^="sticker/"]{background:#6d28d9!important;border-color:#a855f7!important;color:#fff!important;}',
+    '.clip[data-clip-type="effect/plain"]{background:#4c1d95!important;border-color:#a78bfa!important;color:#fff!important;}',
     '.quick-layer-buttons{display:flex;gap:6px;flex-shrink:0;}',
     '.quick-layer-btn{display:inline-flex;align-items:center;justify-content:center;gap:4px;min-width:52px;min-height:40px;padding:0 12px;background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:8px;font-size:12px;font-weight:700;letter-spacing:.06em;cursor:pointer;font-family:inherit;flex-shrink:0;}',
     '.quick-layer-btn:active{background:var(--surface-3);}',
@@ -33,26 +34,28 @@ export function injectLayerStyles() {
 export function clipRange(clip) {
   const start = Number.isFinite(clip && clip.startTime) ? clip.startTime : 0;
   const dur   = Number.isFinite(clip && clip.duration)  ? clip.duration  : 3;
-  return { start: start, end: start + dur, duration: dur };
+  return { start, end: start + dur, duration: dur };
 }
 
 function rangesOverlap(aS, aE, bS, bE) {
   return aS < bE && bS < aE;
 }
 
-export function trackHasOverlap(track, start, end) {
+export function trackHasOverlap(track, start, end, excludeClip) {
   if (!Array.isArray(track)) return false;
   for (let i = 0; i < track.length; i++) {
-    const r = clipRange(track[i]);
+    const clip = track[i];
+    if (clip === excludeClip) continue;
+    const r = clipRange(clip);
     if (rangesOverlap(start, end, r.start, r.end)) return true;
   }
   return false;
 }
 
-export function findFreeLayerIndex(list, start, end) {
+export function findFreeLayerIndex(list, start, end, excludeClip) {
   if (!Array.isArray(list)) return 0;
   for (let i = 0; i < list.length; i++) {
-    if (!trackHasOverlap(list[i], start, end)) return i;
+    if (!trackHasOverlap(list[i], start, end, excludeClip)) return i;
   }
   return -1;
 }

@@ -1,6 +1,6 @@
 // ================================================================
 //  js/features/speed.js
-//  Speed panel. Uses playbackEngine for playhead time.
+//  Speed panel. Changes playbackRate + updates duration.
 // ================================================================
 
 import { featuresRouter } from './featuresRouter.js';
@@ -27,79 +27,40 @@ export const featureKey = 'speed';
   };
 })();
 
-const EASING_OPTIONS = [
-  { key: 'linear',         label: 'Linear' },
-  { key: 'easeIn',         label: 'Ease In' },
-  { key: 'easeOut',        label: 'Ease Out' },
-  { key: 'easeInOut',      label: 'Ease In-Out' },
-  { key: 'easeInCubic',    label: 'Cubic In' },
-  { key: 'easeOutCubic',   label: 'Cubic Out' },
-  { key: 'easeInOutCubic', label: 'Cubic In-Out' },
-  { key: 'easeInBack',     label: 'Back In' },
-  { key: 'easeOutBack',    label: 'Back Out' },
-  { key: 'easeInOutBack',  label: 'Back In-Out' },
-  { key: 'easeOutBounce',  label: 'Bounce Out' },
-  { key: 'easeOutElastic', label: 'Elastic Out' }
-];
-
 const PRESETS = [0.25, 0.5, 1, 1.5, 2, 4];
 
 const st = {
   currentSpeed: 1.0,
-  baseDuration: 3,
-  ease: 'easeInOut',
-  kf: []
+  baseDuration: 3
 };
 
 const CSS_ID = 'speed-styles';
-
 function injectStyles() {
   if (document.getElementById(CSS_ID)) return;
   const s = document.createElement('style');
   s.id = CSS_ID;
-  s.textContent = [
-    '.sp-panel{display:flex;flex-direction:column;gap:8px;width:100%;max-width:100%;min-width:0;padding:0;margin:0;box-sizing:border-box;}',
-    '.sp-panel *{box-sizing:border-box;}',
-    '.sp-info{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px 12px;padding:8px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;font-size:11px;color:var(--muted);letter-spacing:.02em;flex:0 0 auto;}',
-    '.sp-info-row{display:flex;align-items:center;gap:6px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}',
-    '.sp-info-row b{color:var(--text);font-weight:700;font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px;}',
-    '.sp-card{display:flex;flex-direction:column;gap:10px;padding:12px;background:var(--surface-2);border:1px solid var(--border);border-radius:10px;width:100%;min-width:0;flex:0 0 auto;}',
-    '.sp-card-title{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);}',
-    '.sp-row{display:flex;flex-direction:column;gap:4px;width:100%;min-width:0;}',
-    '.sp-row-head{display:flex;align-items:center;justify-content:space-between;gap:8px;}',
-    '.sp-label{font-size:12px;font-weight:600;color:var(--text);}',
-    '.sp-value{font-size:14px;font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums;}',
-    '.sp-slider{width:100%;accent-color:var(--accent);height:5px;cursor:pointer;}',
-    '.sp-presets{display:flex;gap:6px;flex-wrap:wrap;}',
-    '.sp-chip{padding:7px 12px;min-height:34px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:18px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;}',
-    '.sp-chip.active{background:var(--accent);color:#000;border-color:var(--accent);}',
-    '.sp-kf-section{display:flex;flex-direction:column;gap:10px;width:100%;min-width:0;}',
-    '.sp-kf-actions{display:flex;gap:8px;}',
-    '.sp-kf-btn{flex:1;padding:8px 10px;min-height:38px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;border:1px solid var(--border);background:var(--surface);color:var(--text);white-space:nowrap;}',
-    '.sp-kf-btn.primary{background:var(--accent);color:#000;border-color:var(--accent);}',
-    '.sp-ease-row{display:flex;flex-direction:column;gap:8px;width:100%;min-width:0;}',
-    '.sp-ease-label{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);}',
-    '.sp-ease-shelf{display:flex;gap:8px;width:100%;min-width:0;overflow-x:auto;overflow-y:hidden;padding:2px 2px 10px;scroll-snap-type:x proximity;-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain;scrollbar-width:thin;touch-action:pan-x;}',
-    '.sp-ease-shelf::-webkit-scrollbar{height:5px;}',
-    '.sp-ease-shelf::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px;}',
-    '.sp-ease-card{flex:0 0 96px;width:96px;height:78px;padding:5px 5px 4px;background:var(--surface);border:1px solid var(--border);border-radius:9px;color:var(--text);cursor:pointer;display:flex;flex-direction:column;gap:4px;scroll-snap-align:start;font-family:inherit;}',
-    '.sp-ease-card.active{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent);background:var(--surface-2);}',
-    '.sp-ease-card-curve{width:100%;height:48px;display:block;border-radius:5px;background:var(--surface-2);flex-shrink:0;}',
-    '.sp-ease-card.active .sp-ease-card-curve{background:var(--surface);}',
-    '.sp-ease-card-name{font-size:9.5px;font-weight:600;text-align:center;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.15;}',
-    '.sp-ease-card.active .sp-ease-card-name{color:var(--text);}',
-    '.sp-kf-list{display:flex;flex-direction:column;gap:4px;max-height:130px;overflow-y:auto;width:100%;min-width:0;}',
-    '.sp-kf-item{display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;font-size:12px;cursor:pointer;}',
-    '.sp-kf-time{font-weight:700;color:var(--accent);min-width:48px;font-variant-numeric:tabular-nums;}',
-    '.sp-kf-value{flex:1;color:var(--muted);font-variant-numeric:tabular-nums;font-size:11px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
-    '.sp-kf-del{background:transparent;border:0;color:var(--muted);cursor:pointer;font-size:14px;padding:2px 6px;flex-shrink:0;}',
-    '.sp-kf-empty{font-size:11px;color:var(--muted);opacity:.65;padding:8px;text-align:center;}',
-    '.sp-reset{padding:11px 16px;min-height:44px;background:var(--surface);color:var(--danger);border:1px solid var(--border);border-radius:10px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;width:100%;flex:0 0 auto;}',
-    '.sp-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:20px 16px;background:var(--surface-2);border:1px dashed var(--border);border-radius:10px;text-align:center;color:var(--muted);font-size:12px;line-height:1.45;flex:0 0 auto;}',
-    '.sp-empty-icon{font-size:26px;opacity:.55;line-height:1;}',
-    '.sp-empty-title{font-size:13px;font-weight:700;color:var(--text);}',
-    '.sp-empty-text{font-size:11px;color:var(--muted);max-width:280px;}'
-  ].join('\n');
+  s.textContent = `
+    .sp-panel{display:flex;flex-direction:column;gap:10px;width:100%;padding:0;}
+    .sp-panel *{box-sizing:border-box;}
+    .sp-info{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px 12px;padding:8px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;font-size:11px;color:var(--muted);}
+    .sp-info-row{display:flex;align-items:center;gap:6px;min-width:0;}
+    .sp-info-row b{color:var(--text);font-weight:700;font-variant-numeric:tabular-nums;}
+    .sp-card{display:flex;flex-direction:column;gap:10px;padding:12px;background:var(--surface-2);border:1px solid var(--border);border-radius:10px;}
+    .sp-card-title{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);}
+    .sp-row{display:flex;flex-direction:column;gap:4px;}
+    .sp-row-head{display:flex;align-items:center;justify-content:space-between;gap:8px;}
+    .sp-label{font-size:12px;font-weight:600;color:var(--text);}
+    .sp-value{font-size:14px;font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums;}
+    .sp-slider{width:100%;accent-color:var(--accent);height:5px;cursor:pointer;}
+    .sp-presets{display:flex;gap:6px;flex-wrap:wrap;}
+    .sp-chip{padding:7px 12px;min-height:34px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:18px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;}
+    .sp-chip.active{background:var(--accent);color:#000;border-color:var(--accent);}
+    .sp-reset{padding:11px 16px;min-height:44px;background:var(--surface);color:var(--danger);border:1px solid var(--border);border-radius:10px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;width:100%;}
+    .sp-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:20px 16px;background:var(--surface-2);border:1px dashed var(--border);border-radius:10px;text-align:center;color:var(--muted);font-size:12px;}
+    .sp-empty-icon{font-size:26px;opacity:.55;}
+    .sp-empty-title{font-size:13px;font-weight:700;color:var(--text);}
+    .sp-empty-text{font-size:11px;color:var(--muted);max-width:280px;}
+  `;
   document.head.appendChild(s);
 }
 
@@ -126,15 +87,7 @@ function getSelectedClip() {
   if (!Array.isArray(track)) return null;
   const clip = track[clipIndex];
   if (!clip) return null;
-  return { group: group, trackIndex: trackIndex, clipIndex: clipIndex, clip: clip, track: track };
-}
-
-// 🆕 Use playbackEngine clock
-function getPlayheadTime() {
-  const eng = window.__playbackEngine;
-  if (eng && typeof eng.getTime === 'function') return eng.getTime();
-  const v = document.querySelector('#preview-video');
-  return v && Number.isFinite(v.currentTime) ? v.currentTime : 0;
+  return { group, trackIndex, clipIndex, clip, track };
 }
 
 function isSpeedCapable(clip) {
@@ -153,20 +106,40 @@ function ensureBase(clip) {
   return clip.__speedBase;
 }
 
+// 🆕 Apply speed: change duration AND update playback rate on video el
 function applySpeed(clip, speed) {
   const base = ensureBase(clip);
   clip.__speed = speed;
   clip.duration = base / speed;
+  clip.__trimmed = true;
+
+  // Update live video/audio playback rate if this clip is currently playing
+  applyToMediaElements(clip, speed);
+}
+
+function applyToMediaElements(clip, speed) {
+  const video = document.querySelector('#preview-video');
+  const audio = document.querySelector('#preview-audio');
+  const eng = window.__playbackEngine;
+  const time = eng ? eng.getTime() : 0;
+  const s = Number.isFinite(clip.startTime) ? clip.startTime : 0;
+  const e = s + (Number.isFinite(clip.duration) ? clip.duration : 0);
+  const active = time >= s && time < e;
+
+  if (active) {
+    try { video.playbackRate = speed; } catch (_) {}
+    try { audio.playbackRate = speed; } catch (_) {}
+  }
 }
 
 function autoSelectFirstClip() {
   if (document.querySelector('.clip.selected')) return true;
   const clips = document.querySelectorAll('.clip');
-  for (let i = 0; i < clips.length; i++) {
+  if (clips.length) {
     try {
-      clips[i].dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
+      clips[0].dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
       return true;
-    } catch (e) {}
+    } catch (_) {}
   }
   return false;
 }
@@ -175,39 +148,23 @@ function showToast(message, ok) {
   if (ok === undefined) ok = true;
   const el = document.createElement('div');
   el.textContent = message;
-  el.style.position = 'fixed';
-  el.style.bottom = '110px';
-  el.style.left = '50%';
-  el.style.transform = 'translateX(-50%) translateY(8px)';
-  el.style.background = ok ? 'rgba(0,0,0,0.88)' : 'rgba(180,40,40,0.92)';
-  el.style.color = '#fff';
-  el.style.padding = '10px 20px';
-  el.style.borderRadius = '22px';
-  el.style.fontSize = '13px';
-  el.style.fontWeight = '600';
-  el.style.zIndex = '9999';
-  el.style.pointerEvents = 'none';
-  el.style.opacity = '0';
-  el.style.transition = 'opacity 0.2s ease, transform 0.2s ease';
+  el.style.cssText = [
+    'position:fixed','bottom:110px','left:50%',
+    'transform:translateX(-50%)',
+    'background:' + (ok ? 'rgba(0,0,0,0.88)' : 'rgba(180,40,40,0.92)'),
+    'color:#fff','padding:10px 20px','border-radius:22px',
+    'font-size:13px','font-weight:600','z-index:9999',
+    'pointer-events:none','font-family:inherit'
+  ].join(';');
   document.body.appendChild(el);
-  requestAnimationFrame(function () {
-    el.style.opacity = '1';
-    el.style.transform = 'translateX(-50%) translateY(0)';
-  });
-  setTimeout(function () {
-    el.style.opacity = '0';
-    el.style.transform = 'translateX(-50%) translateY(8px)';
-    setTimeout(function () { el.remove(); }, 260);
-  }, 1500);
+  setTimeout(() => el.remove(), 1500);
 }
 
 export function renderTo(container) {
   injectStyles();
   container.replaceChildren();
 
-  if (!document.querySelector('.clip.selected')) {
-    autoSelectFirstClip();
-  }
+  if (!document.querySelector('.clip.selected')) autoSelectFirstClip();
 
   const panel = document.createElement('div');
   panel.className = 'sp-panel';
@@ -238,11 +195,10 @@ export function renderTo(container) {
   const speed = Number.isFinite(sel.clip.__speed) ? sel.clip.__speed : 1.0;
   st.baseDuration = base;
   st.currentSpeed = speed;
-  st.kf = Array.isArray(sel.clip.__speedKf) ? sel.clip.__speedKf.slice() : [];
-  st.ease = sel.clip.__speedEase || 'easeInOut';
 
   registerSpeed(sel.clip);
 
+  // Info
   const info = document.createElement('div');
   info.className = 'sp-info';
   const nameRow = document.createElement('div');
@@ -296,41 +252,42 @@ export function renderTo(container) {
     chip.textContent = p + 'x';
     chip.addEventListener('click', function () {
       slider.value = String(p);
-      updateSpeed(sel.clip, p, base, val, panel, chipRefs, true);
+      applySpeedValue(sel.clip, p, true);
     });
     chipRefs.push(chip);
     presets.appendChild(chip);
   });
   card.appendChild(presets);
 
+  function applySpeedValue(clip, v, doCommit) {
+    st.currentSpeed = v;
+    val.textContent = v.toFixed(2) + 'x';
+    applySpeed(clip, v);
+    const durEl = panel.querySelector('.sp-dur');
+    if (durEl) durEl.textContent = (base / v).toFixed(2) + 's';
+    registerSpeed(clip);
+    chipRefs.forEach(function (c) {
+      const cp = parseFloat(c.textContent);
+      c.classList.toggle('active', Math.abs(cp - v) < 0.01);
+    });
+    if (doCommit) commit();
+  }
+
   slider.addEventListener('input', function () {
-    updateSpeed(sel.clip, parseFloat(slider.value), base, val, panel, chipRefs, false);
+    applySpeedValue(sel.clip, parseFloat(slider.value), false);
   });
   slider.addEventListener('change', function () {
-    updateSpeed(sel.clip, parseFloat(slider.value), base, val, panel, chipRefs, true);
+    applySpeedValue(sel.clip, parseFloat(slider.value), true);
   });
 
   panel.appendChild(card);
-
-  const kfCard = document.createElement('div');
-  kfCard.className = 'sp-card';
-  const kfTitle = document.createElement('div');
-  kfTitle.className = 'sp-card-title';
-  kfTitle.textContent = 'Speed Keyframes';
-  kfCard.appendChild(kfTitle);
-  kfCard.appendChild(buildKeyframeSection(sel));
-  panel.appendChild(kfCard);
 
   const resetBtn = document.createElement('button');
   resetBtn.type = 'button';
   resetBtn.className = 'sp-reset';
   resetBtn.textContent = '↺ Reset Speed';
   resetBtn.addEventListener('click', function () {
-    st.kf = [];
-    st.ease = 'easeInOut';
     applySpeed(sel.clip, 1.0);
-    delete sel.clip.__speedKf;
-    delete sel.clip.__speedEase;
     registerSpeed(sel.clip);
     commit();
     const c = document.querySelector('#feature-shelf');
@@ -340,196 +297,6 @@ export function renderTo(container) {
   panel.appendChild(resetBtn);
 
   container.appendChild(panel);
-}
-
-function updateSpeed(clip, v, base, valEl, panel, chipRefs, doCommit) {
-  st.currentSpeed = v;
-  if (valEl) valEl.textContent = v.toFixed(2) + 'x';
-  applySpeed(clip, v);
-  const durEl = panel ? panel.querySelector('.sp-dur') : null;
-  if (durEl) durEl.textContent = (base / v).toFixed(2) + 's';
-  registerSpeed(clip);
-  if (chipRefs) {
-    for (let i = 0; i < chipRefs.length; i++) {
-      const cp = parseFloat(chipRefs[i].textContent);
-      chipRefs[i].classList.toggle('active', Math.abs(cp - v) < 0.01);
-    }
-  }
-  if (doCommit) commit();
-}
-
-function buildKeyframeSection(sel) {
-  const section = document.createElement('div');
-  section.className = 'sp-kf-section';
-
-  const actions = document.createElement('div');
-  actions.className = 'sp-kf-actions';
-
-  const previewBtn = document.createElement('button');
-  previewBtn.type = 'button';
-  previewBtn.className = 'sp-kf-btn';
-  previewBtn.textContent = '▶ Preview';
-
-  const addBtn = document.createElement('button');
-  addBtn.type = 'button';
-  addBtn.className = 'sp-kf-btn primary';
-  addBtn.textContent = '+ Add at ' + getPlayheadTime().toFixed(2) + 's';
-
-  addBtn.addEventListener('click', function () {
-    const t = getPlayheadTime();
-    const v = st.currentSpeed;
-    const filtered = st.kf.filter(function (k) { return Math.abs(k.time - t) > 0.05; });
-    filtered.push({ time: t, value: v });
-    filtered.sort(function (a, b) { return a.time - b.time; });
-    st.kf = filtered;
-    sel.clip.__speedKf = st.kf.slice();
-    sel.clip.__speedEase = st.ease;
-    registerSpeed(sel.clip);
-    commit();
-    refreshPanel();
-  });
-
-  previewBtn.addEventListener('click', function () {
-    const eng = window.__playbackEngine;
-    if (!eng) return;
-    eng.seek(0);
-    eng.play();
-  });
-
-  actions.append(previewBtn, addBtn);
-  section.appendChild(actions);
-
-  section.appendChild(buildEasingSelector(sel));
-
-  const listLabel = document.createElement('div');
-  listLabel.className = 'sp-ease-label';
-  listLabel.textContent = 'Keyframes';
-  section.appendChild(listLabel);
-
-  const listEl = document.createElement('div');
-  listEl.className = 'sp-kf-list';
-
-  if (!st.kf.length) {
-    const empty = document.createElement('div');
-    empty.className = 'sp-kf-empty';
-    empty.textContent = 'No keyframes. Scrub playhead and tap "+ Add".';
-    listEl.appendChild(empty);
-  } else {
-    st.kf.forEach(function (kf) {
-      const item = document.createElement('div');
-      item.className = 'sp-kf-item';
-
-      const t = document.createElement('span');
-      t.className = 'sp-kf-time';
-      t.textContent = kf.time.toFixed(2) + 's';
-
-      const v = document.createElement('span');
-      v.className = 'sp-kf-value';
-      v.textContent = kf.value.toFixed(2) + 'x';
-
-      const del = document.createElement('button');
-      del.type = 'button';
-      del.className = 'sp-kf-del';
-      del.textContent = '🗑';
-      del.addEventListener('click', function (e) {
-        e.stopPropagation();
-        const idx = st.kf.indexOf(kf);
-        if (idx >= 0) st.kf.splice(idx, 1);
-        sel.clip.__speedKf = st.kf.slice();
-        registerSpeed(sel.clip);
-        commit();
-        refreshPanel();
-      });
-
-           item.addEventListener('click', () => {
-        const eng = window.__playbackEngine;
-        if (eng && Number.isFinite(kf.time)) eng.seek(kf.time);
-        load(kf);
-      });
-
-      item.append(t, v, del);
-      listEl.appendChild(item);
-    });
-  }
-
-  section.appendChild(listEl);
-  return section;
-}
-
-function buildEasingSelector(sel) {
-  const row = document.createElement('div');
-  row.className = 'sp-ease-row';
-
-  const label = document.createElement('div');
-  label.className = 'sp-ease-label';
-  label.textContent = 'Easing (swipe →)';
-  row.appendChild(label);
-
-  const shelf = document.createElement('div');
-  shelf.className = 'sp-ease-shelf';
-
-  const cards = {};
-
-  EASING_OPTIONS.forEach(function (opt) {
-    const card = document.createElement('button');
-    card.type = 'button';
-    card.className = 'sp-ease-card';
-    if (st.ease === opt.key) card.classList.add('active');
-
-    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    svg.setAttribute('viewBox', '0 0 100 48');
-    svg.setAttribute('preserveAspectRatio', 'none');
-    svg.classList.add('sp-ease-card-curve');
-
-    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    path.setAttribute('fill', 'none');
-    path.setAttribute('stroke', 'var(--accent)');
-    path.setAttribute('stroke-width', '2');
-    path.setAttribute('stroke-linecap', 'round');
-    path.setAttribute('vector-effect', 'non-scaling-stroke');
-    path.setAttribute('d', buildCurvePath(opt.key, 100, 48, 4));
-    svg.appendChild(path);
-
-    const name = document.createElement('div');
-    name.className = 'sp-ease-card-name';
-    name.textContent = opt.label;
-
-    card.append(svg, name);
-
-    card.addEventListener('click', function () {
-      st.ease = opt.key;
-      sel.clip.__speedEase = opt.key;
-      Object.keys(cards).forEach(function (k) { cards[k].classList.remove('active'); });
-      card.classList.add('active');
-      registerSpeed(sel.clip);
-      commit();
-    });
-
-    cards[opt.key] = card;
-    shelf.appendChild(card);
-  });
-
-  row.appendChild(shelf);
-  return row;
-}
-
-function buildCurvePath(ease, w, h, pad) {
-  const N = 48;
-  const pts = [];
-  const usableH = h - pad * 2;
-  for (let i = 0; i <= N; i++) {
-    const t = i / N;
-    const y = getEasedValue(t, ease);
-    const px = t * w;
-    const py = h - pad - y * usableH;
-    pts.push(px.toFixed(2) + ',' + py.toFixed(2));
-  }
-  return 'M ' + pts.join(' L ');
-}
-
-function refreshPanel() {
-  const c = document.querySelector('#feature-shelf');
-  if (c) renderTo(c);
 }
 
 function buildEmptyState(opts) {

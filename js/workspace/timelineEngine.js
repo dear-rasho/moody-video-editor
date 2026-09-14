@@ -1,13 +1,13 @@
 // ================================================================
 //  js/workspace/timelineEngine.js
-//  Unlimited-layer timeline. Fires 'editor:timeline-changed' on
-//  every mutation so historyManager can snapshot.
+//  Unlimited-layer timeline with strict no-overlap per track.
+//  + Track reorder (ripple) with linked audio mirror.
+//  + Linked clips behave as one unit (delete + select highlight).
 // ================================================================
 
 import {
   injectLayerStyles,
   ensureMinLayers,
-  placeClipAtTime,
   insertEmptyLayer,
   clipRange,
   DEFAULT_VISUAL_LAYERS,
@@ -20,14 +20,33 @@ import {
   getMetrics   as getScaleMetrics,
   computeClipRect,
   getRulerStep,
-  formatRulerTime,
-  LABEL_WIDTH
+  formatRulerTime
 } from './timelineScaler.js';
 
 import { attachTrimHandles } from './trimHandles.js';
 
+const LINKED_CSS_ID = 'timeline-linked-clip-styles';
+
+function injectLinkedStyles() {
+  if (document.getElementById(LINKED_CSS_ID)) return;
+  const s = document.createElement('style');
+  s.id = LINKED_CSS_ID;
+  s.textContent = `
+    .clip.linked-selected {
+      border-color: #4f9dff !important;
+      box-shadow:
+        0 0 0 1px #4f9dff,
+        0 0 10px rgba(79,157,255,0.5) !important;
+      outline: 1.5px solid #4f9dff;
+      outline-offset: -1.5px;
+    }
+  `;
+  document.head.appendChild(s);
+}
+
 export function initTimelineEngine(config) {
   injectLayerStyles();
+  injectLinkedStyles();
 
   const visual      = config.visual;
   const audio       = config.audio;
@@ -39,8 +58,6 @@ export function initTimelineEngine(config) {
   const getPlayheadTime    = config.getPlayheadTime || function () { return 0; };
 
   let selected = null;
-  let draggedTrack = null;
-  let draggedClip = null;
   let _rendering = false;
 
   const DEFAULT_CLIP_SEC = 3;
@@ -55,7 +72,7 @@ export function initTimelineEngine(config) {
   rulerContainer.className = 'timeline-ruler';
   matrix.prepend(rulerContainer);
 
-  // ─── SCALER INIT ───────────────────────────────────────────────
+  // ─── SCALER INIT ───────────────────────────────────────────
   initTimelineScaler({
     viewport:   viewport,
     slider:     zoomSlider,
@@ -70,36 +87,32 @@ export function initTimelineEngine(config) {
     document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
   }
 
-  function blockScroll(block) {
-    if (!viewport) return;
-    if (block) {
-      viewport.style.overflow = 'hidden';
-      viewport.style.overscrollBehavior = 'none';
-      viewport.style.pointerEvents = 'none';
-    } else {
-      viewport.style.overflow = 'auto';
-      viewport.style.overscrollBehavior = 'contain';
-      viewport.style.pointerEvents = 'auto';
-    }
-  }
-
+  // ─── Click empty area → deselect ──────────────────────────
   if (viewport) {
-    viewport.addEventListener('dragover', function (e) { e.preventDefault(); });
-    viewport.addEventListener('drop',     function (e) { e.preventDefault(); });
+    viewport.addEventListener('pointerdown', function (e) {
+      if (e.target.closest && (
+           e.target.closest('.clip') ||
+           e.target.closest('.trim-handle') ||
+           e.target.closest('.kf-marker') ||
+           e.target.closest('.transition-marker') ||
+           e.target.closest('.track-label'))) {
+        return;
+      }
+      if (selected) {
+        selected = null;
+        document.querySelectorAll('.clip.selected').forEach(function (el) {
+          el.classList.remove('selected');
+        });
+        document.querySelectorAll('.clip.linked-selected').forEach(function (el) {
+          el.classList.remove('linked-selected');
+        });
+        document.dispatchEvent(new CustomEvent('editor:clip-deselected'));
+      }
+    });
   }
 
-  function getVideoDuration() {
-    const video = document.querySelector('#preview-video');
-    if (video && Number.isFinite(video.duration) && video.duration > 0) {
-      return video.duration;
-    }
-    return 0;
-  }
-
-  // Duration = furthest clip end on the timeline.
   function computeDuration() {
     let furthestEnd = 0;
-
     const allTracks = state.visual.concat(state.audio);
     for (let t = 0; t < allTracks.length; t++) {
       const track = allTracks[t];
@@ -109,7 +122,6 @@ export function initTimelineEngine(config) {
         if (r.end > furthestEnd) furthestEnd = r.end;
       }
     }
-
     if (furthestEnd === 0) {
       const video = document.querySelector('#preview-video');
       if (video && Number.isFinite(video.duration) && video.duration > 0) {
@@ -117,79 +129,113 @@ export function initTimelineEngine(config) {
       }
       return 1;
     }
-
     return furthestEnd;
   }
 
-  // ─── Track builder ────────────────────────────────────────────
-  function buildTrack(label, clips, trackIndex, group) {
+  function rangesOverlap(aS, aE, bS, bE) {
+    return aS < bE && bS < aE;
+  }
+
+  function trackHasOverlap(track, start, end, excludeClip) {
+    if (!Array.isArray(track)) return false;
+    for (let i = 0; i < track.length; i++) {
+      const clip = track[i];
+      if (clip === excludeClip) continue;
+      const r = clipRange(clip);
+      if (rangesOverlap(start, end, r.start, r.end)) return true;
+    }
+    return false;
+  }
+
+  function findFreeTrackIndex(list, start, end, excludeClip) {
+    for (let i = 0; i < list.length; i++) {
+      if (!trackHasOverlap(list[i], start, end, excludeClip)) return i;
+    }
+    list.push([]);
+    return list.length - 1;
+  }
+
+  function getSelectedLinkedId() {
+    if (!selected) return null;
+    const trackIdx = Number(selected.track.slice(1)) - 1;
+    const track = state[selected.type][trackIdx];
+    if (!Array.isArray(track)) return null;
+    const clip = track[selected.clipIndex];
+    return clip ? clip.__linkedId : null;
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  //  🆕 RIPPLE REORDER — with linked audio mirror
+  // ═══════════════════════════════════════════════════════════
+  function reorderTrack(group, fromIdx, toIdx) {
+    const list = state[group];
+    if (!Array.isArray(list)) return;
+    if (fromIdx < 0 || fromIdx >= list.length) return;
+    if (toIdx < 0 || toIdx >= list.length) return;
+    if (fromIdx === toIdx) return;
+
+    // Collect linked IDs from the moved track
+    const sourceTrack = list[fromIdx];
+    const linkedIds = new Set();
+    if (Array.isArray(sourceTrack)) {
+      sourceTrack.forEach(function (clip) {
+        if (clip && clip.__linkedId) linkedIds.add(clip.__linkedId);
+      });
+    }
+
+    // Find corresponding track in the OTHER group
+    let otherGroup = null;
+    let otherIdx = -1;
+    if (linkedIds.size > 0) {
+      otherGroup = (group === 'visual') ? 'audio' : 'visual';
+      const otherList = state[otherGroup] || [];
+      for (let oi = 0; oi < otherList.length; oi++) {
+        const oTrack = otherList[oi];
+        if (!Array.isArray(oTrack)) continue;
+        for (let oc = 0; oc < oTrack.length; oc++) {
+          const oClip = oTrack[oc];
+          if (oClip && linkedIds.has(oClip.__linkedId)) {
+            otherIdx = oi;
+            break;
+          }
+        }
+        if (otherIdx >= 0) break;
+      }
+    }
+
+    // Reorder this group
+    const movedThis = list.splice(fromIdx, 1)[0];
+    list.splice(toIdx, 0, movedThis);
+
+    // Reorder the other group (mirror shift)
+    if (otherGroup && otherIdx >= 0 && Array.isArray(state[otherGroup])) {
+      const otherList = state[otherGroup];
+      const movedOther = otherList.splice(otherIdx, 1)[0];
+      const targetOther = Math.min(toIdx, otherList.length);
+      otherList.splice(targetOther, 0, movedOther);
+    }
+
+    selected = null;
+    render();
+    notifyChanged();
+
+    showToast('Track reordered' + (otherIdx >= 0 ? ' (linked audio mirrored)' : ''));
+  }
+
+  // Listen for reorder events from layerDrag
+  document.addEventListener('editor:reorder-track', function (e) {
+    const d = e.detail || {};
+    if (!Number.isFinite(d.from) || !Number.isFinite(d.to)) return;
+    if (d.group !== 'visual' && d.group !== 'audio') return;
+    reorderTrack(d.group, d.from, d.to);
+  });
+
+  // ─── Track builder ────────────────────────────────────────
+  function buildTrack(label, clips, trackIndex, group, selectedLinkedId) {
     const track = document.createElement('div');
     track.className = 'track';
     track.dataset.group = group;
     track.dataset.trackIndex = String(trackIndex);
-    track.draggable = true;
-
-    track.addEventListener('dragstart', function (event) {
-      draggedTrack = { group: group, index: trackIndex };
-      if (event.dataTransfer) {
-        event.dataTransfer.setData('text/plain', 'track:' + group + ':' + trackIndex);
-        event.dataTransfer.effectAllowed = 'move';
-      }
-      blockScroll(true);
-    });
-    track.addEventListener('dragend', function () {
-      draggedTrack = null;
-      blockScroll(false);
-    });
-    track.addEventListener('dragover', function (event) {
-      if (!draggedTrack && !draggedClip) return;
-      event.preventDefault();
-      track.classList.add('drag-over');
-    });
-    track.addEventListener('dragleave', function () {
-      track.classList.remove('drag-over');
-    });
-    track.addEventListener('drop', function (event) {
-      event.preventDefault();
-      track.classList.remove('drag-over');
-      if (!event.dataTransfer) return;
-      const data = event.dataTransfer.getData('text/plain');
-      if (!data) return;
-
-      if (data.indexOf('track:') === 0) {
-        const parts = data.split(':');
-        const fromGroup = parts[1];
-        const fromIdx = parseInt(parts[2], 10);
-        if (fromGroup !== group) return;
-        if (fromIdx === trackIndex) return;
-        const list = group === 'visual' ? state.visual : state.audio;
-        const moved = list.splice(fromIdx, 1)[0];
-        list.splice(trackIndex, 0, moved);
-        draggedTrack = null;
-        render();
-        notifyChanged();
-        return;
-      }
-
-      if (data.indexOf('clip:') === 0) {
-        const parts = data.split(':');
-        const fromGroup = parts[1];
-        const fromIdx = parseInt(parts[2], 10);
-        const clipIndex = parseInt(parts[3], 10);
-        if (fromGroup !== group) return;
-        if (fromIdx === trackIndex) return;
-        const list = group === 'visual' ? state.visual : state.audio;
-        const fromTrack = list[fromIdx];
-        const toTrack = list[trackIndex];
-        if (!fromTrack || !toTrack) return;
-        if (clipIndex >= fromTrack.length) return;
-        const movedClip = fromTrack.splice(clipIndex, 1)[0];
-        toTrack.push(movedClip);
-        draggedClip = null;
-        render();
-        notifyChanged();
-      }
-    });
 
     const name = document.createElement('div');
     name.className = 'track-label';
@@ -199,15 +245,14 @@ export function initTimelineEngine(config) {
     if (group === 'visual') {
       const hiddenSet = state.hiddenVisualTracks || new Set();
       const isHidden = hiddenSet.has(trackIndex);
-
       if (isHidden) track.classList.add('layer-hidden');
 
       const vis = document.createElement('button');
       vis.className = 'layer-toggle';
       vis.type = 'button';
       vis.textContent = isHidden ? '\u25CB' : '\u25C9';
-      vis.setAttribute('aria-label', 'Toggle ' + label + ' visibility');
-      vis.addEventListener('click', function () {
+      vis.addEventListener('click', function (e) {
+        e.stopPropagation();
         const nowHidden = track.classList.toggle('layer-hidden');
         vis.textContent = nowHidden ? '\u25CB' : '\u25C9';
         if (onVisualVisibility) onVisualVisibility(label, !nowHidden);
@@ -217,15 +262,14 @@ export function initTimelineEngine(config) {
     } else {
       const mutedSet = state.mutedAudioTracks || new Set();
       const isMuted = mutedSet.has(trackIndex);
-
       if (isMuted) track.classList.add('layer-muted');
 
       const mute = document.createElement('button');
       mute.type = 'button';
       mute.className = 'layer-toggle';
       mute.textContent = isMuted ? '\uD83D\uDD07' : '\uD83D\uDD0A';
-      mute.setAttribute('aria-label', 'Mute ' + label);
-      mute.addEventListener('click', function () {
+      mute.addEventListener('click', function (e) {
+        e.stopPropagation();
         const nowMuted = track.classList.toggle('layer-muted');
         mute.textContent = nowMuted ? '\uD83D\uDD07' : '\uD83D\uDD0A';
         if (onAudioMute) onAudioMute(label, nowMuted);
@@ -257,8 +301,10 @@ export function initTimelineEngine(config) {
       el.style.width    = rect.width + 'px';
       el.style.minWidth = '20px';
 
-      if (selected && selected.track === label && selected.clipIndex === ci) {
-        el.classList.add('selected');
+      const isPrimary = selected && selected.track === label && selected.clipIndex === ci;
+      if (isPrimary) el.classList.add('selected');
+      else if (selectedLinkedId && clip.__linkedId === selectedLinkedId) {
+        el.classList.add('linked-selected');
       }
 
       attachTrimHandles(el, clip);
@@ -267,38 +313,56 @@ export function initTimelineEngine(config) {
         el.addEventListener('mousedown', function (e) {
           if (e.button !== 0) return;
           if (e.target && e.target.classList &&
-              e.target.classList.contains('trim-handle')) return;
+              (e.target.classList.contains('trim-handle') ||
+               e.target.classList.contains('kf-marker') ||
+               e.target.classList.contains('transition-marker'))) {
+            return;
+          }
+          e.stopPropagation();
 
           selected = {
             type: label[0] === 'A' ? 'audio' : 'visual',
             track: label,
             clipIndex: capturedIndex
           };
-          const all = document.querySelectorAll('.clip.selected');
-          for (let i = 0; i < all.length; i++) all[i].classList.remove('selected');
+
+          document.querySelectorAll('.clip.selected').forEach(function (n) {
+            n.classList.remove('selected');
+          });
+          document.querySelectorAll('.clip.linked-selected').forEach(function (n) {
+            n.classList.remove('linked-selected');
+          });
           el.classList.add('selected');
+
+          const linkedId = clip.__linkedId;
+          if (linkedId) {
+            state.visual.forEach(function (track, ti) {
+              if (!Array.isArray(track)) return;
+              track.forEach(function (c, ci2) {
+                if (c && c !== clip && c.__linkedId === linkedId) {
+                  const node = document.querySelector(
+                    '.clip[data-track="V' + (ti + 1) + '"][data-clip="' + ci2 + '"]'
+                  );
+                  if (node) node.classList.add('linked-selected');
+                }
+              });
+            });
+            state.audio.forEach(function (track, ti) {
+              if (!Array.isArray(track)) return;
+              track.forEach(function (c, ci2) {
+                if (c && c !== clip && c.__linkedId === linkedId) {
+                  const node = document.querySelector(
+                    '.clip[data-track="A' + (ti + 1) + '"][data-clip="' + ci2 + '"]'
+                  );
+                  if (node) node.classList.add('linked-selected');
+                }
+              });
+            });
+          }
+
           e.preventDefault();
         });
       })(ci);
-
-      el.draggable = true;
-      (function (capturedIndex) {
-        el.addEventListener('dragstart', function (event) {
-          if (event.dataTransfer) {
-            event.dataTransfer.setData(
-              'text/plain',
-              'clip:' + group + ':' + trackIndex + ':' + capturedIndex
-            );
-            event.dataTransfer.effectAllowed = 'move';
-          }
-          draggedClip = { group: group, fromTrack: trackIndex, clipIndex: capturedIndex };
-          blockScroll(true);
-        });
-      })(ci);
-      el.addEventListener('dragend', function () {
-        draggedClip = null;
-        blockScroll(false);
-      });
 
       content.appendChild(el);
     }
@@ -308,7 +372,7 @@ export function initTimelineEngine(config) {
     return track;
   }
 
-  // ─── Ruler ────────────────────────────────────────────────────
+  // ─── Ruler ────────────────────────────────────────────────
   function renderRuler() {
     rulerContainer.innerHTML = '';
     const m = getScaleMetrics();
@@ -344,7 +408,7 @@ export function initTimelineEngine(config) {
     }
   }
 
-  // ─── Main render ──────────────────────────────────────────────
+  // ─── Main render ──────────────────────────────────────────
   function render() {
     if (_rendering) return;
     _rendering = true;
@@ -354,15 +418,18 @@ export function initTimelineEngine(config) {
       const m = getScaleMetrics();
       matrix.style.minWidth = m.totalWidth + 'px';
 
+      const linkedId = getSelectedLinkedId();
+
+      // Visual tracks — reversed for display (V1 at bottom of stack)
       const visualNodes = [];
       for (let i = state.visual.length - 1; i >= 0; i--) {
-        visualNodes.push(buildTrack('V' + (i + 1), state.visual[i] || [], i, 'visual'));
+        visualNodes.push(buildTrack('V' + (i + 1), state.visual[i] || [], i, 'visual', linkedId));
       }
       visual.replaceChildren.apply(visual, visualNodes);
 
       const audioNodes = [];
       for (let i = 0; i < state.audio.length; i++) {
-        audioNodes.push(buildTrack('A' + (i + 1), state.audio[i] || [], i, 'audio'));
+        audioNodes.push(buildTrack('A' + (i + 1), state.audio[i] || [], i, 'audio', linkedId));
       }
       audio.replaceChildren.apply(audio, audioNodes);
 
@@ -372,7 +439,7 @@ export function initTimelineEngine(config) {
     }
   }
 
-  // ─── Add media ────────────────────────────────────────────────
+  // ─── Add media ────────────────────────────────────────────
   function addMedia(items) {
     const atTime = Number(getPlayheadTime()) || 0;
 
@@ -380,10 +447,11 @@ export function initTimelineEngine(config) {
       const item = items[i];
       const isAudio = item.type.indexOf('audio/') === 0;
       const isVideo = item.type.indexOf('video/') === 0;
+      const isImage = item.type.indexOf('image/') === 0;
 
       const realDur = (Number.isFinite(item.duration) && item.duration > 0)
         ? item.duration
-        : DEFAULT_CLIP_SEC;
+        : (isImage ? 3 : DEFAULT_CLIP_SEC);
 
       const trackType = isAudio ? 'audio' : 'visual';
       const list = state[trackType];
@@ -418,18 +486,31 @@ export function initTimelineEngine(config) {
           }
           if (already) break;
         }
-        if (!already) placeClipAtTime(state.audio, audioAuto, atTime);
+        if (!already) {
+          const end = atTime + realDur;
+          const freeIdx = findFreeTrackIndex(state.audio, atTime, end, null);
+          while (state.audio.length <= freeIdx) state.audio.push([]);
+          state.audio[freeIdx].push(Object.assign({}, audioAuto, {
+            startTime: atTime,
+            duration: realDur
+          }));
+        }
       }
 
-      placeClipAtTime(list, {
+      const end = atTime + realDur;
+      const freeIdx = findFreeTrackIndex(list, atTime, end, null);
+      while (list.length <= freeIdx) list.push([]);
+
+      list[freeIdx].push({
         name: item.name || 'Media',
         url: item.url,
         type: item.type,
         duration: realDur,
+        startTime: atTime,
         sourceIn: 0,
         __sourceTotalDuration: realDur,
         __linkedId: linkedId
-      }, atTime);
+      });
     }
     render();
     notifyChanged();
@@ -449,53 +530,39 @@ export function initTimelineEngine(config) {
     notifyChanged();
   }
 
-  // ─── Metadata sync ────────────────────────────────────────────
+  // ─── Metadata sync ────────────────────────────────────────
   const previewVideoEl = document.querySelector('#preview-video');
   if (previewVideoEl) {
-    previewVideoEl.addEventListener('loadedmetadata', render);
-    previewVideoEl.addEventListener('durationchange', render);
-
     previewVideoEl.addEventListener('loadedmetadata', function () {
       const real = previewVideoEl.duration;
       if (!Number.isFinite(real) || real <= 0) return;
-
       const src = previewVideoEl.currentSrc || previewVideoEl.src || '';
       if (!src) return;
 
       let changed = false;
-
       for (let t = 0; t < state.visual.length; t++) {
         const track = state.visual[t];
         if (!Array.isArray(track)) continue;
         for (let c = 0; c < track.length; c++) {
           const clip = track[c];
           if (!clip || clip.url !== src) continue;
-
           clip.__sourceTotalDuration = real;
-
           const hasSourceIn = Number.isFinite(clip.sourceIn) && clip.sourceIn > 0.01;
           const hasTrimFlag = clip.__trimmed === true;
-
           if (!hasSourceIn && !hasTrimFlag &&
               Math.abs((clip.duration || 0) - real) > 0.05) {
             clip.duration = real;
-            if (Number.isFinite(clip.startTime)) {
-              clip.endTime = clip.startTime + real;
-            }
             changed = true;
           }
         }
       }
-
       for (let t = 0; t < state.audio.length; t++) {
         const track = state.audio[t];
         if (!Array.isArray(track)) continue;
         for (let c = 0; c < track.length; c++) {
           const clip = track[c];
           if (!clip || clip.url !== src || !clip.autoGenerated) continue;
-
           clip.__sourceTotalDuration = real;
-
           const hasSourceIn = Number.isFinite(clip.sourceIn) && clip.sourceIn > 0.01;
           if (!hasSourceIn && Math.abs((clip.duration || 0) - real) > 0.05) {
             clip.duration = real;
@@ -503,26 +570,63 @@ export function initTimelineEngine(config) {
           }
         }
       }
-
-      if (changed) {
-        render();
-        notifyChanged();
-      }
+      if (changed) { render(); notifyChanged(); }
     });
+    previewVideoEl.addEventListener('durationchange', render);
+    previewVideoEl.addEventListener('loadedmetadata', render);
   }
 
   render();
 
+  // ─── DELETE — removes linked clips too ────────────────────
   function deleteSelected() {
     if (!selected) return;
-    const clips = state[selected.type][Number(selected.track.slice(1)) - 1];
-    if (!clips) return;
-    const clip = clips[selected.clipIndex];
-    if (clip && onDeleteSelected) onDeleteSelected(clip, selected.type);
-    clips.splice(selected.clipIndex, 1);
+
+    const trackIdx = Number(selected.track.slice(1)) - 1;
+    const track = state[selected.type][trackIdx];
+    if (!Array.isArray(track)) return;
+    const clip = track[selected.clipIndex];
+    if (!clip) return;
+
+    const linkedId = clip.__linkedId;
+
+    const toRemove = [{ clip: clip, type: selected.type }];
+    if (linkedId) {
+      ['visual', 'audio'].forEach(function (type) {
+        state[type].forEach(function (t) {
+          if (!Array.isArray(t)) return;
+          t.forEach(function (c) {
+            if (c && c !== clip && c.__linkedId === linkedId) {
+              toRemove.push({ clip: c, type: type });
+            }
+          });
+        });
+      });
+    }
+
+    toRemove.forEach(function (entry) {
+      if (onDeleteSelected) onDeleteSelected(entry.clip, entry.type);
+      ['visual', 'audio'].forEach(function (tt) {
+        const tracks = state[tt];
+        for (let t = 0; t < tracks.length; t++) {
+          const tr = tracks[t];
+          if (!Array.isArray(tr)) continue;
+          const idx = tr.indexOf(entry.clip);
+          if (idx >= 0) {
+            tr.splice(idx, 1);
+            break;
+          }
+        }
+      });
+    });
+
     selected = null;
     render();
     notifyChanged();
+
+    if (toRemove.length > 1) {
+      showToast('Removed ' + toRemove.length + ' linked clips');
+    }
   }
 
   document.addEventListener('editor:delete-selected', deleteSelected);
@@ -536,6 +640,25 @@ export function initTimelineEngine(config) {
     addMedia: addMedia,
     deleteSelected: deleteSelected,
     addVisualLayer: addVisualLayer,
-    addAudioLayer: addAudioLayer
+    addAudioLayer: addAudioLayer,
+    reorderTrack: reorderTrack    // 🆕 expose
   };
+}
+
+function showToast(msg) {
+  const el = document.createElement('div');
+  el.textContent = msg;
+  el.style.cssText = [
+    'position:fixed','bottom:110px','left:50%',
+    'transform:translateX(-50%)',
+    'background:rgba(0,0,0,0.9)','color:#fff',
+    'padding:8px 18px','border-radius:20px',
+    'font-size:12px','font-weight:600','z-index:9999',
+    'pointer-events:none','font-family:inherit',
+    'box-shadow:0 4px 12px rgba(0,0,0,0.4)',
+    'opacity:0','transition:opacity 0.15s ease'
+  ].join(';');
+  document.body.appendChild(el);
+  requestAnimationFrame(() => { el.style.opacity = '1'; });
+  setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.remove(), 200); }, 1400);
 }

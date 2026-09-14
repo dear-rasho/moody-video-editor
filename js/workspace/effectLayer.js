@@ -1,15 +1,43 @@
 // ================================================================
 //  js/workspace/effectLayer.js
-//  Helpers to create / find / update / SELECT effect layers.
-//  Effect layer = clip with type 'effect/plain' + __effectId.
+//  Effect layer CRUD.
+//
+//  FIX: Default duration = FULL timeline end, so chroma/filter/
+//       adjustment/colorwheel apply to the WHOLE video by default.
+//       User can trim/move them like any other layer.
 // ================================================================
 
 import { placeClipAtTime } from '../layers/layersManager.js';
 
-export const DEFAULT_EFFECT_DURATION = 4;
+export const DEFAULT_EFFECT_DURATION = 3;
 
-function getState() {
-  return window.__appState;
+function getState() { return window.__appState; }
+
+// ─── Compute timeline end (ignore other effect/fx layers) ─────
+function computeTimelineEnd() {
+  const appState = getState();
+  if (!appState) return 0;
+  let maxEnd = 0;
+  const allTracks = [].concat(
+    appState.timeline.visual || [],
+    appState.timeline.audio || []
+  );
+  for (let t = 0; t < allTracks.length; t++) {
+    const track = allTracks[t];
+    if (!Array.isArray(track)) continue;
+    for (let c = 0; c < track.length; c++) {
+      const clip = track[c];
+      if (!clip) continue;
+      if (clip.__effectId) continue;    // ignore other effect layers
+      if (clip.__audioFxId) continue;
+      if (clip.__soundId) continue;
+      const s = Number.isFinite(clip.startTime) ? clip.startTime : 0;
+      const d = Number.isFinite(clip.duration) ? clip.duration : 0;
+      const end = s + d;
+      if (end > maxEnd) maxEnd = end;
+    }
+  }
+  return maxEnd;
 }
 
 // ─── Selection helpers ────────────────────────────────────────
@@ -62,12 +90,14 @@ export function findEffectLayerById(id) {
 }
 
 // ─── Create ───────────────────────────────────────────────────
+//  🆕 Default: startTime = 0, duration = FULL timeline end
 export function createEffectLayer(kind, state, name) {
   const appState = getState();
   if (!appState) return null;
 
-  const eng = window.__playbackEngine;
-  const atTime = eng && typeof eng.getTime === 'function' ? eng.getTime() : 0;
+  // Compute full timeline duration
+  const timelineEnd = computeTimelineEnd();
+  const dur = timelineEnd > 0 ? timelineEnd : DEFAULT_EFFECT_DURATION;
 
   const id = 'fx-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
 
@@ -77,22 +107,20 @@ export function createEffectLayer(kind, state, name) {
     type: 'effect/plain',
     __effectId: id,
     effectState: Object.assign({ kind: kind }, state),
-    startTime: atTime,
-    duration: DEFAULT_EFFECT_DURATION,
+    startTime: 0,                    // 🆕 start from 0
+    duration: dur,                   // 🆕 full timeline
     sourceIn: 0,
     __trimmed: true
   };
 
   if (!Array.isArray(appState.timeline.visual)) appState.timeline.visual = [];
 
-  placeClipAtTime(appState.timeline.visual, clipData, atTime);
+  placeClipAtTime(appState.timeline.visual, clipData, 0);
   document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
 
-  // 🆕 Auto-select the newly created layer so the delete button targets it
+  // Auto-select the newly created layer
   requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      selectEffectLayerByUrl(clipData.url);
-    });
+    requestAnimationFrame(() => selectEffectLayerByUrl(clipData.url));
   });
 
   return id;
@@ -103,9 +131,10 @@ export function updateEffectLayer(clip, updates) {
   if (!clip || !clip.__effectId) return;
   clip.effectState = Object.assign({}, clip.effectState, updates);
   document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
+  document.dispatchEvent(new CustomEvent('effects:refresh'));
 }
 
-// ─── Programmatic selection ───────────────────────────────────
+// ─── Select by URL ────────────────────────────────────────────
 export function selectEffectLayerByUrl(url) {
   const appState = getState();
   if (!appState || !url) return false;
@@ -142,7 +171,6 @@ export function getKindLabel(kind) {
     adjustment: 'Adjustments',
     colorWheel: 'Color Wheels',
     chroma: 'Chroma Key',
-    crop: 'Crop',
     effect: 'Effect'
   };
   return labels[kind] || kind;

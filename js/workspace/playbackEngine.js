@@ -1,14 +1,12 @@
 // ================================================================
 //  js/workspace/playbackEngine.js
-//  Master playback clock.
+//  Master playback clock + frame-accurate playhead.
 //
-//  Layer compositing — looks at ALL visual clips at the current
-//  time, finds the top-most VIDEO clip, plays it. Text/image/
-//  sticker overlays render independently on top.
-//
-//  Audio: plays standalone audio clips ONLY. Auto-generated audio
-//  from video is muted (video's own audio plays directly). Audio FX
-//  layers are handled separately by audioFxRenderer.js.
+//  VIDEO ELEMENT IS ALWAYS MUTED.
+//  All audio comes from the separate <audio> element, whose
+//  playback is driven by timeline audio clips.
+//  → Muting audio track = no sound.
+//  → Deleting audio clip = no sound.
 // ================================================================
 
 import { appState } from '../app.js';
@@ -19,6 +17,18 @@ export function initPlaybackEngine({ canvas, video, audio, preview, onTick }) {
   if (!canvas) return null;
 
   window.__previewBlockAutoDraw = true;
+
+  // 🆕 Video element is visual ONLY — never plays its own audio
+  if (video) {
+    video.muted = true;
+    video.volume = 0;
+    video.setAttribute('muted', '');
+    // Also force on metadata reload
+    video.addEventListener('loadedmetadata', () => {
+      video.muted = true;
+      video.volume = 0;
+    });
+  }
 
   let playheadTime = 0;
   let playing = false;
@@ -33,7 +43,6 @@ export function initPlaybackEngine({ canvas, video, audio, preview, onTick }) {
     return _ctx;
   }
 
-  // ─── Clip helpers ─────────────────────────────────────────
   function clipContainsTime(clip, time) {
     const s = Number.isFinite(clip.startTime) ? clip.startTime : 0;
     const d = Number.isFinite(clip.duration) ? clip.duration : 0;
@@ -44,9 +53,19 @@ export function initPlaybackEngine({ canvas, video, audio, preview, onTick }) {
     return c && c.type && c.type.indexOf('video/') === 0;
   }
 
-  // All visual clips at time, sorted bottom→top (V1 first)
-  // Skips hidden tracks.
-  function getVisualStackAt(time) {
+  function isImageClip(c) {
+    return c && c.type && c.type.indexOf('image/') === 0;
+  }
+
+  function isDisplayClip(c) {
+    if (!c) return false;
+    if (c.__textId) return true;
+    if (c.__stickerId) return true;
+    if (isVideoClip(c) || isImageClip(c)) return true;
+    return false;
+  }
+
+  function getActiveVisualStackAt(time) {
     const tracks = appState.timeline.visual || [];
     const hidden = appState.timeline.hiddenVisualTracks || new Set();
     const stack = [];
@@ -63,31 +82,40 @@ export function initPlaybackEngine({ canvas, video, audio, preview, onTick }) {
         }
       }
     }
+    stack.sort((a, b) => a.trackIndex - b.trackIndex);
     return stack;
   }
 
-  // Top-most video clip in the active stack
-  function getTopVideoClipInStack(stack) {
-    for (let i = stack.length - 1; i >= 0; i--) {
-      if (isVideoClip(stack[i].clip)) return stack[i].clip;
-    }
-    return null;
-  }
-
-  // Active audio clip — respects muted tracks; skips generated
-  // sound effects AND audio FX layers (both handled elsewhere).
-  function getActiveAudioClipAt(time) {
-    const tracks = appState.timeline.audio || [];
-    const muted = appState.timeline.mutedAudioTracks || new Set();
-    for (let t = 0; t < tracks.length; t++) {
-      if (muted.has(t)) continue;
+  function getTopDisplayClipAt(time) {
+    const tracks = appState.timeline.visual || [];
+    const hidden = appState.timeline.hiddenVisualTracks || new Set();
+    for (let t = tracks.length - 1; t >= 0; t--) {
+      if (hidden.has(t)) continue;
       const track = tracks[t];
       if (!Array.isArray(track)) continue;
       for (let c = 0; c < track.length; c++) {
         const clip = track[c];
         if (!clip) continue;
-        if (clip.__soundId) continue;     // generated SFX → soundeffect.js
-        if (clip.__audioFxId) continue;   // audio FX layer → audioFxRenderer.js
+        if (!isVideoClip(clip) && !isImageClip(clip)) continue;
+        if (clipContainsTime(clip, time)) return clip;
+      }
+    }
+    return null;
+  }
+
+  // ─── Active audio clip (respects mute) ────────────────────
+  function getActiveAudioClipAt(time) {
+    const tracks = appState.timeline.audio || [];
+    const muted = appState.timeline.mutedAudioTracks || new Set();
+    for (let t = 0; t < tracks.length; t++) {
+      if (muted.has(t)) continue; // 🆕 muted track → skip
+      const track = tracks[t];
+      if (!Array.isArray(track)) continue;
+      for (let c = 0; c < track.length; c++) {
+        const clip = track[c];
+        if (!clip) continue;
+        if (clip.__soundId) continue;
+        if (clip.__audioFxId) continue;
         if (clipContainsTime(clip, time)) return clip;
       }
     }
@@ -109,6 +137,8 @@ export function initPlaybackEngine({ canvas, video, audio, preview, onTick }) {
       for (let c = 0; c < track.length; c++) {
         const clip = track[c];
         if (!clip) continue;
+        if (clip.__audioFxId) continue;
+        if (clip.__soundId) continue;
         const s = Number.isFinite(clip.startTime) ? clip.startTime : 0;
         const d = Number.isFinite(clip.duration) ? clip.duration : 0;
         if (s + d > maxEnd) maxEnd = s + d;
@@ -117,7 +147,6 @@ export function initPlaybackEngine({ canvas, video, audio, preview, onTick }) {
     return maxEnd;
   }
 
-  // ─── Canvas ───────────────────────────────────────────────
   function syncCanvasSize() {
     const wrap = canvas.parentElement;
     if (!wrap) return;
@@ -134,11 +163,11 @@ export function initPlaybackEngine({ canvas, video, audio, preview, onTick }) {
     const c = getCtx();
     if (!c) return;
     syncCanvasSize();
+    c.setTransform(1, 0, 0, 1, 0, 0);
     c.fillStyle = '#000';
     c.fillRect(0, 0, canvas.width, canvas.height);
   }
 
-  // ─── URL matching ─────────────────────────────────────────
   function srcMatches(el, url) {
     if (!el || !url) return false;
     const a = el.currentSrc || el.src || '';
@@ -150,7 +179,6 @@ export function initPlaybackEngine({ canvas, video, audio, preview, onTick }) {
     return false;
   }
 
-  // ─── Video positioning ────────────────────────────────────
   function syncVideoPosition(clip, localTime) {
     if (!video) return;
     if (!srcMatches(video, clip.url)) {
@@ -159,6 +187,9 @@ export function initPlaybackEngine({ canvas, video, audio, preview, onTick }) {
       const onMeta = function () {
         video.removeEventListener('loadedmetadata', onMeta);
         try { video.currentTime = localTime; } catch (_) {}
+        // 🆕 Ensure muted
+        video.muted = true;
+        video.volume = 0;
       };
       video.addEventListener('loadedmetadata', onMeta);
       return;
@@ -194,12 +225,10 @@ export function initPlaybackEngine({ canvas, video, audio, preview, onTick }) {
     if (audio && !audio.paused) { try { audio.pause(); } catch (_) {} }
   }
 
-  // ─── Preload next video clip ──────────────────────────────
   function preloadUpcomingVideo(currentTime) {
     const tracks = appState.timeline.visual || [];
     let bestClip = null;
     let bestStart = Infinity;
-
     for (let t = 0; t < tracks.length; t++) {
       const track = tracks[t];
       if (!Array.isArray(track)) continue;
@@ -207,31 +236,27 @@ export function initPlaybackEngine({ canvas, video, audio, preview, onTick }) {
         const clip = track[c];
         if (!clip || !isVideoClip(clip)) continue;
         const s = Number.isFinite(clip.startTime) ? clip.startTime : 0;
-        if (s > currentTime &&
-            s <= currentTime + PRELOAD_AHEAD_SEC &&
-            s < bestStart) {
+        if (s > currentTime && s <= currentTime + PRELOAD_AHEAD_SEC && s < bestStart) {
           bestClip = clip;
           bestStart = s;
         }
       }
     }
-
     if (!bestClip) return;
-
     const localTime = Number.isFinite(bestClip.sourceIn) ? bestClip.sourceIn : 0;
     const sameSrc = srcMatches(video, bestClip.url);
-
     if (!sameSrc) {
       video.src = bestClip.url;
       video.load();
       const onMeta = function () {
         video.removeEventListener('loadedmetadata', onMeta);
         try { video.currentTime = localTime; } catch (_) {}
+        video.muted = true;
+        video.volume = 0;
       };
       video.addEventListener('loadedmetadata', onMeta);
       return;
     }
-
     if (video.paused) {
       const drift = Math.abs(video.currentTime - localTime);
       if (drift > 0.15) {
@@ -240,34 +265,65 @@ export function initPlaybackEngine({ canvas, video, audio, preview, onTick }) {
     }
   }
 
-  // ─── Render frame ─────────────────────────────────────────
+  function applyPlaybackRate(clip) {
+    if (!clip) return;
+    const speed = Number.isFinite(clip.__speed) ? clip.__speed : 1;
+    if (video) {
+      try {
+        if (Math.abs(video.playbackRate - speed) > 0.01) video.playbackRate = speed;
+      } catch (_) {}
+    }
+    if (audio) {
+      try {
+        if (Math.abs(audio.playbackRate - speed) > 0.01) audio.playbackRate = speed;
+      } catch (_) {}
+    }
+  }
+
+  // ─── Render frame at time ─────────────────────────────────
   function renderFrame(time) {
+    // 🆕 Video element stays muted ALWAYS
+    if (video && !video.muted) {
+      video.muted = true;
+      video.volume = 0;
+    }
+
     const audioClip = getActiveAudioClipAt(time);
-    const visualStack = getVisualStackAt(time);
-    const videoClip = getTopVideoClipInStack(visualStack);
+    const displayClip = getTopDisplayClipAt(time);
 
-    // ═══ VIDEO BASE ═══
-    if (videoClip) {
-      const local = computeLocalTime(videoClip, time);
-      const sameSrc = srcMatches(video, videoClip.url);
+    // ═══ VIDEO / IMAGE BASE ═══
+    if (displayClip) {
+      applyPlaybackRate(displayClip);
 
-      if (!sameSrc) {
-        syncVideoPosition(videoClip, local);
-      } else {
-        const drift = Math.abs(video.currentTime - local);
-        if (playing) {
-          if (drift > 0.5) {
-            try { video.currentTime = local; } catch (_) {}
-          }
+      if (isVideoClip(displayClip)) {
+        const local = computeLocalTime(displayClip, time);
+        const sameSrc = srcMatches(video, displayClip.url);
+
+        if (!sameSrc) {
+          syncVideoPosition(displayClip, local);
         } else {
-          if (drift > 0.15) {
-            try { video.currentTime = local; } catch (_) {}
+          const drift = Math.abs(video.currentTime - local);
+          if (playing) {
+            if (drift > 0.5) {
+              try { video.currentTime = local; } catch (_) {}
+            }
+          } else {
+            if (drift > 0.15) {
+              try { video.currentTime = local; } catch (_) {}
+            }
           }
         }
-      }
 
-      if (playing) {
-        if (video.paused) video.play().catch(() => {});
+        if (playing) {
+          if (video.paused) {
+            // 🆕 Ensure muted BEFORE play
+            video.muted = true;
+            video.volume = 0;
+            video.play().catch(() => {});
+          }
+        } else {
+          pauseVideoIfNeeded();
+        }
       } else {
         pauseVideoIfNeeded();
       }
@@ -276,34 +332,43 @@ export function initPlaybackEngine({ canvas, video, audio, preview, onTick }) {
         preview.redraw();
       } else {
         drawBlack();
-        if (video && video.readyState >= 2) {
-          try { getCtx().drawImage(video, 0, 0, canvas.width, canvas.height); } catch (_) {}
-        }
+      }
+
+      if (typeof window.__applyVisualEffects === 'function') {
+        try { window.__applyVisualEffects(time); } catch (_) {}
       }
     } else {
       pauseVideoIfNeeded();
       preloadUpcomingVideo(time);
       drawBlack();
+
+      if (typeof window.__applyVisualEffects === 'function') {
+        try { window.__applyVisualEffects(time); } catch (_) {}
+      }
     }
 
     // ═══ AUDIO ═══
-    // Only play standalone audio clips. Auto-generated audio from
-    // video plays via the video element itself (unmuted). Audio FX
-    // layers are handled by audioFxRenderer.js.
+    // 🆕 All audio comes from the <audio> element.
+    //    If audio clip exists → play it
+    //    If no audio clip (or track muted) → audio pauses (no sound)
     if (audioClip && audioClip.url) {
+      applyPlaybackRate(audioClip);
       const local = computeLocalTime(audioClip, time);
       syncAudioPosition(audioClip, local);
+      // 🆕 Make sure audio element is NOT muted
+      if (audio.muted) audio.muted = false;
+
       if (playing) {
         if (audio.paused) audio.play().catch(() => {});
       } else {
         pauseAudioIfNeeded();
       }
     } else {
+      // 🆕 No active audio clip → audio element pauses completely
       pauseAudioIfNeeded();
     }
   }
 
-  // ─── rAF loop ─────────────────────────────────────────────
   function tick(now) {
     if (!playing) return;
     const dt = (now - lastRealTime) / 1000;
@@ -332,7 +397,6 @@ export function initPlaybackEngine({ canvas, video, audio, preview, onTick }) {
     document.dispatchEvent(new CustomEvent('playback:tick', { detail }));
   }
 
-  // ─── Public API ───────────────────────────────────────────
   function play() {
     if (playing) return;
     const duration = getTimelineDuration();
@@ -359,7 +423,8 @@ export function initPlaybackEngine({ canvas, video, audio, preview, onTick }) {
     const wasPlaying = playing;
     pauseVideoIfNeeded();
     pauseAudioIfNeeded();
-    playheadTime = Math.max(0, Math.min(getTimelineDuration(), Number(time) || 0));
+    const dur = getTimelineDuration();
+    playheadTime = Math.max(0, Math.min(dur, Number(time) || 0));
     renderFrame(playheadTime);
     emitTick();
     if (wasPlaying) {

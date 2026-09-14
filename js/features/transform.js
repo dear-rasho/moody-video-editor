@@ -1,7 +1,7 @@
 // ================================================================
 //  js/features/transform.js
-//  Transform panel — horizontal property cards + full easing library.
-//  Works for: video, image, text, sticker clips.
+//  Transform panel — horizontal property cards + easing graph shelf.
+//  🆕 Scroll position preserved across re-renders.
 // ================================================================
 
 import { featuresRouter } from './featuresRouter.js';
@@ -30,34 +30,31 @@ const PROP_GROUPS = [
   { id: 'cropB',    label: 'Crop Bottom',  fields: ['cropB'],               suffix: '%', step: 1   }
 ];
 
-// ═══════════════════════════════════════════════════════════════
-//  EASING OPTIONS — full library with names
-// ═══════════════════════════════════════════════════════════════
 const EASING_OPTIONS = [
-  { key: 'linear',       label: 'Linear' },
-  { key: 'sineIn',       label: 'Ease In Sine' },
-  { key: 'sineOut',      label: 'Ease Out Sine' },
-  { key: 'sineInOut',    label: 'Ease In Out Sine' },
-  { key: 'quadIn',       label: 'Ease In Quad' },
-  { key: 'quadOut',      label: 'Ease Out Quad' },
-  { key: 'quadInOut',    label: 'Ease In Out Quad' },
-  { key: 'cubicIn',      label: 'Ease In Cubic' },
-  { key: 'cubicOut',     label: 'Ease Out Cubic' },
-  { key: 'cubicInOut',   label: 'Ease In Out Cubic' },
-  { key: 'quartIn',      label: 'Ease In Quart' },
-  { key: 'quartOut',     label: 'Ease Out Quart' },
-  { key: 'quartInOut',   label: 'Ease In Out Quart' },
-  { key: 'quintIn',      label: 'Ease In Quint' },
-  { key: 'quintOut',     label: 'Ease Out Quint' },
-  { key: 'quintInOut',   label: 'Ease In Out Quint' },
-  { key: 'expoIn',       label: 'Ease In Expo' },
-  { key: 'expoOut',      label: 'Ease Out Expo' },
-  { key: 'expoInOut',    label: 'Ease In Out Expo' },
-  { key: 'backIn',       label: 'Ease In Back' },
-  { key: 'backOut',      label: 'Ease Out Back' },
-  { key: 'backInOut',    label: 'Ease In Out Back' },
-  { key: 'elasticIn',    label: 'Ease In Elastic' },
-  { key: 'elasticOut',   label: 'Ease Out Elastic' }
+  { key: 'linear',         label: 'Linear' },
+  { key: 'sineIn',         label: 'Ease In Sine' },
+  { key: 'sineOut',        label: 'Ease Out Sine' },
+  { key: 'sineInOut',      label: 'Ease In Out Sine' },
+  { key: 'quadIn',         label: 'Ease In Quad' },
+  { key: 'quadOut',        label: 'Ease Out Quad' },
+  { key: 'quadInOut',      label: 'Ease In Out Quad' },
+  { key: 'cubicIn',        label: 'Ease In Cubic' },
+  { key: 'cubicOut',       label: 'Ease Out Cubic' },
+  { key: 'cubicInOut',     label: 'Ease In Out Cubic' },
+  { key: 'quartIn',        label: 'Ease In Quart' },
+  { key: 'quartOut',       label: 'Ease Out Quart' },
+  { key: 'quartInOut',     label: 'Ease In Out Quart' },
+  { key: 'quintIn',        label: 'Ease In Quint' },
+  { key: 'quintOut',       label: 'Ease Out Quint' },
+  { key: 'quintInOut',     label: 'Ease In Out Quint' },
+  { key: 'expoIn',         label: 'Ease In Expo' },
+  { key: 'expoOut',        label: 'Ease Out Expo' },
+  { key: 'expoInOut',      label: 'Ease In Out Expo' },
+  { key: 'backIn',         label: 'Ease In Back' },
+  { key: 'backOut',        label: 'Ease Out Back' },
+  { key: 'backInOut',      label: 'Ease In Out Back' },
+  { key: 'elasticIn',      label: 'Ease In Elastic' },
+  { key: 'elasticOut',     label: 'Ease Out Elastic' }
 ];
 
 function makeDefaults() {
@@ -74,6 +71,10 @@ let state = makeDefaults();
 let activeClip = null;
 let activeContainer = null;
 let lastState = null;
+
+// 🆕 Scroll memory
+let savedShelfScrollLeft = 0;
+let savedEaseShelfScrollLeft = 0;
 
 // ═══════════════════════════════════════════════════════════════
 //  ROUTER INSTALL
@@ -284,10 +285,20 @@ export function open({ router }) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  RENDER
+//  RENDER (with scroll preservation)
 // ═══════════════════════════════════════════════════════════════
 export function renderTo(container) {
   injectStyles();
+
+  // 🆕 SAVE scroll positions BEFORE replacing content
+  if (activeContainer) {
+    const oldPropsShelf = activeContainer.querySelector('.tf-props-shelf');
+    if (oldPropsShelf) savedShelfScrollLeft = oldPropsShelf.scrollLeft;
+
+    const oldEaseShelf = activeContainer.querySelector('.tf-ease-shelf');
+    if (oldEaseShelf) savedEaseShelfScrollLeft = oldEaseShelf.scrollLeft;
+  }
+
   container.replaceChildren();
   activeContainer = container;
 
@@ -311,10 +322,8 @@ export function renderTo(container) {
   const eng = window.__playbackEngine;
   const t = eng && typeof eng.getTime === 'function' ? eng.getTime() : 0;
 
-  // ─── Load base state from clip (any layer type) ───────────
   let base = found.clip.__transform || {};
 
-  // For text clips, also read from textState
   if (found.clip.__textId && found.clip.textState) {
     const ts = found.clip.textState;
     base = Object.assign({}, base, {
@@ -325,7 +334,6 @@ export function renderTo(container) {
     });
   }
 
-  // For sticker clips, read from stickerState
   if (found.clip.__stickerId && found.clip.stickerState) {
     const ss = found.clip.stickerState;
     base = Object.assign({}, base, {
@@ -409,6 +417,19 @@ export function renderTo(container) {
 
   panel.appendChild(buildBottomSpacer());
   container.appendChild(panel);
+
+  // 🆕 RESTORE scroll positions AFTER render
+  requestAnimationFrame(function () {
+    const newPropsShelf = container.querySelector('.tf-props-shelf');
+    if (newPropsShelf && savedShelfScrollLeft > 0) {
+      newPropsShelf.scrollLeft = savedShelfScrollLeft;
+    }
+
+    const newEaseShelf = container.querySelector('.tf-ease-shelf');
+    if (newEaseShelf && savedEaseShelfScrollLeft > 0) {
+      newEaseShelf.scrollLeft = savedEaseShelfScrollLeft;
+    }
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -608,11 +629,14 @@ function buildKeyframeGraphPanel(clip) {
   row.appendChild(shelf);
   wrap.appendChild(row);
 
+  // Auto-scroll to active ease (only on first open)
   setTimeout(() => {
-    const active = shelf.querySelector('.tf-ease-card.active');
-    if (active && shelf.scrollWidth > shelf.clientWidth) {
-      const target = active.offsetLeft - shelf.clientWidth / 2 + active.offsetWidth / 2;
-      shelf.scrollTo({ left: Math.max(0, target), behavior: 'smooth' });
+    if (savedEaseShelfScrollLeft === 0) {
+      const active = shelf.querySelector('.tf-ease-card.active');
+      if (active && shelf.scrollWidth > shelf.clientWidth) {
+        const target = active.offsetLeft - shelf.clientWidth / 2 + active.offsetWidth / 2;
+        shelf.scrollTo({ left: Math.max(0, target), behavior: 'smooth' });
+      }
     }
   }, 60);
 
@@ -677,7 +701,6 @@ function applyTransform() {
 
   activeClip.__transform = Object.assign({}, state);
 
-  // Sync to text layer
   if (activeClip.__textId && activeClip.textState) {
     activeClip.textState.positionX = state.x;
     activeClip.textState.positionY = state.y;
@@ -685,7 +708,6 @@ function applyTransform() {
     activeClip.textState.rotation = state.rotation;
   }
 
-  // Sync to sticker layer
   if (activeClip.__stickerId && activeClip.stickerState) {
     activeClip.stickerState.x = state.x;
     activeClip.stickerState.y = state.y;
@@ -693,7 +715,6 @@ function applyTransform() {
     activeClip.stickerState.rotation = state.rotation;
   }
 
-  // Auto-keyframe changed props if clip already has keyframes
   if (hasAnyKeyframes(activeClip)) {
     const eng = window.__playbackEngine;
     const t = eng && typeof eng.getTime === 'function' ? eng.getTime() : 0;

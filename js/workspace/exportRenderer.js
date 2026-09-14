@@ -1,7 +1,7 @@
 // ================================================================
 //  js/workspace/exportRenderer.js
-//  Export frames — video (contain-fit) + keyframe-aware transform
-//  + filters + motion + pixel effects + text + stickers + transitions.
+//  Export frames — HIERARCHY-AWARE.
+//  Same rules as preview effectRenderer.
 // ================================================================
 
 import { hasAnyKeyframes, sampleAll } from './keyframeStore.js';
@@ -11,50 +11,33 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime,
   const appState = window.__appState;
   if (!appState) { drawVideoContainFit(ctx, source, W, H, null); return; }
 
-  const visualTracks = appState.timeline.visual || [];
-  const hidden = appState.timeline.hiddenVisualTracks || new Set();
+  const active = getActiveVisualClipsAt(appState, timelineTime);
 
-  // 1) Active layers
-  const active = [];
-  for (let t = 0; t < visualTracks.length; t++) {
-    if (hidden.has(t)) continue;
-    const track = visualTracks[t];
-    if (!Array.isArray(track)) continue;
-    for (let c = 0; c < track.length; c++) {
-      const clip = track[c];
-      if (!clip) continue;
-      const s = Number.isFinite(clip.startTime) ? clip.startTime : 0;
-      const d = Number.isFinite(clip.duration) ? clip.duration : 0;
-      if (timelineTime >= s && timelineTime < s + d) {
-        active.push({ clip, trackIndex: t });
-        break;
-      }
-    }
-  }
-
-  // 2) Find top video/image clip (for transform + transition)
-  let topVideoClip = null;
+  // Top display track index
+  let topDisplayTrack = -1;
   for (let i = active.length - 1; i >= 0; i--) {
-    const c = active[i].clip;
-    if (c && c.type && (c.type.indexOf('video/') === 0 || c.type.indexOf('image/') === 0)) {
-      topVideoClip = c;
-      break;
+    if (isDisplayClip(active[i].clip)) { topDisplayTrack = active[i].trackIndex; break; }
+  }
+
+  // Effects above top display
+  const effects = [];
+  if (topDisplayTrack >= 0) {
+    for (let i = 0; i < active.length; i++) {
+      const e = active[i];
+      if (e.clip.__effectId && e.trackIndex > topDisplayTrack) effects.push(e);
     }
   }
 
-  // 3) Transition check
-  const transitioning = topVideoClip && isTransitionActive(topVideoClip, timelineTime);
-  const transitionProgress = transitioning
-    ? getTransitionProgress(topVideoClip, timelineTime)
-    : 0;
-  const transitionType = transitioning
-    ? topVideoClip.__transitionIn.key
-    : null;
+  // Top display clip
+  let topDisplayClip = null;
+  for (let i = active.length - 1; i >= 0; i--) {
+    if (isDisplayClip(active[i].clip)) { topDisplayClip = active[i].clip; break; }
+  }
 
-  // 4) CSS filter string
+  // CSS filter
   let cssFilter = '';
-  for (let i = 0; i < active.length; i++) {
-    const st = active[i].clip.effectState;
+  for (let i = 0; i < effects.length; i++) {
+    const st = effects[i].clip.effectState;
     if (!st) continue;
     if ((st.kind === 'filter' || st.kind === 'effect') && st.filters) {
       const part = buildCssFilter(st.filters);
@@ -62,30 +45,39 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime,
     }
   }
 
-  // 5) Motion
+  // Motion
   let motion = null;
-  for (let i = 0; i < active.length; i++) {
-    const st = active[i].clip.effectState;
+  for (let i = 0; i < effects.length; i++) {
+    const st = effects[i].clip.effectState;
     if (st && st.motion) {
       motion = computeMotionRaw(st.motion, timelineTime);
       if (motion) break;
     }
   }
 
-  // 6) Layer transform
-  let layerXform = topVideoClip && topVideoClip.__transform ? topVideoClip.__transform : null;
-  if (topVideoClip && hasAnyKeyframes(topVideoClip)) {
-    layerXform = sampleAll(topVideoClip, timelineTime, layerXform || {});
+    // ─── Layer transform (video/image only) ───────────────────
+  // Text & stickers have their own transform via textState/stickerState
+  let topVideoOrImageClip = null;
+  for (let i = active.length - 1; i >= 0; i--) {
+    const c = active[i].clip;
+    if (!c || !c.type) continue;
+    const isV = c.type.indexOf('video/') === 0;
+    const isI = c.type.indexOf('image/') === 0;
+    if (isV || isI) { topVideoOrImageClip = c; break; }
   }
-
-  // ─── Draw base ────────────────────────────────────────────
+  let layerXform = topVideoOrImageClip && topVideoOrImageClip.__transform
+    ? topVideoOrImageClip.__transform
+    : null;
+  if (topVideoOrImageClip && hasAnyKeyframes(topVideoOrImageClip)) {
+    layerXform = sampleAll(topVideoOrImageClip, timelineTime, layerXform || {});
+  }
+  // Draw base
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.globalAlpha = 1;
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, W, H);
 
-  // Function that draws the current frame (video + filter + motion + transform)
   function drawCurrentFrame(c, w, h) {
     c.save();
     if (cssFilter) { try { c.filter = cssFilter; } catch (_) {} }
@@ -103,12 +95,10 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime,
       const anchorY = layerXform.anchorY != null ? layerXform.anchorY : 50;
       const posX = layerXform.x != null ? layerXform.x : 50;
       const posY = layerXform.y != null ? layerXform.y : 50;
-
       const originX = w * (anchorX / 100);
       const originY = h * (anchorY / 100);
       const offsetX = (posX - 50) / 100 * w;
       const offsetY = (posY - 50) / 100 * h;
-
       c.translate(originX + offsetX, originY + offsetY);
       if (layerXform.rotation) c.rotate(layerXform.rotation * Math.PI / 180);
       const sc = (layerXform.scale != null ? layerXform.scale : 100) / 100;
@@ -121,9 +111,12 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime,
     try { c.filter = 'none'; } catch (_) {}
   }
 
-  // ─── Apply transition OR normal draw ──────────────────────
+  // Transition
+  const transitioning = topDisplayClip && isTransitionActive(topDisplayClip, timelineTime);
   if (transitioning && prevFrameCanvas) {
-    renderTransitionBlend(ctx, W, H, prevFrameCanvas, drawCurrentFrame, transitionProgress, transitionType);
+    const progress = getTransitionProgress(topDisplayClip, timelineTime);
+    const type = topDisplayClip.__transitionIn.key;
+    renderTransitionBlend(ctx, W, H, prevFrameCanvas, drawCurrentFrame, progress, type);
   } else {
     drawCurrentFrame(ctx, W, H);
   }
@@ -131,58 +124,86 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime,
   try { ctx.filter = 'none'; } catch (_) {}
   ctx.globalAlpha = 1;
 
-  // ─── Pixel effects (after transition) ─────────────────────
-  const pixelEntries = [];
-  for (let i = 0; i < active.length; i++) {
-    const st = active[i].clip.effectState;
+  // Pixel effects
+  const pixelEffects = [];
+  for (let i = 0; i < effects.length; i++) {
+    const st = effects[i].clip.effectState;
     if (!st) continue;
     if (st.kind === 'adjustment' || st.kind === 'colorWheel' || st.kind === 'chroma') {
-      pixelEntries.push(active[i]);
+      pixelEffects.push(effects[i]);
     }
   }
 
-  if (pixelEntries.length) {
+  if (pixelEffects.length) {
     let imgData = null;
     try { imgData = ctx.getImageData(0, 0, W, H); } catch (_) {}
     if (imgData) {
       const data = imgData.data;
-      for (let i = 0; i < pixelEntries.length; i++) {
-        const st = pixelEntries[i].clip.effectState;
+      for (let i = 0; i < pixelEffects.length; i++) {
+        const st = pixelEffects[i].clip.effectState;
         try {
           if (st.kind === 'adjustment') applyAdjustment(data, W, H, st.adjustments);
           else if (st.kind === 'colorWheel') applyColorWheel(data, W, H, st.colorWheel);
           else if (st.kind === 'chroma') applyChroma(data, W, H, st.chroma);
-        } catch (e) { console.warn('pixel effect error:', e); }
+        } catch (_) {}
       }
       try { ctx.putImageData(imgData, 0, 0); } catch (_) {}
     }
   }
 
-  // ─── Text overlays ────────────────────────────────────────
+  // Text overlays
   const textClips = [];
   for (let i = 0; i < active.length; i++) {
     const c = active[i].clip;
-    if (c.__textId && c.textState) {
-      textClips.push({ clip: c, trackIndex: active[i].trackIndex });
-    }
+    if (c.__textId && c.textState) textClips.push({ clip: c, trackIndex: active[i].trackIndex });
   }
   textClips.sort((a, b) => a.trackIndex - b.trackIndex);
   for (let i = 0; i < textClips.length; i++) {
     try { drawTextOverlay(ctx, W, H, textClips[i].clip.textState, timelineTime, textClips[i].clip); }
-    catch (e) { console.warn('text overlay draw failed:', e); }
+    catch (_) {}
   }
 
-  // ─── Stickers ─────────────────────────────────────────────
+  // Stickers
   for (let i = 0; i < active.length; i++) {
     const c = active[i].clip;
     if (c.__stickerId && c.stickerState) {
-      try { drawStickerOverlay(ctx, W, H, c.stickerState); }
-      catch (e) { console.warn('sticker draw failed:', e); }
+      try { drawStickerOverlay(ctx, W, H, c.stickerState); } catch (_) {}
     }
   }
 }
 
-// ─── Cover-fit with optional crop ─────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────
+function isDisplayClip(c) {
+  if (!c) return false;
+  if (c.__textId) return true;
+  if (c.__stickerId) return true;
+  if (c.type && (c.type.indexOf('video/') === 0 || c.type.indexOf('image/') === 0)) return true;
+  return false;
+}
+
+function getActiveVisualClipsAt(appState, time) {
+  const tracks = appState.timeline.visual || [];
+  const hidden = appState.timeline.hiddenVisualTracks || new Set();
+  const active = [];
+  for (let t = 0; t < tracks.length; t++) {
+    if (hidden.has(t)) continue;
+    const track = tracks[t];
+    if (!Array.isArray(track)) continue;
+    for (let c = 0; c < track.length; c++) {
+      const clip = track[c];
+      if (!clip) continue;
+      const s = Number.isFinite(clip.startTime) ? clip.startTime : 0;
+      const d = Number.isFinite(clip.duration) ? clip.duration : 0;
+      if (time >= s && time < s + d) {
+        active.push({ clip, trackIndex: t });
+        break;
+      }
+    }
+  }
+  active.sort((a, b) => a.trackIndex - b.trackIndex);
+  return active;
+}
+
 function drawVideoContainFit(ctx, source, W, H, xform) {
   if (!source) return;
   const sw = source.displayWidth || source.videoWidth || source.naturalWidth || source.width;
@@ -201,7 +222,6 @@ function drawVideoContainFit(ctx, source, W, H, xform) {
       sch = sh * (1 - cropT - cropB);
     }
   }
-
   if (scw <= 0 || sch <= 0) return;
 
   const srcAR = scw / sch;
@@ -242,10 +262,8 @@ function computeMotionRaw(m, time) {
     case 'zoomPulse': return { tx: 0, ty: 0, scale: 1 + (Math.sin(t * 2) * 0.5 + 0.5) * 0.35 * I, rot: 0 };
     case 'rotate': return { tx: 0, ty: 0, scale: 1, rot: Math.sin(t * 2) * 6 * I };
     case 'glitch': return {
-      tx: (Math.random() - 0.5) * 14 * I,
-      ty: (Math.random() - 0.5) * 8 * I,
-      scale: 1 + (Math.random() - 0.5) * 0.03 * I,
-      rot: 0
+      tx: (Math.random() - 0.5) * 14 * I, ty: (Math.random() - 0.5) * 8 * I,
+      scale: 1 + (Math.random() - 0.5) * 0.03 * I, rot: 0
     };
   }
   return null;
@@ -446,31 +464,55 @@ function hslToRgb(h, s, l) {
   return [Math.round(f(0) * 255), Math.round(f(8) * 255), Math.round(f(4) * 255)];
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  CHROMA KEY — same as effectRenderer (works for ANY color)
+// ═══════════════════════════════════════════════════════════════
 function applyChroma(data, w, h, c) {
   if (!c || !c.keyColor) return;
-  const kr = c.keyColor.r, kg = c.keyColor.g, kb = c.keyColor.b;
+
+  const kr = c.keyColor.r;
+  const kg = c.keyColor.g;
+  const kb = c.keyColor.b;
+
   const sim = (c.similarity != null ? c.similarity : 30) / 100;
   const sm = (c.smoothness != null ? c.smoothness : 20) / 100;
   const inten = (c.intensity != null ? c.intensity : 100) / 100;
   const sp = (c.spill != null ? c.spill : 50) / 100;
+
   const maxDist = Math.sqrt(3 * 255 * 255) || 1;
-  const simEnd = sim, softEnd = sim + sm;
+  const simEnd = sim;
+  const softEnd = sim + sm;
+
   for (let i = 0; i < data.length; i += 4) {
-    const r = data[i], g = data[i + 1], b = data[i + 2];
-    const dr = r - kr, dg = g - kg, db = b - kb;
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+
+    const dr = r - kr;
+    const dg = g - kg;
+    const db = b - kb;
     const dist = Math.sqrt(dr * dr + dg * dg + db * db) / maxDist;
+
     let removal = 0;
     if (dist <= simEnd) removal = 1;
     else if (sm > 0 && dist <= softEnd) removal = 1 - (dist - simEnd) / sm;
     removal *= inten;
-    if (removal > 0) data[i + 3] = Math.round(data[i + 3] * (1 - removal));
-    if (sp > 0 && data[i + 3] > 0 && dist < softEnd + 0.15) {
+
+    if (removal > 0) {
+      const keep = 1 - removal;
+      data[i]     = Math.round(r * keep);
+      data[i + 1] = Math.round(g * keep);
+      data[i + 2] = Math.round(b * keep);
+      data[i + 3] = Math.round(data[i + 3] * keep);
+    }
+
+    if (sp > 0 && removal < 1 && dist < softEnd + 0.15) {
       const prox = 1 - Math.min(1, dist / (softEnd + 0.15));
       const bl = sp * prox * 0.8;
       const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-      data[i] = Math.round(r * (1 - bl) + gray * bl);
-      data[i + 1] = Math.round(g * (1 - bl) + gray * bl);
-      data[i + 2] = Math.round(b * (1 - bl) + gray * bl);
+      data[i]     = Math.round(data[i]     * (1 - bl) + gray * bl);
+      data[i + 1] = Math.round(data[i + 1] * (1 - bl) + gray * bl);
+      data[i + 2] = Math.round(data[i + 2] * (1 - bl) + gray * bl);
     }
   }
 }

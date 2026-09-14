@@ -1,7 +1,7 @@
 // ================================================================
 //  js/features/keyframeEngine.js
 //  Global keyframe engine — speed + sticker transforms.
-//  NO imports from app.js (standalone).
+//  No imports from app.js (standalone).
 // ================================================================
 
 let videoEl = null;
@@ -14,12 +14,12 @@ const stickerRegistry = new Map();
 export function getEasedValue(t, ease) {
   t = Math.max(0, Math.min(1, t));
   switch (ease) {
-    case 'linear':        return t;
-    case 'easeIn':        return t * t;
-    case 'easeOut':       return 1 - (1 - t) * (1 - t);
-    case 'easeInOut':     return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
-    case 'easeInCubic':   return t * t * t;
-    case 'easeOutCubic':  return 1 - Math.pow(1 - t, 3);
+    case 'linear':         return t;
+    case 'easeIn':         return t * t;
+    case 'easeOut':        return 1 - (1 - t) * (1 - t);
+    case 'easeInOut':      return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+    case 'easeInCubic':    return t * t * t;
+    case 'easeOutCubic':   return 1 - Math.pow(1 - t, 3);
     case 'easeInOutCubic':
       return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
     case 'easeInBack': {
@@ -49,8 +49,7 @@ export function getEasedValue(t, ease) {
       if (t === 1) return 1;
       return Math.pow(2, -10 * t) * Math.sin((t * 10 - 0.75) * c4) + 1;
     }
-    default:
-      return t;
+    default: return t;
   }
 }
 

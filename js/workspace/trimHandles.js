@@ -1,7 +1,7 @@
 // ================================================================
 //  js/workspace/trimHandles.js
 //  Drag-to-trim handles on selected timeline clips.
-//  Fixes: HTML5 dragstart hijack from clip's draggable=true.
+//  Skips transition markers, kf markers.
 // ================================================================
 
 import { getPixelsPerSecond } from './timelineScaler.js';
@@ -24,16 +24,14 @@ export function injectTrimStyles() {
   s.textContent = `
     .clip { position: absolute !important; }
 
-    /* Selected clip must allow overflow so handles can extend out */
     .clip.selected {
       overflow: visible !important;
-      z-index: 12 !important;
+      z-index: 3 !important;
       outline: 2px solid var(--accent);
       outline-offset: -2px;
       box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.15);
     }
 
-    /* Handles: hidden until clip is selected */
     .trim-handle {
       display: none;
       position: absolute;
@@ -111,7 +109,6 @@ export function injectTrimStyles() {
   stylesInjected = true;
 }
 
-// ─── Attach to a clip element ─────────────────────────────────
 export function attachTrimHandles(clipEl, clipData) {
   if (!clipEl || !clipData) return;
   injectTrimStyles();
@@ -135,19 +132,16 @@ export function attachTrimHandles(clipEl, clipData) {
   rightH.addEventListener('pointerdown', (e) => beginDrag(e, clipEl, clipData, 'right'));
 }
 
-// ─── Drag implementation ──────────────────────────────────────
 function beginDrag(e, clipEl, clipData, side) {
   e.stopPropagation();
   e.preventDefault();
 
-  // 🆕 Critical fix: disable HTML5 drag on clip + its parent track
   const trackEl = clipEl.closest('.track');
   const prevClipDrag  = clipEl.draggable;
   const prevTrackDrag = trackEl ? trackEl.draggable : false;
   clipEl.draggable = false;
   if (trackEl) trackEl.draggable = false;
 
-  // 🆕 Global dragstart blocker during this drag
   const blockDrag = function (ev) {
     if (ev.target === clipEl || clipEl.contains(ev.target)) {
       ev.preventDefault();
@@ -156,7 +150,6 @@ function beginDrag(e, clipEl, clipData, side) {
   };
   document.addEventListener('dragstart', blockDrag, true);
 
-  // Snapshot initial values
   const ppsAtStart    = getPixelsPerSecond();
   const startX        = e.clientX;
   const startStart    = Number.isFinite(clipData.startTime) ? clipData.startTime : 0;
@@ -174,7 +167,6 @@ function beginDrag(e, clipEl, clipData, side) {
   tooltip.className = 'trim-tooltip ' + (side === 'left' ? 'is-left' : 'is-right');
   document.body.appendChild(tooltip);
 
-  // Show initial tooltip immediately so user sees it's active
   (function initialLabel() {
     const rect = clipEl.getBoundingClientRect();
     tooltip.style.left = (side === 'left' ? rect.left : rect.right) + 'px';
@@ -194,7 +186,6 @@ function beginDrag(e, clipEl, clipData, side) {
     if (side === 'left') {
       let newStart = startStart + dxSec;
       newStart = Math.max(0, newStart);
-
       const minStartBySource = startStart - startSourceIn;
       if (newStart < minStartBySource) newStart = minStartBySource;
       newStart = Math.min(startEnd - MIN_DUR, newStart);
@@ -231,7 +222,6 @@ function beginDrag(e, clipEl, clipData, side) {
 
   function apply(pointerX) {
     const r = computeFrom(pointerX);
-
     clipEl.style.left  = r.clipLeftPx + 'px';
     clipEl.style.width = r.clipWidthPx + 'px';
 
@@ -266,7 +256,6 @@ function beginDrag(e, clipEl, clipData, side) {
     window.removeEventListener('pointerup', onUp);
     window.removeEventListener('pointercancel', onUp);
 
-    // Restore drag capabilities
     clipEl.draggable = prevClipDrag;
     if (trackEl) trackEl.draggable = prevTrackDrag;
     document.removeEventListener('dragstart', blockDrag, true);
@@ -277,14 +266,12 @@ function beginDrag(e, clipEl, clipData, side) {
 
     clipData.__trimmed = true;
 
-    // Propagate to linked clips (auto audio)
     applyTrimToLinked(clipData, {
       startTime: clipData.startTime,
       duration:  clipData.duration,
       sourceIn:  clipData.sourceIn
     });
 
-    // One history step
     document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
   }
 
@@ -292,7 +279,6 @@ function beginDrag(e, clipEl, clipData, side) {
   window.addEventListener('pointerup', onUp);
   window.addEventListener('pointercancel', onUp);
 
-  // Capture pointer so we receive moves even outside the handle
   try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
 }
 

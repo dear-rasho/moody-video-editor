@@ -1,6 +1,7 @@
 // ================================================================
 //  js/workspace/previewCanvas.js
-//  Preview canvas — contain-fit + transform + transitions.
+//  Preview canvas — contain-fit + transform.
+//  Supports video AND image as top display layer.
 // ================================================================
 
 import { isTransitionActive, getTransitionProgress, renderTransitionBlend } from './transitionEngine.js';
@@ -26,7 +27,11 @@ export function initPreviewCanvas({ canvas, video, empty }) {
   let layerTransform = null;
   function setLayerTransform(t) { layerTransform = t; }
 
-  // 🆕 Previous frame buffer for transitions
+  // 🆕 Currently loaded image (for image-only clips)
+  let currentImage = null;
+  let currentImageUrl = null;
+
+  // 🆕 Prev frame buffer for transitions
   const prevFrameBuffer = document.createElement('canvas');
   let prevFrameValid = false;
 
@@ -96,8 +101,8 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     } catch (_) {}
   };
 
-  // ─── Get current video clip at timeline time ──────────────
-  function getCurrentVideoClip() {
+  // ─── Get current top display clip ─────────────────────────
+  function getCurrentClip() {
     const appState = window.__appState;
     if (!appState) return null;
     const eng = window.__playbackEngine;
@@ -122,11 +127,47 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     return null;
   }
 
-  function drawCurrentVideoInto(c, W, H) {
+  function getTime() {
+    const eng = window.__playbackEngine;
+    return eng && typeof eng.getTime === 'function' ? eng.getTime() : 0;
+  }
+
+  // ─── Load image if needed ─────────────────────────────────
+  function ensureImage(clip) {
+    if (!clip || clip.type.indexOf('image/') !== 0) {
+      currentImage = null;
+      currentImageUrl = null;
+      return;
+    }
+    if (currentImageUrl === clip.url && currentImage) return;
+    currentImageUrl = clip.url;
+    currentImage = new Image();
+    currentImage.onload = () => {
+      if (!isBlocked()) drawVideoFrame();
+    };
+    currentImage.src = clip.url;
+  }
+
+  // ─── Draw current display frame into ctx ─────────────────
+  function drawCurrentInto(c, W, H, clip) {
     c.save();
     if (layerTransform) applyCtxTransform(c, W, H, layerTransform);
 
-    let sx = 0, sy = 0, sw = video.videoWidth, sh = video.videoHeight;
+    let srcW = 0, srcH = 0;
+    let isImage = false;
+
+    if (clip && clip.type.indexOf('image/') === 0 && currentImage) {
+      srcW = currentImage.naturalWidth || currentImage.width;
+      srcH = currentImage.naturalHeight || currentImage.height;
+      isImage = true;
+    } else if (video && video.videoWidth) {
+      srcW = video.videoWidth;
+      srcH = video.videoHeight;
+    }
+
+    if (!srcW || !srcH) { c.restore(); return; }
+
+    let sx = 0, sy = 0, sw = srcW, sh = srcH;
     if (layerTransform) {
       const t = layerTransform;
       const cropL = (t.cropL || 0) / 100;
@@ -134,75 +175,66 @@ export function initPreviewCanvas({ canvas, video, empty }) {
       const cropT = (t.cropT || 0) / 100;
       const cropB = (t.cropB || 0) / 100;
       if (cropL || cropR || cropT || cropB) {
-        sx = video.videoWidth * cropL;
-        sy = video.videoHeight * cropT;
-        sw = video.videoWidth * (1 - cropL - cropR);
-        sh = video.videoHeight * (1 - cropT - cropB);
+        sx = srcW * cropL;
+        sy = srcH * cropT;
+        sw = srcW * (1 - cropL - cropR);
+        sh = srcH * (1 - cropT - cropB);
       }
     }
     if (sw <= 0 || sh <= 0) { c.restore(); return; }
 
     const r = containRect(sw, sh, W, H);
-    try { c.drawImage(video, sx, sy, sw, sh, r.x, r.y, r.w, r.h); } catch (_) {}
+
+    try {
+      if (isImage) {
+        c.drawImage(currentImage, sx, sy, sw, sh, r.x, r.y, r.w, r.h);
+      } else {
+        if (video.readyState < 2) { c.restore(); return; }
+        c.drawImage(video, sx, sy, sw, sh, r.x, r.y, r.w, r.h);
+      }
+    } catch (_) {}
     c.restore();
   }
 
+  // ─── Draw video frame (main renderer) ─────────────────────
   function drawVideoFrame() {
-    if (!video.videoWidth || !video.videoHeight) return;
-    if (video.readyState < 2) return;
+    const clip = getCurrentClip();
+    if (!clip) {
+      // Nothing active — draw black
+      syncCanvasSize();
+      const c = getCtx();
+      if (!c) return;
+      c.setTransform(1, 0, 0, 1, 0, 0);
+      c.fillStyle = '#000';
+      c.fillRect(0, 0, canvas.width, canvas.height);
+      return;
+    }
+
+    if (clip.type.indexOf('image/') === 0) ensureImage(clip);
 
     syncCanvasSize();
     const c = getCtx();
     if (!c) return;
-
     const W = canvas.width;
     const H = canvas.height;
 
-    // ─── Check for active transition ──────────────────────
-    const clip = getCurrentVideoClip();
-    const transitioning = clip && isTransitionActive(clip, getTime());
-
+    // 🆕 Transition check
+    const transitioning = isTransitionActive(clip, getTime());
     if (transitioning && prevFrameValid) {
       const progress = getTransitionProgress(clip, getTime());
       const type = clip.__transitionIn.key;
       renderTransitionBlend(c, W, H, prevFrameBuffer,
-        (cx, cw, ch) => drawCurrentVideoInto(cx, cw, ch),
+        (cx, cw, ch) => drawCurrentInto(cx, cw, ch, clip),
         progress, type);
       return;
     }
 
-    // Normal draw
     c.setTransform(1, 0, 0, 1, 0, 0);
     c.fillStyle = '#000';
     c.fillRect(0, 0, W, H);
+    drawCurrentInto(c, W, H, clip);
 
-    drawCurrentVideoInto(c, W, H);
-
-    // Capture current frame for future transitions
     captureToBuffer();
-  }
-
-  function getTime() {
-    const eng = window.__playbackEngine;
-    return eng && typeof eng.getTime === 'function' ? eng.getTime() : 0;
-  }
-
-  function drawImageContained(image) {
-    syncCanvasSize();
-    const c = getCtx();
-    if (!c) return;
-    const W = canvas.width;
-    const H = canvas.height;
-    c.setTransform(1, 0, 0, 1, 0, 0);
-    c.fillStyle = '#000';
-    c.fillRect(0, 0, W, H);
-    c.save();
-    if (layerTransform) applyCtxTransform(c, W, H, layerTransform);
-    const iw = image.naturalWidth || image.width;
-    const ih = image.naturalHeight || image.height;
-    const r = containRect(iw, ih, W, H);
-    try { c.drawImage(image, r.x, r.y, r.w, r.h); } catch (_) {}
-    c.restore();
   }
 
   let rafId = null;
@@ -248,6 +280,7 @@ export function initPreviewCanvas({ canvas, video, empty }) {
   document.addEventListener('keyframe:changed', () => { if (!isBlocked()) drawVideoFrame(); });
   document.addEventListener('transform:changed', () => { if (!isBlocked()) drawVideoFrame(); });
   document.addEventListener('transition:changed', () => { if (!isBlocked()) drawVideoFrame(); });
+  document.addEventListener('editor:timeline-changed', () => { if (!isBlocked()) drawVideoFrame(); });
 
   if (typeof ResizeObserver !== 'undefined') {
     new ResizeObserver(() => {
@@ -260,6 +293,7 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     if (!item) return;
     const type = item.type || '';
     if (empty) empty.hidden = true;
+
     if (type.startsWith('video/')) {
       video.src = item.url;
       video.load();
@@ -269,14 +303,14 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     }
     if (type.startsWith('audio/')) return;
     if (type.startsWith('image/')) {
-      const image = new Image();
-      image.onload = () => {
-        if (isBlocked()) return;
-        drawImageContained(image);
+      currentImageUrl = item.url;
+      currentImage = new Image();
+      currentImage.onload = () => {
+        if (!isBlocked()) drawVideoFrame();
         canvas.hidden = false;
         if (empty) empty.hidden = true;
       };
-      image.src = item.url;
+      currentImage.src = item.url;
       return;
     }
   }
@@ -288,6 +322,8 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     video.load();
     hideVideo();
     prevFrameValid = false;
+    currentImage = null;
+    currentImageUrl = null;
     const c = getCtx();
     if (c) c.clearRect(0, 0, canvas.width, canvas.height);
     if (empty) empty.hidden = false;

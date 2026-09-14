@@ -1,7 +1,7 @@
 // ================================================================
 //  js/workspace/clipLink.js
-//  Propagates trim changes to clips linked via __linkedId
-//  (e.g., a video clip and its auto-generated audio).
+//  Propagates trim/move changes to clips linked via __linkedId
+//  (e.g., video ↔ auto-generated audio).
 // ================================================================
 
 import { appState } from '../app.js';
@@ -29,7 +29,6 @@ export function findLinkedClips(primaryClip) {
   return result;
 }
 
-// snapshot = { startTime, duration, sourceIn }  (any subset)
 export function applyTrimToLinked(primaryClip, snapshot) {
   const linked = findLinkedClips(primaryClip);
   for (let i = 0; i < linked.length; i++) {
@@ -38,6 +37,15 @@ export function applyTrimToLinked(primaryClip, snapshot) {
     if (Number.isFinite(snapshot.duration))  clip.duration  = snapshot.duration;
     if (Number.isFinite(snapshot.sourceIn))  clip.sourceIn  = snapshot.sourceIn;
     clip.__trimmed = true;
+  }
+  return linked.length;
+}
+
+// 🆕 Propagate just startTime (for drag-move)
+export function propagateStartTime(primaryClip) {
+  const linked = findLinkedClips(primaryClip);
+  for (let i = 0; i < linked.length; i++) {
+    linked[i].startTime = primaryClip.startTime;
   }
   return linked.length;
 }

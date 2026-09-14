@@ -1,17 +1,21 @@
 // ================================================================
 //  js/workspace/effectRenderer.js
-//  Preview effects — filters + motion + LAYER TRANSFORM (keyframed)
-//  + pixel effects.
+//  Visual effects on preview canvas — HIERARCHY-AWARE.
+//
+//  Rule: Effect at track Ti applies to ALL display clips BELOW it.
+//        Effects do NOT affect layers above.
+//
+//  Live: called synchronously by playbackEngine each frame.
 // ================================================================
 
 import { isIdentity } from './transformApplier.js';
 import { hasAnyKeyframes, sampleAll } from './keyframeStore.js';
 
 const CSS_ID = 'effect-renderer-styles';
-let rafPending = false;
-let lastCssFilter = '';
-let lastMotionKey = '';
-let lastTransformKey = '';
+
+let currentLayerTransformKey = '';
+let currentCssFilter = '';
+let currentMotionKey = '';
 
 function getState() { return window.__appState; }
 
@@ -33,121 +37,188 @@ function injectStyles() {
   document.head.appendChild(s);
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  INIT
+// ═══════════════════════════════════════════════════════════════
 export function initEffectRenderer() {
   injectStyles();
-  document.addEventListener('playback:tick', schedule);
-  document.addEventListener('editor:timeline-changed', schedule);
-  document.addEventListener('effects:refresh', schedule);
-  document.addEventListener('ratio:changed', schedule);
-  document.addEventListener('transform:changed', schedule);
-  document.addEventListener('keyframe:changed', schedule);
-  schedule();
-}
+  window.__applyVisualEffects = applyVisualEffects;
 
-function schedule() {
-  if (rafPending) return;
-  rafPending = true;
-  requestAnimationFrame(() => {
-    rafPending = false;
-    apply();
+  document.addEventListener('editor:timeline-changed', onPausedRefresh);
+  document.addEventListener('effects:refresh', onPausedRefresh);
+  document.addEventListener('transform:changed', onPausedRefresh);
+  document.addEventListener('keyframe:changed', onPausedRefresh);
+  document.addEventListener('ratio:changed', onPausedRefresh);
+
+  requestAnimationFrame(function () {
+    const eng = window.__playbackEngine;
+    const t = eng ? eng.getTime() : 0;
+    applyVisualEffects(t);
   });
 }
 
-export function getActiveEffectLayersAt(time) {
+function onPausedRefresh() {
+  const eng = window.__playbackEngine;
+  if (eng && eng.isPlaying && eng.isPlaying()) return;
+  const t = eng ? eng.getTime() : 0;
+  const preview = window.__previewCanvasInstance;
+  if (preview && typeof preview.redraw === 'function') {
+    try { preview.redraw(); } catch (_) {}
+  }
+  requestAnimationFrame(function () {
+    applyVisualEffects(t);
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  HELPERS
+// ═══════════════════════════════════════════════════════════════
+function isDisplayClip(c) {
+  if (!c) return false;
+  if (c.__textId) return true;
+  if (c.__stickerId) return true;
+  if (c.type && (c.type.indexOf('video/') === 0 || c.type.indexOf('image/') === 0)) return true;
+  return false;
+}
+
+function isEffectClip(c) {
+  return !!(c && c.__effectId);
+}
+
+function clipContains(clip, time) {
+  const s = Number.isFinite(clip.startTime) ? clip.startTime : 0;
+  const d = Number.isFinite(clip.duration) ? clip.duration : 0;
+  return time >= s && time < s + d;
+}
+
+function getActiveVisualClips(time) {
   const appState = getState();
   if (!appState) return [];
   const tracks = appState.timeline.visual || [];
   const hidden = appState.timeline.hiddenVisualTracks || new Set();
   const active = [];
+
   for (let t = 0; t < tracks.length; t++) {
     if (hidden.has(t)) continue;
     const track = tracks[t];
     if (!Array.isArray(track)) continue;
     for (let c = 0; c < track.length; c++) {
       const clip = track[c];
-      if (!clip || !clip.__effectId) continue;
-      const s = Number.isFinite(clip.startTime) ? clip.startTime : 0;
-      const d = Number.isFinite(clip.duration) ? clip.duration : 0;
-      if (time >= s && time < s + d) active.push({ clip, trackIndex: t });
+      if (!clip) continue;
+      if (clipContains(clip, time)) {
+        active.push({ clip, trackIndex: t });
+        break;
+      }
     }
   }
   active.sort((a, b) => a.trackIndex - b.trackIndex);
   return active;
 }
 
-function findTopVideoOrImageClipAt(time) {
-  const appState = getState();
-  if (!appState) return null;
-  const tracks = appState.timeline.visual || [];
-  const hidden = appState.timeline.hiddenVisualTracks || new Set();
-  for (let t = tracks.length - 1; t >= 0; t--) {
-    if (hidden.has(t)) continue;
-    const track = tracks[t];
-    if (!Array.isArray(track)) continue;
-    for (let c = 0; c < track.length; c++) {
-      const clip = track[c];
-      if (!clip || !clip.type) continue;
-      const isVideo = clip.type.indexOf('video/') === 0;
-      const isImage = clip.type.indexOf('image/') === 0;
-      if (!isVideo && !isImage) continue;
-      const s = Number.isFinite(clip.startTime) ? clip.startTime : 0;
-      const d = Number.isFinite(clip.duration) ? clip.duration : 0;
-      if (time >= s && time < s + d) return clip;
-    }
+function getTopDisplayTrackIndex(time) {
+  const active = getActiveVisualClips(time);
+  for (let i = active.length - 1; i >= 0; i--) {
+    if (isDisplayClip(active[i].clip)) return active[i].trackIndex;
   }
-  return null;
+  return -1;
 }
 
-function apply() {
+function getEffectsAbove(time, trackIndex) {
+  const active = getActiveVisualClips(time);
+  const result = [];
+  for (let i = 0; i < active.length; i++) {
+    const e = active[i];
+    if (!isEffectClip(e.clip)) continue;
+    if (e.trackIndex > trackIndex) result.push(e);
+  }
+  return result;
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  MAIN APPLY
+// ═══════════════════════════════════════════════════════════════
+function applyVisualEffects(time) {
   const canvas = document.querySelector('#preview-canvas');
   if (!canvas) return;
-  const eng = window.__playbackEngine;
-  const time = eng && typeof eng.getTime === 'function' ? eng.getTime() : 0;
-  const active = getActiveEffectLayersAt(time);
 
-  // 1) CSS FILTERS
-  let cssFilter = '';
-  for (let i = 0; i < active.length; i++) {
-    const st = active[i].clip.effectState;
+  const topDisplayTrack = getTopDisplayTrackIndex(time);
+
+  if (topDisplayTrack < 0) {
+    if (currentCssFilter !== '') {
+      canvas.style.removeProperty('filter');
+      currentCssFilter = '';
+    }
+    if (currentMotionKey !== '') {
+      canvas.style.removeProperty('transform');
+      currentMotionKey = '';
+    }
+    return;
+  }
+
+  const effects = getEffectsAbove(time, topDisplayTrack);
+
+  // 1) CSS FILTER
+  let cssFilterStr = '';
+  for (let i = 0; i < effects.length; i++) {
+    const st = effects[i].clip.effectState;
     if (!st) continue;
-    if ((st.kind === 'filter' || st.kind === 'effect') && st.filters) {
+    if (st.kind === 'filter' || st.kind === 'effect') {
       const part = buildCssFilter(st.filters);
-      if (part) cssFilter = cssFilter ? cssFilter + ' ' + part : part;
+      if (part) cssFilterStr = cssFilterStr ? cssFilterStr + ' ' + part : part;
     }
   }
-  if (cssFilter !== lastCssFilter) {
-    if (cssFilter) canvas.style.setProperty('filter', cssFilter, 'important');
+  if (cssFilterStr !== currentCssFilter) {
+    if (cssFilterStr) canvas.style.setProperty('filter', cssFilterStr, 'important');
     else canvas.style.removeProperty('filter');
-    lastCssFilter = cssFilter;
+    currentCssFilter = cssFilterStr;
   }
 
   // 2) MOTION
-  let motionTransform = '';
-  for (let i = 0; i < active.length; i++) {
-    const st = active[i].clip.effectState;
+  let motionStr = '';
+  for (let i = 0; i < effects.length; i++) {
+    const st = effects[i].clip.effectState;
     if (!st || !st.motion) continue;
     const m = computeMotion(st.motion, time);
-    if (m) motionTransform = motionTransform ? motionTransform + ' ' + m : m;
+    if (m) motionStr = motionStr ? motionStr + ' ' + m : m;
   }
-  if (motionTransform !== lastMotionKey) {
-    if (motionTransform) canvas.style.setProperty('transform', motionTransform, 'important');
+  if (motionStr !== currentMotionKey) {
+    if (motionStr) canvas.style.setProperty('transform', motionStr, 'important');
     else canvas.style.removeProperty('transform');
-    lastMotionKey = motionTransform;
+    currentMotionKey = motionStr;
   }
 
-  // 3) LAYER TRANSFORM (keyframe-aware) → previewCanvas
-  const topClip = findTopVideoOrImageClipAt(time);
-  let layerXform = topClip && topClip.__transform ? topClip.__transform : null;
-  if (topClip && hasAnyKeyframes(topClip)) {
-    layerXform = sampleAll(topClip, time, layerXform || {});
-  }
+   // 3) LAYER TRANSFORM — video/image clips ONLY
+  //    Text & sticker clips have their own CSS-based transform
+  //    (via textState.positionX/scale/rotation), they should NOT
+  //    trigger canvas-level transform.
+  const preview = window.__previewCanvasInstance;
+  if (preview && typeof preview.setLayerTransform === 'function') {
+    const active = getActiveVisualClips(time);
+    let topVideoOrImageClip = null;
+    for (let i = active.length - 1; i >= 0; i--) {
+      const c = active[i].clip;
+      if (!c || !c.type) continue;
+      const isV = c.type.indexOf('video/') === 0;
+      const isI = c.type.indexOf('image/') === 0;
+      if (isV || isI) { topVideoOrImageClip = c; break; }
+    }
 
-  const xformKey = layerXform && !isIdentity(layerXform) ? JSON.stringify(layerXform) : '';
-  if (xformKey !== lastTransformKey) {
-    lastTransformKey = xformKey;
-    const preview = window.__previewCanvasInstance;
-    if (preview && typeof preview.setLayerTransform === 'function') {
-      preview.setLayerTransform(layerXform && !isIdentity(layerXform) ? layerXform : null);
+    let layerXform = topVideoOrImageClip && topVideoOrImageClip.__transform
+      ? topVideoOrImageClip.__transform
+      : null;
+
+    if (topVideoOrImageClip && hasAnyKeyframes(topVideoOrImageClip)) {
+      layerXform = sampleAll(topVideoOrImageClip, time, layerXform || {});
+    }
+
+    const key = layerXform && !isIdentity(layerXform)
+      ? JSON.stringify(layerXform)
+      : '';
+    if (key !== currentLayerTransformKey) {
+      currentLayerTransformKey = key;
+      preview.setLayerTransform(
+        layerXform && !isIdentity(layerXform) ? layerXform : null
+      );
       if (typeof preview.redraw === 'function') {
         try { preview.redraw(); } catch (_) {}
       }
@@ -155,44 +226,45 @@ function apply() {
   }
 
   // 4) PIXEL EFFECTS
-  const pixelEntries = [];
-  for (let i = 0; i < active.length; i++) {
-    const st = active[i].clip.effectState;
+  const pixelEffects = [];
+  for (let i = 0; i < effects.length; i++) {
+    const st = effects[i].clip.effectState;
     if (!st) continue;
     if (st.kind === 'adjustment' || st.kind === 'colorWheel' || st.kind === 'chroma') {
-      pixelEntries.push(active[i]);
+      pixelEffects.push(effects[i]);
     }
   }
-  if (!pixelEntries.length) return;
-
-  if (eng && typeof eng.redraw === 'function') {
-    try { eng.redraw(); } catch (_) {}
-  }
+  if (!pixelEffects.length) return;
 
   let ctx = null;
   try { ctx = canvas.getContext('2d', { willReadFrequently: true }); }
   catch (_) { ctx = canvas.getContext('2d'); }
-  if (!ctx || canvas.width <= 0 || canvas.height <= 0) return;
+  if (!ctx) return;
+  if (canvas.width <= 0 || canvas.height <= 0) return;
 
   let imgData;
   try { imgData = ctx.getImageData(0, 0, canvas.width, canvas.height); }
   catch (_) { return; }
 
-  const w = canvas.width, h = canvas.height;
+  const W = canvas.width;
+  const H = canvas.height;
   const data = imgData.data;
 
-  for (let i = 0; i < pixelEntries.length; i++) {
-    const st = pixelEntries[i].clip.effectState;
+  for (let i = 0; i < pixelEffects.length; i++) {
+    const st = pixelEffects[i].clip.effectState;
     try {
-      if (st.kind === 'adjustment') applyAdjustment(data, w, h, st.adjustments);
-      else if (st.kind === 'colorWheel') applyColorWheel(data, w, h, st.colorWheel);
-      else if (st.kind === 'chroma') applyChroma(data, w, h, st.chroma);
-    } catch (e) { console.warn('effect apply error:', e); }
+      if (st.kind === 'adjustment') applyAdjustment(data, W, H, st.adjustments);
+      else if (st.kind === 'colorWheel') applyColorWheel(data, W, H, st.colorWheel);
+      else if (st.kind === 'chroma') applyChroma(data, W, H, st.chroma);
+    } catch (_) {}
   }
 
   try { ctx.putImageData(imgData, 0, 0); } catch (_) {}
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  CSS FILTER BUILDER
+// ═══════════════════════════════════════════════════════════════
 function buildCssFilter(f) {
   if (!f) return '';
   const p = [];
@@ -208,6 +280,9 @@ function buildCssFilter(f) {
   return p.join(' ');
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  MOTION
+// ═══════════════════════════════════════════════════════════════
 function computeMotion(m, time) {
   if (!m || !m.type) return '';
   const speed = m.speed || 1;
@@ -219,10 +294,22 @@ function computeMotion(m, time) {
       const dy = Math.cos(t * 41) * 6 * I;
       return 'translate(' + dx.toFixed(2) + 'px,' + dy.toFixed(2) + 'px)';
     }
-    case 'bounce': { const s = 1 + Math.abs(Math.sin(t * 4)) * 0.12 * I; return 'scale(' + s.toFixed(3) + ')'; }
-    case 'pulse': { const s = 1 + Math.sin(t * 3) * 0.08 * I; return 'scale(' + s.toFixed(3) + ')'; }
-    case 'zoomPulse': { const s = 1 + (Math.sin(t * 2) * 0.5 + 0.5) * 0.35 * I; return 'scale(' + s.toFixed(3) + ')'; }
-    case 'rotate': { const a = Math.sin(t * 2) * 6 * I; return 'rotate(' + a.toFixed(2) + 'deg)'; }
+    case 'bounce': {
+      const s = 1 + Math.abs(Math.sin(t * 4)) * 0.12 * I;
+      return 'scale(' + s.toFixed(3) + ')';
+    }
+    case 'pulse': {
+      const s = 1 + Math.sin(t * 3) * 0.08 * I;
+      return 'scale(' + s.toFixed(3) + ')';
+    }
+    case 'zoomPulse': {
+      const s = 1 + (Math.sin(t * 2) * 0.5 + 0.5) * 0.35 * I;
+      return 'scale(' + s.toFixed(3) + ')';
+    }
+    case 'rotate': {
+      const a = Math.sin(t * 2) * 6 * I;
+      return 'rotate(' + a.toFixed(2) + 'deg)';
+    }
     case 'glitch': {
       const dx = (Math.random() - 0.5) * 14 * I;
       const dy = (Math.random() - 0.5) * 8 * I;
@@ -233,6 +320,9 @@ function computeMotion(m, time) {
   return '';
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  PIXEL PROCESSORS
+// ═══════════════════════════════════════════════════════════════
 function applyAdjustment(data, w, h, s) {
   if (!s) return;
   const clamp = v => v < 0 ? 0 : v > 255 ? 255 : v;
@@ -295,31 +385,61 @@ function hslToRgb(h, s, l) {
   return [Math.round(f(0) * 255), Math.round(f(8) * 255), Math.round(f(4) * 255)];
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  CHROMA KEY — works for ANY picked color
+//  Uses kr/kg/kb = user's picked RGB (not hardcoded green)
+//  Blends RGB toward black so it works in OPAQUE export canvas
+// ═══════════════════════════════════════════════════════════════
 function applyChroma(data, w, h, c) {
   if (!c || !c.keyColor) return;
-  const kr = c.keyColor.r, kg = c.keyColor.g, kb = c.keyColor.b;
+
+  const kr = c.keyColor.r;
+  const kg = c.keyColor.g;
+  const kb = c.keyColor.b;
+
   const sim = (c.similarity != null ? c.similarity : 30) / 100;
   const sm = (c.smoothness != null ? c.smoothness : 20) / 100;
   const inten = (c.intensity != null ? c.intensity : 100) / 100;
   const sp = (c.spill != null ? c.spill : 50) / 100;
+
   const maxDist = Math.sqrt(3 * 255 * 255) || 1;
-  const simEnd = sim, softEnd = sim + sm;
+  const simEnd = sim;
+  const softEnd = sim + sm;
+
   for (let i = 0; i < data.length; i += 4) {
-    const r = data[i], g = data[i + 1], b = data[i + 2];
-    const dr = r - kr, dg = g - kg, db = b - kb;
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+
+    // Distance from user's picked color (any color, not just green)
+    const dr = r - kr;
+    const dg = g - kg;
+    const db = b - kb;
     const dist = Math.sqrt(dr * dr + dg * dg + db * db) / maxDist;
+
     let removal = 0;
     if (dist <= simEnd) removal = 1;
     else if (sm > 0 && dist <= softEnd) removal = 1 - (dist - simEnd) / sm;
     removal *= inten;
-    if (removal > 0) data[i + 3] = Math.round(data[i + 3] * (1 - removal));
-    if (sp > 0 && data[i + 3] > 0 && dist < softEnd + 0.15) {
+
+    if (removal > 0) {
+      // FIX: blend RGB toward black (works in opaque export canvas)
+      // AND reduce alpha (works in transparent preview canvas).
+      const keep = 1 - removal;
+      data[i]     = Math.round(r * keep);
+      data[i + 1] = Math.round(g * keep);
+      data[i + 2] = Math.round(b * keep);
+      data[i + 3] = Math.round(data[i + 3] * keep);
+    }
+
+    // Spill suppression (for non-removed pixels near the key color)
+    if (sp > 0 && removal < 1 && dist < softEnd + 0.15) {
       const prox = 1 - Math.min(1, dist / (softEnd + 0.15));
       const bl = sp * prox * 0.8;
       const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-      data[i] = Math.round(r * (1 - bl) + gray * bl);
-      data[i + 1] = Math.round(g * (1 - bl) + gray * bl);
-      data[i + 2] = Math.round(b * (1 - bl) + gray * bl);
+      data[i]     = Math.round(data[i]     * (1 - bl) + gray * bl);
+      data[i + 1] = Math.round(data[i + 1] * (1 - bl) + gray * bl);
+      data[i + 2] = Math.round(data[i + 2] * (1 - bl) + gray * bl);
     }
   }
 }

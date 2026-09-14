@@ -2,11 +2,9 @@
 //  js/workspace/transitionEngine.js
 //  Transition helpers + canvas blend renderer.
 //
-//  A transition is stored on the SECOND clip as:
-//    clip.__transitionIn = { key, duration }  // seconds
-//
-//  Plays at the START of the clip:
-//    [clip.startTime, clip.startTime + duration]
+//  Transition stored on the SECOND clip as:
+//    clip.__transitionIn = { key, duration }
+//  Plays at START of clip: [startTime, startTime + duration]
 // ================================================================
 
 export const TRANSITIONS = [
@@ -53,23 +51,17 @@ export function getTransitionProgress(clip, timelineTime) {
 
 // ═══════════════════════════════════════════════════════════════
 //  BLEND RENDERER
-//  prevCanvas: canvas with previous clip's last frame (may be null)
-//  currentDraw: function(ctx) that draws current frame
-//  W, H: target size
-//  progress: 0..1
-//  type: transition key
 // ═══════════════════════════════════════════════════════════════
 export function renderTransitionBlend(ctx, W, H, prevCanvas, currentDraw, progress, type) {
   const p = Math.max(0, Math.min(1, progress));
 
-  // Ensure clean state
   ctx.save();
   ctx.globalAlpha = 1;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, W, H);
 
   switch (type) {
-    // ─── Cross-fade between prev + current ────────────────
+    // ─── Cross-fade ───────────────────────────────────────
     case 'fade':
     case 'dissolve':
     case 'blur': {
@@ -123,7 +115,6 @@ export function renderTransitionBlend(ctx, W, H, prevCanvas, currentDraw, progre
 
     // ─── Slide ────────────────────────────────────────────
     case 'slideLeft': {
-      // prev exits to the LEFT, current enters from RIGHT
       if (prevCanvas) {
         ctx.save();
         ctx.translate(-W * p, 0);
@@ -190,7 +181,6 @@ export function renderTransitionBlend(ctx, W, H, prevCanvas, currentDraw, progre
 
     // ─── Zoom ─────────────────────────────────────────────
     case 'zoomIn': {
-      // Current scales up + fades in
       if (prevCanvas) {
         ctx.globalAlpha = 1;
         ctx.drawImage(prevCanvas, 0, 0, W, H);
@@ -210,7 +200,6 @@ export function renderTransitionBlend(ctx, W, H, prevCanvas, currentDraw, progre
       break;
     }
     case 'zoomOut': {
-      // Prev scales up + fades out; current underneath
       if (prevCanvas) {
         const sc = 1 + 1.5 * p;
         ctx.save();
@@ -235,7 +224,6 @@ export function renderTransitionBlend(ctx, W, H, prevCanvas, currentDraw, progre
 
     // ─── Wipe ─────────────────────────────────────────────
     case 'wipeLeft': {
-      // Current revealed from RIGHT to LEFT
       if (prevCanvas) {
         ctx.drawImage(prevCanvas, 0, 0, W, H);
       } else {
@@ -288,7 +276,6 @@ export function renderTransitionBlend(ctx, W, H, prevCanvas, currentDraw, progre
     }
 
     default: {
-      // Fallback: just draw current
       currentDraw(ctx, W, H);
     }
   }

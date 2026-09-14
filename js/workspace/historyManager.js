@@ -1,9 +1,7 @@
 // ================================================================
 //  js/workspace/historyManager.js
 //  Snapshot-based undo / redo.
-//  NO debounce — pushes on every distinct event.
-//  Features that fire slider events during drag (speed) now only
-//  fire on release, so this works cleanly.
+//  Works with the timeline state (visual + audio).
 // ================================================================
 
 const MAX_HISTORY = 100;
@@ -69,7 +67,6 @@ export function pushHistory() {
 
 function schedulePush() {
   if (isRestoring) return;
-  // Push immediately — no debounce.
   pushHistory();
 }
 
@@ -81,10 +78,10 @@ function restore(snap) {
   timelineRef.audio  = clone(snap.audio)  || [];
 
   document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
+  document.dispatchEvent(new CustomEvent('effects:refresh'));
 
   updateButtons();
 
-  // Very short guard — just enough to skip the synchronous re-render events
   setTimeout(function () { isRestoring = false; }, 0);
 }
 
@@ -101,12 +98,13 @@ export function redo() {
 }
 
 const CSS_ID = 'history-manager-styles';
-
 function injectStyles() {
   if (document.getElementById(CSS_ID)) return;
   const s = document.createElement('style');
   s.id = CSS_ID;
-  s.textContent = '.icon-button.history-disabled{opacity:0.35;pointer-events:none;transition:opacity 0.15s ease;}.icon-button:not(.history-disabled){transition:opacity 0.15s ease;}';
+  s.textContent =
+    '.icon-button.history-disabled{opacity:0.35;pointer-events:none;transition:opacity 0.15s ease;}' +
+    '.icon-button:not(.history-disabled){transition:opacity 0.15s ease;}';
   document.head.appendChild(s);
 }
 

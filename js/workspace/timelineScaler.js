@@ -1,30 +1,17 @@
 // ================================================================
 //  js/workspace/timelineScaler.js
 //  Single source of truth for timeline scaling.
-//
-//  Converts timeline duration (seconds) + zoom into pixel widths so:
-//    • Ruler width == total media duration
-//    • Every clip's width == clip.duration × pxPerSecond
-//    • Zoom scales ruler AND clips together
-//
-//  Events
-//  ──────
-//    document → 'timeline:scale-changed'
-//      detail: { zoom, duration, pxPerSecond, contentWidth, totalWidth }
 // ================================================================
 
-export const LABEL_WIDTH   = 80;    // px reserved for V1/A1 labels
-export const MIN_ZOOM      = 0.10;  // 10  %
-export const MAX_ZOOM      = 10.00; // 1000 %
-export const DEFAULT_ZOOM  = 1.00;  // 100 %
+export const LABEL_WIDTH   = 80;
+export const MIN_ZOOM      = 0.10;
+export const MAX_ZOOM      = 10.00;
+export const DEFAULT_ZOOM  = 1.00;
 
 const MIN_PPS = 0.05;
 const MAX_PPS = 400;
-
-// Minimum px gap between two ruler labels so numbers don't collide
 const MIN_LABEL_GAP_PX = 56;
 
-// ─── Internal state ─────────────────────────────────────────────
 let zoom            = DEFAULT_ZOOM;
 let durationSeconds = 0;
 let viewportEl      = null;
@@ -32,7 +19,6 @@ let sliderEl        = null;
 let valueEl         = null;
 const listeners     = new Set();
 
-// ─── Viewport measurement ───────────────────────────────────────
 function getViewportContentWidth() {
   const el = viewportEl || document.querySelector('#timeline-viewport');
   if (!el) return 400;
@@ -40,7 +26,6 @@ function getViewportContentWidth() {
   return Math.max(120, w - LABEL_WIDTH);
 }
 
-// ─── Init ───────────────────────────────────────────────────────
 export function initTimelineScaler(opts = {}) {
   viewportEl = opts.viewport   || null;
   sliderEl   = opts.slider     || null;
@@ -67,7 +52,6 @@ export function initTimelineScaler(opts = {}) {
   return api;
 }
 
-// ─── Duration ───────────────────────────────────────────────────
 export function setDuration(seconds) {
   const sec  = Number(seconds);
   const next = (Number.isFinite(sec) && sec > 0) ? sec : 0;
@@ -79,7 +63,6 @@ export function setDuration(seconds) {
 
 export function getDuration() { return durationSeconds; }
 
-// ─── Zoom ───────────────────────────────────────────────────────
 export function setZoom(z) {
   let next = Number(z);
   if (!Number.isFinite(next)) next = DEFAULT_ZOOM;
@@ -104,8 +87,6 @@ function syncSliderUI() {
   if (valueEl) valueEl.textContent = Math.round(zoom * 100) + '%';
 }
 
-// ─── Measurements ───────────────────────────────────────────────
-// Adaptive: at zoom = 1, whole timeline roughly fits the viewport.
 export function getPixelsPerSecond() {
   if (durationSeconds <= 0) return 60;
   const vw      = getViewportContentWidth();
@@ -132,8 +113,6 @@ export function getMetrics() {
   };
 }
 
-// ─── Clip geometry helper ──────────────────────────────────────
-// Given a clip { startTime, duration } → { left, width } in px.
 export function computeClipRect(clip) {
   const start = Number.isFinite(clip && clip.startTime) ? clip.startTime : 0;
   const dur   = Number.isFinite(clip && clip.duration)  ? clip.duration  : 0;
@@ -141,13 +120,12 @@ export function computeClipRect(clip) {
   return {
     left:     Math.round(start * pps),
     width:    Math.max(20, Math.round(dur * pps)),
-    start:    start,
+    start,
     end:      start + dur,
     duration: dur
   };
 }
 
-// ─── Ruler step (adaptive to zoom + duration) ──────────────────
 const STEP_CANDIDATES = [
   0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30,
   60, 120, 300, 600, 900, 1800, 3600, 7200
@@ -162,7 +140,6 @@ export function getRulerStep() {
   return STEP_CANDIDATES[STEP_CANDIDATES.length - 1];
 }
 
-// ─── Ruler label formatting ────────────────────────────────────
 export function formatRulerTime(seconds, step) {
   const s = Math.max(0, Number(seconds) || 0);
   const smallStep = step > 0 && step < 1;
@@ -189,7 +166,6 @@ export function formatRulerTime(seconds, step) {
   return m + ':' + remStr;
 }
 
-// ─── Events ────────────────────────────────────────────────────
 export function onChange(fn) {
   if (typeof fn !== 'function') return () => {};
   listeners.add(fn);
@@ -204,7 +180,6 @@ function emitChange() {
   }
 }
 
-// ─── Public API ────────────────────────────────────────────────
 const api = {
   init: initTimelineScaler,
   setDuration,
