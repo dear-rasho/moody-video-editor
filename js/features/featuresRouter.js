@@ -12,6 +12,7 @@ const FEATURE_META = {
   stickers:     { label: 'Stickers',    icon: '😀' },
   motion:       { label: 'Motion',      icon: '🎞️' },
   transform:    { label: 'Transform',   icon: '🔲' },
+  transitions:  { label: 'Transitions', icon: '⇄' },       // 🆕
   trim:         { label: 'Trim',        icon: '🎯' },
   crop:         { label: 'Crop',        icon: '🖼️' },
   duplicate:    { label: 'Duplicate',   icon: '📋' },
@@ -111,8 +112,8 @@ const router = {
       audioeffectPanel: './audioeffect.js',
       speedPanel:       './speed.js',
       trimPanel:        './trim.js',
-      transformPanel:   './transform.js'
-      // ratio panel removed
+      transformPanel:   './transform.js',
+      transitionsPanel: './transitions.js'      // 🆕
     };
 
     if (view.renderMode && CUSTOM_PANELS[view.renderMode]) {

@@ -1,12 +1,12 @@
 // ================================================================
 //  js/workspace/layerDrag.js
-//  Free-form drag & drop — skips trim handles AND kf markers.
+//  Free-form drag & drop — skips trim handles, kf markers,
+//  and transition markers.
 // ================================================================
 
 import { getPixelsPerSecond } from './timelineScaler.js';
 
 const DRAG_THRESHOLD_PX = 8;
-const LABEL_WIDTH_PX = 80;
 const CSS_ID = 'layer-drag-styles';
 
 let dragState = null;
@@ -94,6 +94,7 @@ function onPointerDown(e) {
   if (e.pointerType === 'mouse' && e.button !== 0) return;
   if (e.target.closest && e.target.closest('.trim-handle')) return;
   if (e.target.closest && e.target.closest('.kf-marker')) return;
+  if (e.target.closest && e.target.closest('.transition-marker')) return;   // 🆕
 
   const clipEl = e.target.closest && e.target.closest('.clip');
   if (!clipEl) return;

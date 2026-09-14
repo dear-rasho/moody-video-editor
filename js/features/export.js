@@ -1,12 +1,12 @@
 // ================================================================
 //  js/features/export.js
-//  Export — works with OR without a video source.
-//  If timeline has only text/image/effect layers, they still
-//  render with all animations.
+//  Export — MP4 (with video OR canvas-only) + PNG Seq + Audio
+//  Supports transitions, keyframes, effects, text overlays.
 // ================================================================
 
 import { renderFrameToCanvas } from '../workspace/exportRenderer.js';
 import { getBuilder } from '../workspace/audioFxBuilders.js';
+import { isTransitionActive } from '../workspace/transitionEngine.js';
 
 export const featureKey = 'export';
 
@@ -535,6 +535,26 @@ function findVideoClip(videoEl) {
   return null;
 }
 
+function findClipAtTimelineTime(time) {
+  const appState = window.__appState;
+  if (!appState) return null;
+  const tracks = appState.timeline.visual || [];
+  for (let t = 0; t < tracks.length; t++) {
+    const track = tracks[t];
+    if (!Array.isArray(track)) continue;
+    for (let c = 0; c < track.length; c++) {
+      const clip = track[c];
+      if (!clip) continue;
+      if (!clip.type) continue;
+      if (clip.type.indexOf('video/') !== 0 && clip.type.indexOf('image/') !== 0) continue;
+      const s = Number.isFinite(clip.startTime) ? clip.startTime : 0;
+      const d = Number.isFinite(clip.duration) ? clip.duration : 0;
+      if (time >= s && time < s + d) return clip;
+    }
+  }
+  return null;
+}
+
 function hasAnyVideoSource() {
   const appState = window.__appState;
   if (!appState) return false;
@@ -816,7 +836,7 @@ async function exportAudioRecorder(filename) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  VIDEO EXPORT — routes to fast or canvas-only
+//  VIDEO EXPORT
 // ═══════════════════════════════════════════════════════════════
 async function exportVideo(filename, fmt) {
   const timelineEnd = computeTimelineEnd();
@@ -842,10 +862,8 @@ async function exportVideo(filename, fmt) {
 
   try {
     if (hasSource) {
-      // Full pipeline: decode + render
       await exportVideoFast(filename);
     } else {
-      // Canvas-only: render text/image/effect layers frame-by-frame
       await exportVideoCanvasOnly(filename);
     }
   } catch (e) {
@@ -862,7 +880,7 @@ async function exportVideo(filename, fmt) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  CANVAS-ONLY EXPORT (no video source in timeline)
+//  CANVAS-ONLY EXPORT (no video source)
 // ═══════════════════════════════════════════════════════════════
 async function exportVideoCanvasOnly(filename) {
   const muxerMod = await import('https://cdn.jsdelivr.net/npm/mp4-muxer@5.1.5/+esm');
@@ -881,7 +899,6 @@ async function exportVideoCanvasOnly(filename) {
 
   console.log('[export-canvas] timelineEnd=' + timelineEnd + ' fps=' + fps + ' res=' + W + 'x' + H);
 
-  // Muxer (video only — no audio source without video)
   const target = new ArrayBufferTarget();
   const muxer = new Muxer({
     target,
@@ -890,7 +907,6 @@ async function exportVideoCanvasOnly(filename) {
     firstTimestampBehavior: 'offset'
   });
 
-  // Encoder
   let encoderError = null;
   let encoderMetaSeen = false;
   let frameCount = 0;
@@ -948,9 +964,22 @@ async function exportVideoCanvasOnly(filename) {
   if (!encoderConfigured) throw new Error('No supported H.264 encoder for ' + W + 'x' + H);
 
   const canvas = document.createElement('canvas');
-  canvas.width = W;
-  canvas.height = H;
+  canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
+
+  // Prev frame buffer for transitions (in case text/image clips have them)
+  const prevFrameBuffer = document.createElement('canvas');
+  prevFrameBuffer.width = W;
+  prevFrameBuffer.height = H;
+  const prevCtx = prevFrameBuffer.getContext('2d', { willReadFrequently: true });
+  let prevFrameValid = false;
+
+  function captureToBuffer() {
+    prevCtx.setTransform(1, 0, 0, 1, 0, 0);
+    prevCtx.clearRect(0, 0, W, H);
+    try { prevCtx.drawImage(canvas, 0, 0); } catch (_) {}
+    prevFrameValid = true;
+  }
 
   const totalFrames = Math.max(1, Math.round(timelineEnd * fps));
 
@@ -959,17 +988,22 @@ async function exportVideoCanvasOnly(filename) {
 
     const timelineTime = i * frameInterval;
 
-    // Reset canvas
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, W, H);
 
-    // Render every layer (video=null, so only text/image/effects draw)
+    // Check for active transition on top clip
+    const clipAtTime = findClipAtTimelineTime(timelineTime);
+    const transitionActive = clipAtTime && isTransitionActive(clipAtTime, timelineTime);
+
     try {
-      renderFrameToCanvas(ctx, W, H, null, timelineTime, timelineTime);
+      renderFrameToCanvas(ctx, W, H, null, timelineTime, timelineTime,
+                          (transitionActive && prevFrameValid) ? prevFrameBuffer : null);
     } catch (e) {
       console.warn('[export-canvas] renderFrame error:', e);
     }
+
+    if (!transitionActive) captureToBuffer();
 
     const exportFrame = new VideoFrame(canvas, {
       timestamp: Math.round(timelineTime * 1e6),
@@ -1009,7 +1043,7 @@ async function exportVideoCanvasOnly(filename) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  FAST RENDER (with video source)
+//  FAST RENDER (with video source) — with transitions
 // ═══════════════════════════════════════════════════════════════
 async function exportVideoFast(filename) {
   const MP4Box = await loadMP4Box();
@@ -1167,6 +1201,20 @@ async function exportVideoFast(filename) {
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
 
+  // 🆕 Prev frame buffer for transitions
+  const prevFrameBuffer = document.createElement('canvas');
+  prevFrameBuffer.width = W;
+  prevFrameBuffer.height = H;
+  const prevCtx = prevFrameBuffer.getContext('2d', { willReadFrequently: true });
+  let prevFrameValid = false;
+
+  function captureToBuffer() {
+    prevCtx.setTransform(1, 0, 0, 1, 0, 0);
+    prevCtx.clearRect(0, 0, W, H);
+    try { prevCtx.drawImage(canvas, 0, 0); } catch (_) {}
+    prevFrameValid = true;
+  }
+
   function emitBlackFrame(timelineTime) {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = '#000';
@@ -1181,6 +1229,7 @@ async function exportVideoFast(filename) {
     videoEncoder.encode(exportFrame, { keyFrame: needKey });
     exportFrame.close();
     frameCount++;
+    captureToBuffer();
   }
 
   if (clipStartTime > 0.005) {
@@ -1198,7 +1247,14 @@ async function exportVideoFast(filename) {
         if (timelineTime < clipStartTime - 0.03) { frame.close(); return; }
         if (timelineTime >= clipEnd) { frame.close(); return; }
 
-        renderFrameToCanvas(ctx, W, H, frame, sourceTime, timelineTime);
+        // 🆕 Transition check
+        const clipAtTime = findClipAtTimelineTime(timelineTime);
+        const transitionActive = clipAtTime && isTransitionActive(clipAtTime, timelineTime);
+
+        renderFrameToCanvas(ctx, W, H, frame, sourceTime, timelineTime,
+                            (transitionActive && prevFrameValid) ? prevFrameBuffer : null);
+
+        if (!transitionActive) captureToBuffer();
 
         const exportFrame = new VideoFrame(canvas, {
           timestamp: Math.round(timelineTime * 1e6),
@@ -1287,7 +1343,7 @@ async function exportVideoFast(filename) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  Audio encoder (with timeline offset) — used by fast path
+//  Audio encoder (with timeline offset)
 // ═══════════════════════════════════════════════════════════════
 async function encodeAudioFromURL(url, muxer, audioTrackInfo, sourceIn, clipDur, timelineStart) {
   const resp = await fetch(url);
@@ -1530,7 +1586,7 @@ function loadMP4Box() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  PNG SEQUENCE EXPORT — with & without video
+//  PNG SEQUENCE EXPORT
 // ═══════════════════════════════════════════════════════════════
 async function exportPngSequence(baseName) {
   const timelineEnd = computeTimelineEnd();
@@ -1576,7 +1632,6 @@ async function exportPngSequence(baseName) {
   }
 }
 
-// ─── Canvas-only PNG sequence (no video in timeline) ──────────
 async function exportPngSequenceCanvasOnly(dirHandle, totalFrames, fps) {
   const q = getCurrentQuality();
   const W = q.width;
@@ -1611,11 +1666,9 @@ async function exportPngSequenceCanvasOnly(dirHandle, totalFrames, fps) {
 
   for (let i = 0; i < totalFrames; i++) {
     const timelineTime = i * frameInterval;
-
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, W, H);
-
     try { renderFrameToCanvas(ctx, W, H, null, timelineTime, timelineTime); }
     catch (e) { console.warn('[pngseq-canvas] render error:', e); }
 
@@ -1642,7 +1695,6 @@ async function exportPngSequenceCanvasOnly(dirHandle, totalFrames, fps) {
   showToast('Saved ' + totalFrames + ' PNG files');
 }
 
-// ─── Video-source PNG sequence (existing fast path) ───────────
 async function exportPngSequenceFast(dirHandle, baseName, totalFrames, fps) {
   const MP4Box = await loadMP4Box();
   const videoEl = document.querySelector('#preview-video');

@@ -1,8 +1,9 @@
 // ================================================================
 //  js/workspace/previewCanvas.js
-//  Canvas matches wrapper size. Video contain-fit + ctx transform
-//  (position/rotation/anchor/crop/scale) applied during draw.
+//  Preview canvas — contain-fit + transform + transitions.
 // ================================================================
+
+import { isTransitionActive, getTransitionProgress, renderTransitionBlend } from './transitionEngine.js';
 
 export function initPreviewCanvas({ canvas, video, empty }) {
   if (!canvas || !video) {
@@ -25,6 +26,10 @@ export function initPreviewCanvas({ canvas, video, empty }) {
   let layerTransform = null;
   function setLayerTransform(t) { layerTransform = t; }
 
+  // 🆕 Previous frame buffer for transitions
+  const prevFrameBuffer = document.createElement('canvas');
+  let prevFrameValid = false;
+
   function syncCanvasSize() {
     const wrap = canvas.parentElement;
     if (!wrap) return;
@@ -34,9 +39,19 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     if (canvas.width !== w || canvas.height !== h) {
       canvas.width = w;
       canvas.height = h;
+      prevFrameBuffer.width = w;
+      prevFrameBuffer.height = h;
     }
     canvas.style.width = '100%';
     canvas.style.height = '100%';
+  }
+
+  function captureToBuffer() {
+    const bc = prevFrameBuffer.getContext('2d');
+    bc.setTransform(1, 0, 0, 1, 0, 0);
+    bc.clearRect(0, 0, prevFrameBuffer.width, prevFrameBuffer.height);
+    try { bc.drawImage(canvas, 0, 0); } catch (_) {}
+    prevFrameValid = true;
   }
 
   function applyCtxTransform(c, W, H, t) {
@@ -81,21 +96,33 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     } catch (_) {}
   };
 
-  function drawVideoFrame() {
-    if (!video.videoWidth || !video.videoHeight) return;
-    if (video.readyState < 2) return;
+  // ─── Get current video clip at timeline time ──────────────
+  function getCurrentVideoClip() {
+    const appState = window.__appState;
+    if (!appState) return null;
+    const eng = window.__playbackEngine;
+    const time = eng && typeof eng.getTime === 'function' ? eng.getTime() : 0;
+    const tracks = appState.timeline.visual || [];
+    const hidden = appState.timeline.hiddenVisualTracks || new Set();
+    for (let t = tracks.length - 1; t >= 0; t--) {
+      if (hidden.has(t)) continue;
+      const track = tracks[t];
+      if (!Array.isArray(track)) continue;
+      for (let c = 0; c < track.length; c++) {
+        const clip = track[c];
+        if (!clip || !clip.type) continue;
+        const isV = clip.type.indexOf('video/') === 0;
+        const isI = clip.type.indexOf('image/') === 0;
+        if (!isV && !isI) continue;
+        const s = Number.isFinite(clip.startTime) ? clip.startTime : 0;
+        const d = Number.isFinite(clip.duration) ? clip.duration : 0;
+        if (time >= s && time < s + d) return clip;
+      }
+    }
+    return null;
+  }
 
-    syncCanvasSize();
-    const c = getCtx();
-    if (!c) return;
-
-    const W = canvas.width;
-    const H = canvas.height;
-
-    c.setTransform(1, 0, 0, 1, 0, 0);
-    c.fillStyle = '#000';
-    c.fillRect(0, 0, W, H);
-
+  function drawCurrentVideoInto(c, W, H) {
     c.save();
     if (layerTransform) applyCtxTransform(c, W, H, layerTransform);
 
@@ -118,6 +145,46 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     const r = containRect(sw, sh, W, H);
     try { c.drawImage(video, sx, sy, sw, sh, r.x, r.y, r.w, r.h); } catch (_) {}
     c.restore();
+  }
+
+  function drawVideoFrame() {
+    if (!video.videoWidth || !video.videoHeight) return;
+    if (video.readyState < 2) return;
+
+    syncCanvasSize();
+    const c = getCtx();
+    if (!c) return;
+
+    const W = canvas.width;
+    const H = canvas.height;
+
+    // ─── Check for active transition ──────────────────────
+    const clip = getCurrentVideoClip();
+    const transitioning = clip && isTransitionActive(clip, getTime());
+
+    if (transitioning && prevFrameValid) {
+      const progress = getTransitionProgress(clip, getTime());
+      const type = clip.__transitionIn.key;
+      renderTransitionBlend(c, W, H, prevFrameBuffer,
+        (cx, cw, ch) => drawCurrentVideoInto(cx, cw, ch),
+        progress, type);
+      return;
+    }
+
+    // Normal draw
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    c.fillStyle = '#000';
+    c.fillRect(0, 0, W, H);
+
+    drawCurrentVideoInto(c, W, H);
+
+    // Capture current frame for future transitions
+    captureToBuffer();
+  }
+
+  function getTime() {
+    const eng = window.__playbackEngine;
+    return eng && typeof eng.getTime === 'function' ? eng.getTime() : 0;
   }
 
   function drawImageContained(image) {
@@ -180,6 +247,7 @@ export function initPreviewCanvas({ canvas, video, empty }) {
   document.addEventListener('ratio:changed', () => { syncCanvasSize(); drawVideoFrame(); });
   document.addEventListener('keyframe:changed', () => { if (!isBlocked()) drawVideoFrame(); });
   document.addEventListener('transform:changed', () => { if (!isBlocked()) drawVideoFrame(); });
+  document.addEventListener('transition:changed', () => { if (!isBlocked()) drawVideoFrame(); });
 
   if (typeof ResizeObserver !== 'undefined') {
     new ResizeObserver(() => {
@@ -219,6 +287,7 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     video.removeAttribute('src');
     video.load();
     hideVideo();
+    prevFrameValid = false;
     const c = getCtx();
     if (c) c.clearRect(0, 0, canvas.width, canvas.height);
     if (empty) empty.hidden = false;

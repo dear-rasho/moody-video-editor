@@ -1,18 +1,20 @@
 // ================================================================
 //  js/workspace/exportRenderer.js
 //  Export frames — video (contain-fit) + keyframe-aware transform
-//  + filters + motion + pixel effects + text + stickers.
+//  + filters + motion + pixel effects + text + stickers + transitions.
 // ================================================================
 
 import { hasAnyKeyframes, sampleAll } from './keyframeStore.js';
+import { isTransitionActive, getTransitionProgress, renderTransitionBlend } from './transitionEngine.js';
 
-export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime) {
+export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime, prevFrameCanvas) {
   const appState = window.__appState;
   if (!appState) { drawVideoContainFit(ctx, source, W, H, null); return; }
 
   const visualTracks = appState.timeline.visual || [];
   const hidden = appState.timeline.hiddenVisualTracks || new Set();
 
+  // 1) Active layers
   const active = [];
   for (let t = 0; t < visualTracks.length; t++) {
     if (hidden.has(t)) continue;
@@ -30,6 +32,26 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime)
     }
   }
 
+  // 2) Find top video/image clip (for transform + transition)
+  let topVideoClip = null;
+  for (let i = active.length - 1; i >= 0; i--) {
+    const c = active[i].clip;
+    if (c && c.type && (c.type.indexOf('video/') === 0 || c.type.indexOf('image/') === 0)) {
+      topVideoClip = c;
+      break;
+    }
+  }
+
+  // 3) Transition check
+  const transitioning = topVideoClip && isTransitionActive(topVideoClip, timelineTime);
+  const transitionProgress = transitioning
+    ? getTransitionProgress(topVideoClip, timelineTime)
+    : 0;
+  const transitionType = transitioning
+    ? topVideoClip.__transitionIn.key
+    : null;
+
+  // 4) CSS filter string
   let cssFilter = '';
   for (let i = 0; i < active.length; i++) {
     const st = active[i].clip.effectState;
@@ -40,6 +62,7 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime)
     }
   }
 
+  // 5) Motion
   let motion = null;
   for (let i = 0; i < active.length; i++) {
     const st = active[i].clip.effectState;
@@ -49,56 +72,66 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime)
     }
   }
 
-  let topVideoClip = null;
-  for (let i = active.length - 1; i >= 0; i--) {
-    const c = active[i].clip;
-    if (c && c.type && (c.type.indexOf('video/') === 0 || c.type.indexOf('image/') === 0)) {
-      topVideoClip = c;
-      break;
-    }
-  }
-
+  // 6) Layer transform
   let layerXform = topVideoClip && topVideoClip.__transform ? topVideoClip.__transform : null;
   if (topVideoClip && hasAnyKeyframes(topVideoClip)) {
     layerXform = sampleAll(topVideoClip, timelineTime, layerXform || {});
   }
 
-  ctx.save();
+  // ─── Draw base ────────────────────────────────────────────
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1;
+  ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, W, H);
 
-  if (cssFilter) { try { ctx.filter = cssFilter; } catch (_) {} }
+  // Function that draws the current frame (video + filter + motion + transform)
+  function drawCurrentFrame(c, w, h) {
+    c.save();
+    if (cssFilter) { try { c.filter = cssFilter; } catch (_) {} }
 
-  if (motion) {
-    const cx = W / 2, cy = H / 2;
-    ctx.translate(cx + (motion.tx || 0), cy + (motion.ty || 0));
-    if (motion.rot) ctx.rotate(motion.rot * Math.PI / 180);
-    if (motion.scale && motion.scale !== 1) ctx.scale(motion.scale, motion.scale);
-    ctx.translate(-cx, -cy);
+    if (motion) {
+      const cx = w / 2, cy = h / 2;
+      c.translate(cx + (motion.tx || 0), cy + (motion.ty || 0));
+      if (motion.rot) c.rotate(motion.rot * Math.PI / 180);
+      if (motion.scale && motion.scale !== 1) c.scale(motion.scale, motion.scale);
+      c.translate(-cx, -cy);
+    }
+
+    if (layerXform) {
+      const anchorX = layerXform.anchorX != null ? layerXform.anchorX : 50;
+      const anchorY = layerXform.anchorY != null ? layerXform.anchorY : 50;
+      const posX = layerXform.x != null ? layerXform.x : 50;
+      const posY = layerXform.y != null ? layerXform.y : 50;
+
+      const originX = w * (anchorX / 100);
+      const originY = h * (anchorY / 100);
+      const offsetX = (posX - 50) / 100 * w;
+      const offsetY = (posY - 50) / 100 * h;
+
+      c.translate(originX + offsetX, originY + offsetY);
+      if (layerXform.rotation) c.rotate(layerXform.rotation * Math.PI / 180);
+      const sc = (layerXform.scale != null ? layerXform.scale : 100) / 100;
+      if (sc !== 1) c.scale(sc, sc);
+      c.translate(-originX, -originY);
+    }
+
+    drawVideoContainFit(c, source, w, h, layerXform);
+    c.restore();
+    try { c.filter = 'none'; } catch (_) {}
   }
 
-  if (layerXform) {
-    const anchorX = layerXform.anchorX != null ? layerXform.anchorX : 50;
-    const anchorY = layerXform.anchorY != null ? layerXform.anchorY : 50;
-    const posX = layerXform.x != null ? layerXform.x : 50;
-    const posY = layerXform.y != null ? layerXform.y : 50;
-
-    const originX = W * (anchorX / 100);
-    const originY = H * (anchorY / 100);
-    const offsetX = (posX - 50) / 100 * W;
-    const offsetY = (posY - 50) / 100 * H;
-
-    ctx.translate(originX + offsetX, originY + offsetY);
-    if (layerXform.rotation) ctx.rotate(layerXform.rotation * Math.PI / 180);
-    const sc = (layerXform.scale != null ? layerXform.scale : 100) / 100;
-    if (sc !== 1) ctx.scale(sc, sc);
-    ctx.translate(-originX, -originY);
+  // ─── Apply transition OR normal draw ──────────────────────
+  if (transitioning && prevFrameCanvas) {
+    renderTransitionBlend(ctx, W, H, prevFrameCanvas, drawCurrentFrame, transitionProgress, transitionType);
+  } else {
+    drawCurrentFrame(ctx, W, H);
   }
 
-  drawVideoContainFit(ctx, source, W, H, layerXform);
-  ctx.restore();
   try { ctx.filter = 'none'; } catch (_) {}
+  ctx.globalAlpha = 1;
 
+  // ─── Pixel effects (after transition) ─────────────────────
   const pixelEntries = [];
   for (let i = 0; i < active.length; i++) {
     const st = active[i].clip.effectState;
@@ -125,6 +158,7 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime)
     }
   }
 
+  // ─── Text overlays ────────────────────────────────────────
   const textClips = [];
   for (let i = 0; i < active.length; i++) {
     const c = active[i].clip;
@@ -138,6 +172,7 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime)
     catch (e) { console.warn('text overlay draw failed:', e); }
   }
 
+  // ─── Stickers ─────────────────────────────────────────────
   for (let i = 0; i < active.length; i++) {
     const c = active[i].clip;
     if (c.__stickerId && c.stickerState) {
@@ -147,6 +182,7 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime)
   }
 }
 
+// ─── Cover-fit with optional crop ─────────────────────────────
 function drawVideoContainFit(ctx, source, W, H, xform) {
   if (!source) return;
   const sw = source.displayWidth || source.videoWidth || source.naturalWidth || source.width;

@@ -20,6 +20,8 @@ import { initAudioFxRenderer } from './workspace/audioFxRenderer.js';
 import { initLayerDrag } from './workspace/layerDrag.js';
 import { initRatioControl } from './workspace/ratioControl.js';
 import { initKeyframeUI, clearKeyframeSelection, getSelectedKeyframe } from './workspace/keyframeUI.js';
+import { initMagnetTool } from './workspace/magnetTool.js';
+import { initTransitionMarkers } from './workspace/transitionMarkers.js';
 import * as keyframeStore from './workspace/keyframeStore.js';
 
 import * as featureModules from './features/index.js';
@@ -236,8 +238,10 @@ async function bootstrap() {
 
   initRatioControl(document.querySelector('#ratio-select'));
 
+  // 🆕 Keyframe store on window
   window.__keyframeStore = keyframeStore;
 
+  // 🆕 Keyframe UI
   initKeyframeUI(document.querySelector('#keyframe-btn'));
 
   window.__keyframeUI = {
@@ -248,6 +252,12 @@ async function bootstrap() {
   document.addEventListener('keyframe:selected', function (e) {
     window.__selectedKeyframe = e.detail || null;
   });
+
+  // 🆕 Magnet tool
+  initMagnetTool(document.querySelector('#magnet-btn'));
+
+  // 🆕 Transition markers
+  initTransitionMarkers();
 
   initTextRenderer();
 
