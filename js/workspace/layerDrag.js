@@ -1,9 +1,9 @@
 // ================================================================
 //  js/workspace/layerDrag.js
-//  - Drag CLIP horizontally → move with snap (start/end/playhead)
-//  - Drag CLIP vertically → move to another track
-//  - Drag CLIP BETWEEN track edges → INSERT as new layer (ripple)
-//  - Drag TRACK LABEL → reorder + mirror linked audio
+//  - Strict NO-OVERLAP within any track → RIPPLE INSERT
+//  - Horizontal drag → snap to start/end/playhead
+//  - Vertical drag → insert between layers OR ripple into target
+//  - Track label drag → reorder (mirror linked audio)
 // ================================================================
 
 import { getPixelsPerSecond } from './timelineScaler.js';
@@ -12,11 +12,8 @@ const DRAG_THRESHOLD_PX = 8;
 const REVERT_THRESHOLD_PX = 12;
 const CSS_ID = 'layer-drag-styles';
 
-// Snap constants (horizontal)
 const SNAP_ENTER_PX = 14;
 const SNAP_RELEASE_PX = 28;
-
-// Insert-zone detection
 const INSERT_ZONE_PX = 14;
 
 let dragState = null;
@@ -111,10 +108,14 @@ function injectStyles() {
       cursor: grabbing !important;
     }
 
-    /* Snap visual (horizontal drag) */
     .clip.snap-active {
       outline-color: #22c55e !important;
       box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.4) !important;
+    }
+    /* 🆕 Ripple mode — clip highlights when drop will shift others */
+    .clip.ripple-active {
+      outline-color: #f59e0b !important;
+      box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.45) !important;
     }
     .trim-snap-guide {
       position: absolute;
@@ -126,8 +127,11 @@ function injectStyles() {
       pointer-events: none;
       z-index: 99998;
     }
+    .trim-snap-guide.ripple-guide {
+      background: #f59e0b;
+      box-shadow: 0 0 8px rgba(245, 158, 11, 0.95);
+    }
 
-    /* 🆕 Insert-between-layers indicator (horizontal green line) */
     .insert-indicator {
       position: absolute;
       left: 0;
@@ -179,7 +183,113 @@ function killDraggable(viewport) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  SNAP HELPERS (horizontal drag)
+//  🆕 RIPPLE INSERT — strictly no overlap
+//
+//  Inserts clip at newStart within track. If overlapping clips
+//  exist, they (and everything after) shift forward by the
+//  needed amount. Linked clips in other tracks shift too.
+// ═══════════════════════════════════════════════════════════════
+function rippleInsertTrack(list, trackIdx, clip, newStart, group) {
+  const appState = window.__appState;
+  if (!appState) return;
+
+  if (!Array.isArray(list)) return;
+  while (list.length <= trackIdx) list.push([]);
+
+  const track = list[trackIdx];
+  if (!Array.isArray(track)) return;
+
+  const dur = Number.isFinite(clip.duration) ? clip.duration : 3;
+  const start = Math.max(0, Number.isFinite(newStart) ? newStart : 0);
+  const end = start + dur;
+
+  // ═══════════════════════════════════════════════════════════
+  //  🆕 FIX: Remove clip from EVERY track in this list first
+  //  (was only removing from target → caused duplication)
+  // ═══════════════════════════════════════════════════════════
+  for (let t = 0; t < list.length; t++) {
+    const tr = list[t];
+    if (!Array.isArray(tr)) continue;
+    const idx = tr.indexOf(clip);
+    if (idx >= 0) {
+      tr.splice(idx, 1);
+      break;
+    }
+  }
+
+  // Sort remaining by startTime
+  track.sort((a, b) => (a.startTime || 0) - (b.startTime || 0));
+
+  // Split into before / after
+  const after = [];
+  for (let i = 0; i < track.length; i++) {
+    const c = track[i];
+    const s = Number.isFinite(c.startTime) ? c.startTime : 0;
+    const d = Number.isFinite(c.duration) ? c.duration : 0;
+    const e = s + d;
+    if (e > start) after.push(c);
+  }
+
+  // Compute shift needed
+  let shift = 0;
+  if (after.length > 0) {
+    const firstStart = Number.isFinite(after[0].startTime) ? after[0].startTime : 0;
+    if (firstStart < end) {
+      shift = end - firstStart;
+    }
+  }
+
+  // Apply shift + record linked ids
+  const shiftMap = new Map();
+  if (shift > 0) {
+    for (let i = 0; i < after.length; i++) {
+      const c = after[i];
+      c.startTime = (Number.isFinite(c.startTime) ? c.startTime : 0) + shift;
+      if (c.__linkedId) shiftMap.set(c.__linkedId, shift);
+    }
+  }
+
+  // Insert clip
+  clip.startTime = start;
+  track.push(clip);
+  track.sort((a, b) => (a.startTime || 0) - (b.startTime || 0));
+
+  // Apply shift to linked clips (other group)
+  if (shiftMap.size > 0) {
+    const otherGroup = group === 'visual' ? 'audio' : 'visual';
+    const otherList = appState.timeline[otherGroup] || [];
+    for (let t = 0; t < otherList.length; t++) {
+      const oTrack = otherList[t];
+      if (!Array.isArray(oTrack)) continue;
+      for (let i = 0; i < oTrack.length; i++) {
+        const oc = oTrack[i];
+        if (oc && oc.__linkedId && shiftMap.has(oc.__linkedId)) {
+          oc.startTime = (Number.isFinite(oc.startTime) ? oc.startTime : 0) +
+                         shiftMap.get(oc.__linkedId);
+        }
+      }
+    }
+  }
+
+  // Align the moved clip's own linked partner to its new position
+  if (clip.__linkedId) {
+    const otherGroup = group === 'visual' ? 'audio' : 'visual';
+    const otherList = appState.timeline[otherGroup] || [];
+    for (let t = 0; t < otherList.length; t++) {
+      const oTrack = otherList[t];
+      if (!Array.isArray(oTrack)) continue;
+      for (let i = 0; i < oTrack.length; i++) {
+        const oc = oTrack[i];
+        if (oc && oc.__linkedId === clip.__linkedId) {
+          oc.startTime = start;
+        }
+      }
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  SNAP HELPERS
 // ═══════════════════════════════════════════════════════════════
 function getDragSnapTargets(excludeClip) {
   const targets = [];
@@ -223,7 +333,7 @@ function ensureSnapGuide() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  🆕 INSERT INDICATOR (horizontal green line between tracks)
+//  INSERT INDICATOR
 // ═══════════════════════════════════════════════════════════════
 function detectInsertZone(clientX, clientY, group) {
   const container = group === 'visual'
@@ -234,33 +344,21 @@ function detectInsertZone(clientX, clientY, group) {
   const tracks = container.querySelectorAll('.track');
   if (!tracks.length) return null;
 
-  // Check top edges of all tracks
   for (let i = 0; i < tracks.length; i++) {
     const trackEl = tracks[i];
     const rect = trackEl.getBoundingClientRect();
     const trackIdx = Number(trackEl.dataset.trackIndex);
 
     if (Math.abs(clientY - rect.top) <= INSERT_ZONE_PX) {
-      return {
-        group: group,
-        insertIndex: trackIdx + 1,   // Insert above this track
-        y: rect.top,
-        container: container
-      };
+      return { group: group, insertIndex: trackIdx + 1, y: rect.top, container: container };
     }
   }
 
-  // Check bottom edge of the last track (below everything)
   const lastTrack = tracks[tracks.length - 1];
   const lastRect = lastTrack.getBoundingClientRect();
   const lastIdx = Number(lastTrack.dataset.trackIndex);
   if (Math.abs(clientY - lastRect.bottom) <= INSERT_ZONE_PX) {
-    return {
-      group: group,
-      insertIndex: lastIdx,   // Insert below last = at its own index
-      y: lastRect.bottom,
-      container: container
-    };
+    return { group: group, insertIndex: lastIdx, y: lastRect.bottom, container: container };
   }
 
   return null;
@@ -282,8 +380,7 @@ function showInsertIndicator(zone) {
   }
 
   const containerRect = container.getBoundingClientRect();
-  const y = zone.y - containerRect.top;
-  line.style.top = y + 'px';
+  line.style.top = (zone.y - containerRect.top) + 'px';
   line.style.display = 'block';
 }
 
@@ -304,7 +401,6 @@ function onPointerDown(e) {
   if (e.target.closest && e.target.closest('.transition-marker')) return;
   if (e.target.closest && e.target.closest('.layer-toggle')) return;
 
-  // Track label drag
   const labelEl = e.target.closest && e.target.closest('.track-label');
   if (labelEl) {
     const trackEl = labelEl.closest('.track');
@@ -330,7 +426,6 @@ function onPointerDown(e) {
     return;
   }
 
-  // Clip drag
   const clipEl = e.target.closest && e.target.closest('.clip');
   if (!clipEl) return;
   const trackEl = clipEl.closest('.track');
@@ -426,7 +521,6 @@ function onPointerUp(e) {
   window.removeEventListener('pointerup', onPointerUp);
   window.removeEventListener('pointercancel', onPointerUp);
 
-  // Track label drag
   if (state.mode === 'track') {
     clearDropHighlight();
     const dx = e.clientX - state.startClientX;
@@ -450,7 +544,7 @@ function onPointerUp(e) {
     return;
   }
 
-  // Click (no drag)
+  // Simple click
   if (!state.mode) {
     state.clipEl.classList.remove('layer-drag-active');
     document.body.classList.remove('layer-drag-active');
@@ -462,7 +556,7 @@ function onPointerUp(e) {
     return;
   }
 
-  // 🆕 INSERT MODE — drop between layers
+  // Insert between layers
   if (state.mode === 'v' && state.insertZone) {
     exitDragMode(state);
     clearInsertIndicator();
@@ -473,7 +567,7 @@ function onPointerUp(e) {
   exitDragMode(state);
   clearInsertIndicator();
 
-  // Horizontal drag commit
+  // 🆕 Horizontal commit → RIPPLE INSERT (strict no overlap)
   if (state.mode === 'h') {
     const dxPx = Math.abs(e.clientX - state.startClientX);
     if (dxPx < REVERT_THRESHOLD_PX || state.pendingStartTime == null) {
@@ -482,124 +576,56 @@ function onPointerUp(e) {
       reselectByUrl(state.clip.url);
       return;
     }
-    state.clip.startTime = state.pendingStartTime;
-    propagateToLinked(state.clip);
+
+    const appState = window.__appState;
+    const list = appState ? appState.timeline[state.group] : null;
+    if (!list) return;
+
+    rippleInsertTrack(list, state.startTrackIdx, state.clip, state.pendingStartTime, state.group);
     state.clip.__trimmed = true;
+
     document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
     reselectByUrl(state.clip.url);
     return;
   }
 
-  // Vertical drag commit (regular move to another track)
+  // 🆕 Vertical commit → RIPPLE INSERT in target track
   const elUnder = document.elementFromPoint(e.clientX, e.clientY);
-  const targetTrack = elUnder && elUnder.closest ? elUnder.closest('.track') : null;
-  if (targetTrack) {
-    commitVerticalMove(state, targetTrack);
-  } else {
+  const targetTrackEl = elUnder && elUnder.closest ? elUnder.closest('.track') : null;
+  if (!targetTrackEl) {
     document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════
-//  OVERLAP HELPERS
-// ═══════════════════════════════════════════════════════════════
-function clipRange(clip) {
-  const start = Number.isFinite(clip.startTime) ? clip.startTime : 0;
-  const dur = Number.isFinite(clip.duration) ? clip.duration : 3;
-  return { start: start, end: start + dur };
-}
-
-function trackHasOverlap(track, start, end, excludeClip) {
-  if (!Array.isArray(track)) return false;
-  for (let i = 0; i < track.length; i++) {
-    const clip = track[i];
-    if (clip === excludeClip) continue;
-    const r = clipRange(clip);
-    if (start < r.end && r.start < end) return true;
-  }
-  return false;
-}
-
-function findNearestFreeTrackIndex(list, targetIdx, start, end, excludeClip, skipIdx) {
-  if (!Array.isArray(list)) return 0;
-
-  if (targetIdx >= 0 && targetIdx < list.length &&
-      targetIdx !== skipIdx &&
-      !trackHasOverlap(list[targetIdx], start, end, excludeClip)) {
-    return targetIdx;
+    return;
   }
 
-  for (let i = targetIdx + 1; i < list.length; i++) {
-    if (i === skipIdx) continue;
-    if (!trackHasOverlap(list[i], start, end, excludeClip)) return i;
+  const targetGroup = targetTrackEl.dataset.group;
+  if (targetGroup !== state.group) {
+    showToast('Cannot mix visual & audio tracks');
+    document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
+    return;
   }
 
-  for (let i = targetIdx - 1; i >= 0; i--) {
-    if (i === skipIdx) continue;
-    if (!trackHasOverlap(list[i], start, end, excludeClip)) return i;
-  }
-
-  list.push([]);
-  return list.length - 1;
-}
-
-// ═══════════════════════════════════════════════════════════════
-//  MIRROR LINKED CLIP TO SAME TRACK INDEX
-// ═══════════════════════════════════════════════════════════════
-function mirrorLinkedToTrackIndex(clip, targetIdx) {
   const appState = window.__appState;
-  if (!appState || !clip || !clip.__linkedId) return false;
+  const list = appState ? appState.timeline[state.group] : null;
+  if (!list) return;
 
-  const linkedId = clip.__linkedId;
-  const isVisualSource = !!(clip.type && (
-    clip.type.indexOf('video/') === 0 ||
-    clip.type.indexOf('image/') === 0 ||
-    clip.__textId ||
-    clip.__stickerId
-  ));
-  const otherGroup = isVisualSource ? 'audio' : 'visual';
-  const otherList = appState.timeline[otherGroup];
-  if (!Array.isArray(otherList)) return false;
+  const targetIdx = Number(targetTrackEl.dataset.trackIndex);
+  if (!Number.isFinite(targetIdx)) return;
 
-  let linkedClip = null;
-  let linkedFromIdx = -1;
-  for (let t = 0; t < otherList.length; t++) {
-    const track = otherList[t];
-    if (!Array.isArray(track)) continue;
-    for (let c = 0; c < track.length; c++) {
-      if (track[c] && track[c].__linkedId === linkedId) {
-        linkedClip = track[c];
-        linkedFromIdx = t;
-        break;
-      }
-    }
-    if (linkedClip) break;
-  }
+  const clipStart = Number.isFinite(state.clip.startTime) ? state.clip.startTime : 0;
 
-  if (!linkedClip || linkedFromIdx < 0) return false;
-  if (linkedFromIdx === targetIdx) return false;
+  // Ripple insert into target track (removes from source implicitly)
+  rippleInsertTrack(list, targetIdx, state.clip, clipStart, state.group);
+  state.clip.__trimmed = true;
 
-  const oldTrack = otherList[linkedFromIdx];
-  const idxInOld = oldTrack.indexOf(linkedClip);
-  if (idxInOld >= 0) oldTrack.splice(idxInOld, 1);
+  document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
+  reselectByUrl(state.clip.url);
 
-  while (otherList.length <= targetIdx) otherList.push([]);
-
-  const targetTrack = otherList[targetIdx];
-  const t = Number.isFinite(linkedClip.startTime) ? linkedClip.startTime : 0;
-  let insertIdx = targetTrack.length;
-  for (let i = 0; i < targetTrack.length; i++) {
-    const ci = targetTrack[i];
-    const ct = ci && Number.isFinite(ci.startTime) ? ci.startTime : 0;
-    if (t < ct) { insertIdx = i; break; }
-  }
-  targetTrack.splice(insertIdx, 0, linkedClip);
-
-  return true;
+  const label = (state.group === 'visual' ? 'V' : 'A') + (targetIdx + 1);
+  showToast('Moved to ' + label + ' (no-overlap enforced)');
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  🆕 COMMIT INSERT BETWEEN LAYERS (RIPPLE)
+//  INSERT BETWEEN LAYERS (RIPPLE at track level)
 // ═══════════════════════════════════════════════════════════════
 function commitInsertBetween(state, zone) {
   const appState = window.__appState;
@@ -617,12 +643,10 @@ function commitInsertBetween(state, zone) {
   const clip = sourceTrack[sourceClipIdx];
   if (!clip) return;
 
-  // Capture linked clip BEFORE moving anything
   let linkedClip = null;
   let linkedTrackIdx = -1;
-  let otherGroup = null;
   if (clip.__linkedId) {
-    otherGroup = group === 'visual' ? 'audio' : 'visual';
+    const otherGroup = group === 'visual' ? 'audio' : 'visual';
     const otherList = appState.timeline[otherGroup];
     if (Array.isArray(otherList)) {
       for (let t = 0; t < otherList.length; t++) {
@@ -639,32 +663,31 @@ function commitInsertBetween(state, zone) {
       }
     }
   }
-
-  // Remove clip from source
   sourceTrack.splice(sourceClipIdx, 1);
 
-  // Clamp target index
   let targetIdx = Math.max(0, Math.min(zone.insertIndex, list.length));
-
-  // Insert new track at target index
   list.splice(targetIdx, 0, [clip]);
 
-  // Handle linked clip in other group
-  if (linkedClip && otherGroup) {
+  // 🆕 Move linked clip (remove from old, add to new)
+  if (linkedClip) {
+    const otherGroup = group === 'visual' ? 'audio' : 'visual';
     const otherList = appState.timeline[otherGroup];
     if (Array.isArray(otherList)) {
-      if (linkedTrackIdx >= 0 && linkedTrackIdx < otherList.length) {
-        const lt = otherList[linkedTrackIdx];
-        if (Array.isArray(lt)) {
-          const li = lt.indexOf(linkedClip);
-          if (li >= 0) lt.splice(li, 1);
+      // Find and remove linked clip from wherever it is
+      for (let t = 0; t < otherList.length; t++) {
+        const oTrack = otherList[t];
+        if (!Array.isArray(oTrack)) continue;
+        const idx = oTrack.indexOf(linkedClip);
+        if (idx >= 0) {
+          oTrack.splice(idx, 1);
+          break;
         }
       }
+      // Insert into the corresponding track index
       while (otherList.length < targetIdx) otherList.push([]);
       otherList.splice(targetIdx, 0, [linkedClip]);
     }
   }
-
   state.clip.__trimmed = true;
   document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
 
@@ -672,80 +695,6 @@ function commitInsertBetween(state, zone) {
   showToast('Inserted as new layer ' + layerLabel);
 
   setTimeout(() => reselectByUrl(state.clip.url), 60);
-}
-
-// ═══════════════════════════════════════════════════════════════
-//  CLIP DRAG COMMIT — OVERLAP-AWARE + LINKED MIRROR
-// ═══════════════════════════════════════════════════════════════
-function commitVerticalMove(state, targetTrackEl) {
-  const appState = window.__appState;
-  if (!appState) return;
-
-  const targetGroup = targetTrackEl.dataset.group;
-  if (targetGroup !== state.group) {
-    showToast('Cannot mix visual & audio tracks');
-    document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
-    return;
-  }
-
-  const list = appState.timeline[state.group];
-  const srcTrack = list[state.startTrackIdx];
-  if (!Array.isArray(srcTrack)) return;
-
-  const idxInSrc = srcTrack.indexOf(state.clip);
-  if (idxInSrc < 0) { document.dispatchEvent(new CustomEvent('editor:timeline-changed')); return; }
-
-  const clipStart = Number.isFinite(state.clip.startTime) ? state.clip.startTime : 0;
-  const clipDur = Number.isFinite(state.clip.duration) ? state.clip.duration : 3;
-  const clipEnd = clipStart + clipDur;
-
-  const intendedTargetIdx = Number(targetTrackEl.dataset.trackIndex);
-  if (!Number.isFinite(intendedTargetIdx)) return;
-
-  srcTrack.splice(idxInSrc, 1);
-
-  const freeIdx = findNearestFreeTrackIndex(
-    list, intendedTargetIdx, clipStart, clipEnd, state.clip, state.startTrackIdx
-  );
-
-  if (freeIdx === state.startTrackIdx) {
-    let insertIdx = srcTrack.length;
-    for (let i = 0; i < srcTrack.length; i++) {
-      const ci = srcTrack[i];
-      const ct = ci && Number.isFinite(ci.startTime) ? ci.startTime : 0;
-      if (clipStart < ct) { insertIdx = i; break; }
-    }
-    srcTrack.splice(insertIdx, 0, state.clip);
-    document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
-    return;
-  }
-
-  while (list.length <= freeIdx) list.push([]);
-  const dstTrack = list[freeIdx];
-
-  let insertIdx = dstTrack.length;
-  for (let i = 0; i < dstTrack.length; i++) {
-    const ci = dstTrack[i];
-    const ct = ci && Number.isFinite(ci.startTime) ? ci.startTime : 0;
-    if (clipStart < ct) { insertIdx = i; break; }
-  }
-  dstTrack.splice(insertIdx, 0, state.clip);
-
-  let mirrored = false;
-  if (state.clip.__linkedId) {
-    mirrored = mirrorLinkedToTrackIndex(state.clip, freeIdx);
-  }
-
-  state.clip.__trimmed = true;
-  document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
-  reselectByUrl(state.clip.url);
-
-  const finalLabel = (state.group === 'visual' ? 'V' : 'A') + (freeIdx + 1);
-  if (freeIdx === intendedTargetIdx) {
-    showToast('Moved to ' + finalLabel + (mirrored ? ' (linked mirrored)' : ''));
-  } else {
-    showToast('Moved to ' + finalLabel + (mirrored ? ' (linked mirrored)' : ' (avoided overlap)'));
-  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -786,13 +735,17 @@ function exitDragMode(state) {
   if (state && state.clipEl) {
     state.clipEl.classList.remove('layer-drag-active');
     state.clipEl.classList.remove('snap-active');
+    state.clipEl.classList.remove('ripple-active');
     state.clipEl.style.transition = '';
     state.clipEl.style.transform = '';
     state.clipEl.style.opacity = '';
     state.clipEl.style.zIndex = '';
   }
   const g = document.querySelector('.layer-drag-snap-guide');
-  if (g) g.style.display = 'none';
+  if (g) {
+    g.style.display = 'none';
+    g.classList.remove('ripple-guide');
+  }
 
   clearDropHighlight();
   const vp = document.querySelector('#timeline-viewport');
@@ -807,6 +760,9 @@ function clearDropHighlight() {
     });
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  🆕 HORIZONTAL DRAG — with overlap detection
+// ═══════════════════════════════════════════════════════════════
 function applyHorizontalDrag(clientX) {
   const s = dragState;
   if (!s) return;
@@ -861,6 +817,7 @@ function applyHorizontalDrag(clientX) {
   s.clipEl.style.transition = 'none';
   s.clipEl.style.left = (newStart * s.pps) + 'px';
 
+  // Content width expand
   const contentEl = s.clipEl.parentElement;
   if (contentEl) {
     const clipW = s.clipEl.offsetWidth || 0;
@@ -871,20 +828,59 @@ function applyHorizontalDrag(clientX) {
     contentEl.style.minWidth = needWidth + 'px';
   }
 
+  // 🆕 Detect if drop will cause ripple (overlap check)
+  let willRipple = false;
+  const appState = window.__appState;
+  if (appState) {
+    const srcList = appState.timeline[s.group] || [];
+    const srcTrack = srcList[s.startTrackIdx];
+    if (Array.isArray(srcTrack)) {
+      const newEnd = newStart + s.clipDuration;
+      for (let i = 0; i < srcTrack.length; i++) {
+        const c = srcTrack[i];
+        if (c === s.clip) continue;
+        const cs = Number.isFinite(c.startTime) ? c.startTime : 0;
+        const cd = Number.isFinite(c.duration) ? c.duration : 0;
+        const ce = cs + cd;
+        if (newStart < ce && cs < newEnd) { willRipple = true; break; }
+      }
+    }
+  }
+
   const guide = ensureSnapGuide();
-  if (snappedTo) {
+
+  // 🆕 Priority: ripple (orange) > snap (green) > none
+  if (willRipple) {
+    s.clipEl.classList.remove('snap-active');
+    s.clipEl.classList.add('ripple-active');
+    if (guide) {
+      const guideX = 80 + newStart * s.pps;
+      guide.style.left = guideX + 'px';
+      guide.style.display = 'block';
+      guide.classList.add('ripple-guide');
+    }
+  } else if (snappedTo) {
+    s.clipEl.classList.remove('ripple-active');
     s.clipEl.classList.add('snap-active');
     if (guide) {
       const guideX = 80 + snappedTo.time * s.pps;
       guide.style.left = guideX + 'px';
       guide.style.display = 'block';
+      guide.classList.remove('ripple-guide');
     }
   } else {
     s.clipEl.classList.remove('snap-active');
-    if (guide) guide.style.display = 'none';
+    s.clipEl.classList.remove('ripple-active');
+    if (guide) {
+      guide.style.display = 'none';
+      guide.classList.remove('ripple-guide');
+    }
   }
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  VERTICAL DRAG
+// ═══════════════════════════════════════════════════════════════
 function applyVerticalDrag(clientX, clientY) {
   const s = dragState;
   if (!s) return;
@@ -894,7 +890,6 @@ function applyVerticalDrag(clientX, clientY) {
   s.clipEl.style.opacity = '0.6';
   clearDropHighlight();
 
-  // 🆕 Insert zone has priority
   const insertZone = detectInsertZone(clientX, clientY, s.group);
   if (insertZone) {
     s.insertZone = insertZone;
@@ -912,15 +907,9 @@ function applyVerticalDrag(clientX, clientY) {
     return;
   }
 
-  const appState = window.__appState;
-  const list = appState ? appState.timeline[s.group] : null;
-  const idx = Number(targetTrack.dataset.trackIndex);
-  const track = list && list[idx];
-
-  const clipStart = s.clip.startTime;
-  const clipEnd = clipStart + (s.clip.duration || 3);
-
-  if (trackHasOverlap(track, clipStart, clipEnd, s.clip)) {
+  // 🆕 Always show green (ripple will handle overlap) — unless same track
+  const targetIdx = Number(targetTrack.dataset.trackIndex);
+  if (targetIdx === s.startTrackIdx) {
     targetTrack.classList.add('layer-drop-target-blocked');
   } else {
     targetTrack.classList.add('layer-drop-target');
