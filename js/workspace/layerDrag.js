@@ -12,8 +12,56 @@ const DRAG_THRESHOLD_PX = 8;
 const REVERT_THRESHOLD_PX = 12;
 const CSS_ID = 'layer-drag-styles';
 
+// 🆕 Snap constants (drag-drop)
+const SNAP_ENTER_PX = 14;
+const SNAP_RELEASE_PX = 28;
+
 let dragState = null;
 let globalInited = false;
+
+// ═══════════════════════════════════════════════════════════════
+//  🆕 SNAP HELPERS (drag-drop)
+// ═══════════════════════════════════════════════════════════════
+function getDragSnapTargets(excludeClip) {
+  const targets = [];
+  const appState = window.__appState;
+  if (!appState) return targets;
+  const allTracks = [].concat(
+    appState.timeline.visual || [],
+    appState.timeline.audio || []
+  );
+  for (let t = 0; t < allTracks.length; t++) {
+    const track = allTracks[t];
+    if (!Array.isArray(track)) continue;
+    for (let c = 0; c < track.length; c++) {
+      const clip = track[c];
+      if (!clip || clip === excludeClip) continue;
+      const s = Number.isFinite(clip.startTime) ? clip.startTime : 0;
+      const d = Number.isFinite(clip.duration) ? clip.duration : 0;
+      targets.push({ time: s, type: 'start', clip: clip });
+      targets.push({ time: s + d, type: 'end', clip: clip });
+    }
+  }
+  const eng = window.__playbackEngine;
+  if (eng && typeof eng.getTime === 'function') {
+    const ph = eng.getTime();
+    if (Number.isFinite(ph)) targets.push({ time: ph, type: 'playhead', clip: null });
+  }
+  return targets;
+}
+
+function ensureSnapGuide() {
+  let guide = document.querySelector('.layer-drag-snap-guide');
+  if (!guide) {
+    const matrix = document.querySelector('#timeline-matrix');
+    if (!matrix) return null;
+    guide = document.createElement('div');
+    guide.className = 'trim-snap-guide layer-drag-snap-guide';
+    guide.style.display = 'none';
+    matrix.appendChild(guide);
+  }
+  return guide;
+}
 
 export function initLayerDrag() {
   if (globalInited) return;
@@ -102,6 +150,22 @@ function injectStyles() {
       user-select: none !important;
       -webkit-user-select: none !important;
       cursor: grabbing !important;
+    }
+
+    /* 🆕 Snap visual (fallback if trimHandles not loaded) */
+    .clip.snap-active {
+      outline-color: #22c55e !important;
+      box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.4) !important;
+    }
+    .trim-snap-guide {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      background: #22c55e;
+      box-shadow: 0 0 8px rgba(34, 197, 94, 0.9);
+      pointer-events: none;
+      z-index: 99998;
     }
   `;
   document.head.appendChild(s);
@@ -193,9 +257,12 @@ function onPointerDown(e) {
     startStartTime: Number.isFinite(clip.startTime) ? clip.startTime : 0,
     pps: getPixelsPerSecond(),
     pointerId: e.pointerId,
-    pendingStartTime: null
+    pendingStartTime: null,
+    // 🆕 Snap state
+    snapTargets: getDragSnapTargets(clip),
+    activeSnap: null,
+    clipDuration: Number.isFinite(clip.duration) ? clip.duration : 3
   };
-
   window.addEventListener('pointermove', onPointerMove);
   window.addEventListener('pointerup', onPointerUp);
   window.addEventListener('pointercancel', onPointerUp);
@@ -299,6 +366,11 @@ function onPointerUp(e) {
       reselectByUrl(state.clip.url);
       return;
     }
+    // 🆕 Clear snap visual before commit
+    state.clipEl.classList.remove('snap-active');
+    const g = document.querySelector('.layer-drag-snap-guide');
+    if (g) g.style.display = 'none';
+
     // Commit
     state.clip.startTime = state.pendingStartTime;
     propagateToLinked(state.clip);
@@ -307,7 +379,6 @@ function onPointerUp(e) {
     reselectByUrl(state.clip.url);
     return;
   }
-
   // ─── Vertical drag commit ────────────────────────────────
   const elUnder = document.elementFromPoint(e.clientX, e.clientY);
   const targetTrack = elUnder && elUnder.closest ? elUnder.closest('.track') : null;
@@ -530,21 +601,21 @@ function enterDragMode() {
   const vp = document.querySelector('#timeline-viewport');
   if (vp) { vp.style.overflowX = 'hidden'; vp.style.touchAction = 'none'; }
 }
-
-// 🆕 FIX: do NOT clear style.left
+// drag mode
 function exitDragMode(state) {
   document.body.classList.remove('layer-drag-active');
   if (state && state.clipEl) {
     state.clipEl.classList.remove('layer-drag-active');
+    state.clipEl.classList.remove('snap-active');
     state.clipEl.style.transition = '';
     state.clipEl.style.transform = '';
     state.clipEl.style.opacity = '';
     state.clipEl.style.zIndex = '';
-    // style.left is intentionally NOT cleared.
-    // - For commit drags: render() rebuilds the element with correct left.
-    // - For revert drags: we explicitly restore it above.
-    // - For clicks: it retains the render-set position.
   }
+  // 🆕 Hide snap guide
+  const g = document.querySelector('.layer-drag-snap-guide');
+  if (g) g.style.display = 'none';
+
   clearDropHighlight();
   const vp = document.querySelector('#timeline-viewport');
   if (vp) { vp.style.overflowX = ''; vp.style.touchAction = ''; }
@@ -558,15 +629,99 @@ function clearDropHighlight() {
     });
 }
 
-// 🆕 Pure clientX delta — visual only, no state mutation
 function applyHorizontalDrag(clientX) {
   const s = dragState;
   if (!s) return;
+
   const dxPx = clientX - s.startClientX;
-  const newStart = Math.max(0, s.startStartTime + dxPx / s.pps);
+  let newStart = Math.max(0, s.startStartTime + dxPx / s.pps);
+
+  // ─── 🆕 SNAP: Start edge + End edge ───
+  const enterSec   = SNAP_ENTER_PX   / Math.max(1, s.pps);
+  const releaseSec = SNAP_RELEASE_PX / Math.max(1, s.pps);
+  const clipEnd = newStart + s.clipDuration;
+
+  let snappedTo = null;
+  let snapDelta = 0;
+
+  if (s.snapTargets && s.snapTargets.length) {
+    // Release check (hysteresis)
+    if (s.activeSnap) {
+      const checkVal = s.activeSnap.edge === 'start' ? newStart : clipEnd;
+      const dist = Math.abs(checkVal - s.activeSnap.time);
+      if (dist <= releaseSec) {
+        snappedTo = s.activeSnap;
+        snapDelta = s.activeSnap.time - checkVal;
+      } else {
+        s.activeSnap = null;
+      }
+    }
+
+    // Find new snap
+    if (!snappedTo) {
+      let best = null;
+      let bestDist = enterSec;
+      let bestEdge = null;
+      let bestDelta = 0;
+
+      for (let i = 0; i < s.snapTargets.length; i++) {
+        const t = s.snapTargets[i];
+        const dStart = Math.abs(t.time - newStart);
+        if (dStart < bestDist) {
+          bestDist = dStart;
+          best = t;
+          bestEdge = 'start';
+          bestDelta = t.time - newStart;
+        }
+        const dEnd = Math.abs(t.time - clipEnd);
+        if (dEnd < bestDist) {
+          bestDist = dEnd;
+          best = t;
+          bestEdge = 'end';
+          bestDelta = t.time - clipEnd;
+        }
+      }
+
+      if (best) {
+        snappedTo = { time: best.time, type: best.type, clip: best.clip, edge: bestEdge };
+        snapDelta = bestDelta;
+        s.activeSnap = snappedTo;
+      }
+    }
+  }
+
+  if (snappedTo) {
+    newStart = Math.max(0, newStart + snapDelta);
+  }
+
   s.pendingStartTime = newStart;
   s.clipEl.style.transition = 'none';
   s.clipEl.style.left = (newStart * s.pps) + 'px';
+
+  // ─── 🆕 Content width expand (clip "gaib" na ho) ───
+  const contentEl = s.clipEl.parentElement;
+  if (contentEl) {
+    const clipW = s.clipEl.offsetWidth || 0;
+    const needWidth = Math.max(
+      contentEl.scrollWidth,
+      (newStart * s.pps) + clipW + 80
+    );
+    contentEl.style.minWidth = needWidth + 'px';
+  }
+
+  // ─── 🆕 Visual feedback ───
+  const guide = ensureSnapGuide();
+  if (snappedTo) {
+    s.clipEl.classList.add('snap-active');
+    if (guide) {
+      const guideX = 80 + snappedTo.time * s.pps; // LABEL_WIDTH = 80
+      guide.style.left = guideX + 'px';
+      guide.style.display = 'block';
+    }
+  } else {
+    s.clipEl.classList.remove('snap-active');
+    if (guide) guide.style.display = 'none';
+  }
 }
 
 function applyVerticalDrag(clientX, clientY) {
