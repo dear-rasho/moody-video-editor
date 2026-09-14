@@ -419,22 +419,72 @@ export function initPlaybackEngine({ canvas, video, audio, preview, onTick }) {
     document.dispatchEvent(new CustomEvent('playback:state', { detail: { playing: false } }));
   }
 
-  function seek(time) {
-    const wasPlaying = playing;
+    // ═══════════════════════════════════════════════════════════
+  //  🆕 FIX: Timeline pe click = FULL PAUSE
+  //
+  //  Pehle: seek() ke baad agar video playing thi to auto-resume
+  //  Ab:    seek() hamesha video ko pause karta hai. User ko
+  //         khud play button dabana padega.
+  //
+  //  Agar kabhi auto-resume chahiye ho (internal use), to
+  //  seek(time, { resume: true }) call karein.
+  // ═══════════════════════════════════════════════════════════
+  function seek(time, options) {
+    const resume = options && options.resume === true;
+
+    // ─── Force pause ─────────────────────────────────────
+    if (playing) {
+      playing = false;
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = null;
+      document.dispatchEvent(new CustomEvent('playback:state', {
+        detail: { playing: false }
+      }));
+    }
     pauseVideoIfNeeded();
     pauseAudioIfNeeded();
+
+    // ─── Position update ─────────────────────────────────
     const dur = getTimelineDuration();
     playheadTime = Math.max(0, Math.min(dur, Number(time) || 0));
     renderFrame(playheadTime);
     emitTick();
-    if (wasPlaying) {
+
+    // ─── Sirf tab resume karo jab explicitly kaha jaye ──
+    if (resume) {
       lastRealTime = performance.now();
+      playing = true;
       rafId = requestAnimationFrame(tick);
+      document.dispatchEvent(new CustomEvent('playback:state', {
+        detail: { playing: true }
+      }));
     }
   }
-
   function getTime() { return playheadTime; }
   function isPlaying() { return playing; }
+
+  // ═══════════════════════════════════════════════════════════
+  //  🆕 FIX: Paused seek → frame show karo (black nahi)
+  //
+  //  Problem: Jab user timeline pe click karta hai aur video
+  //  paused hoti hai, video element ko naya frame decode karne
+  //  mein time lagta hai. Us dauran canvas black rehta hai.
+  //
+  //  Solution: Video ke 'seeked' / 'loadeddata' / 'canplay'
+  //  events pe dobara redraw karo — tab tak frame ready ho chuka
+  //  hota hai.
+  // ═══════════════════════════════════════════════════════════
+  if (video) {
+    const redrawAfterSeek = function () {
+      // Playing ke dauran mat interfere karo — RAF loop khud handle karta hai
+      if (playing) return;
+      // Frame ready → dobara render karo
+      renderFrame(playheadTime);
+    };
+    video.addEventListener('seeked',     redrawAfterSeek);
+    video.addEventListener('loadeddata', redrawAfterSeek);
+    video.addEventListener('canplay',    redrawAfterSeek);
+  }
 
   renderFrame(playheadTime);
   emitTick();

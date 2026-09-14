@@ -3,9 +3,12 @@
 //  Playhead position driven by playbackEngine.getTime().
 //  Click on ruler → seek to EXACT clicked time.
 //
-//  FIX: getContentWidth() now correctly subtracts LABEL_WIDTH
-//       so the playhead matches ruler marker positions.
+//  🆕 FIX: Playhead ab SAME formula use karta hai jo ruler markers
+//  use karte hain (via timelineScaler). Isse zoom kisi bhi level
+//  pe playhead aur ruler always match karenge.
 // ================================================================
+
+import { getPixelsPerSecond, LABEL_WIDTH } from './timelineScaler.js';
 
 export function initTimelinePlayhead({
   element,
@@ -15,8 +18,6 @@ export function initTimelinePlayhead({
   timeDisplay,
   getRulerContainer = () => null
 }) {
-  const LABEL_WIDTH = 80;
-  let contentStart = LABEL_WIDTH;
   let fps = 30;
 
   function formatTime(seconds) {
@@ -35,34 +36,24 @@ export function initTimelinePlayhead({
     timeDisplay.textContent = formatTime(currentTime) + ' / ' + formatTime(duration);
   }
 
-  function alignToLayerContent() {
-    contentStart = LABEL_WIDTH;
-    element.style.left = contentStart + 'px';
-  }
-
-  // 🆕 FIXED: return ONLY content width (excluding label area)
-  function getContentWidth() {
-    // Try ruler first
-    const ruler = getRulerContainer();
-    if (ruler) {
-      const totalRulerWidth = ruler.scrollWidth || ruler.offsetWidth || 0;
-      if (totalRulerWidth > contentStart) {
-        return totalRulerWidth - contentStart;
-      }
-    }
-    // Fallback: use matrix scroll width
-    return Math.max(0, matrix.scrollWidth - contentStart);
-  }
-
+  // ═══════════════════════════════════════════════════════════
+  //  🆕 CORE FIX: Playhead position ab ruler markers ke
+  //     SAME formula se compute hoti hai:
+  //
+  //       ruler marker for time T  =  LABEL_WIDTH + T * pxPerSecond
+  //       playhead position       =  LABEL_WIDTH + time * pxPerSecond
+  //
+  //     Pehle playhead DOM scrollWidth padhta tha — jo zoom
+  //     change pe stale hota tha. Ab scaler se direct leta hai.
+  // ═══════════════════════════════════════════════════════════
   function setProgress(currentTime, duration) {
     const safeDuration = Math.max(0, Number(duration) || 0);
     const safeTime = Math.max(0, Math.min(Number(currentTime) || 0, safeDuration));
-    const progress = safeDuration > 0 ? safeTime / safeDuration : 0;
 
-    // 🆕 FIXED: contentWidth now excludes label width
-    const contentWidth = getContentWidth();
-    const nextLeft = contentStart + (contentWidth * progress);
-    element.style.left = Math.max(contentStart, nextLeft) + 'px';
+    const pps = getPixelsPerSecond();
+    const nextLeft = LABEL_WIDTH + safeTime * pps;
+
+    element.style.left = Math.max(LABEL_WIDTH, nextLeft) + 'px';
 
     updateTimeDisplay(safeTime, safeDuration);
   }
@@ -74,7 +65,7 @@ export function initTimelinePlayhead({
     const duration = engine.getDuration();
     if (duration <= 0) return;
 
-    // Ignore clicks on clip elements or interactive children
+    // Ignore clicks on interactive elements
     if (event.target.closest &&
         (event.target.closest('.clip') ||
          event.target.closest('.trim-handle') ||
@@ -88,21 +79,24 @@ export function initTimelinePlayhead({
     const clickX = event.clientX - rect.left;
 
     // If clicked in label area, ignore
-    if (clickX < contentStart) return;
+    if (clickX < LABEL_WIDTH) return;
 
-    const contentWidth = getContentWidth();
-    if (contentWidth <= 0) return;
+    // 🆕 SAME formula as ruler — exact pixel → time mapping
+    const pps = getPixelsPerSecond();
+    if (pps <= 0) return;
 
-    const position = Math.max(0, Math.min(contentWidth, clickX - contentStart));
-    const progress = position / contentWidth;
-
-    let newTime = progress * duration;
+    let newTime = (clickX - LABEL_WIDTH) / pps;
+    newTime = Math.max(0, Math.min(duration, newTime));
 
     // Frame-snap
     const frameDur = 1 / fps;
     newTime = Math.round(newTime / frameDur) * frameDur;
     newTime = Math.max(0, Math.min(duration, newTime));
 
+    // 🆕 Force pause before seek (user gesture)
+    if (typeof engine.pause === 'function') {
+      try { engine.pause(); } catch (_) {}
+    }
     engine.seek(newTime);
   }
 
@@ -115,7 +109,6 @@ export function initTimelinePlayhead({
   // ─── Resize observer ───────────────────────────────────────
   if (typeof ResizeObserver !== 'undefined') {
     new ResizeObserver(() => {
-      alignToLayerContent();
       if (engine) setProgress(engine.getTime(), engine.getDuration());
     }).observe(matrix);
   }
@@ -124,7 +117,6 @@ export function initTimelinePlayhead({
   const zoomSlider = document.querySelector('#zoom-slider');
   if (zoomSlider) {
     zoomSlider.addEventListener('input', () => {
-      // Defer to next frame so scaler updates first
       requestAnimationFrame(() => {
         if (engine) setProgress(engine.getTime(), engine.getDuration());
       });
@@ -137,11 +129,15 @@ export function initTimelinePlayhead({
     setProgress(d.time || 0, d.duration || 0);
   });
 
-  // ─── Scale changes (zoom) ─────────────────────────────────
+  // ═══════════════════════════════════════════════════════════
+  //  🆕 FIX: Zoom change pe playhead ko force-update karo
+  //     (double RAF — DOM settle hone ke baad chalta hai)
+  // ═══════════════════════════════════════════════════════════
   document.addEventListener('timeline:scale-changed', function () {
-    // Defer to allow DOM to settle
     requestAnimationFrame(() => {
-      if (engine) setProgress(engine.getTime(), engine.getDuration());
+      requestAnimationFrame(() => {
+        if (engine) setProgress(engine.getTime(), engine.getDuration());
+      });
     });
   });
 
@@ -151,7 +147,6 @@ export function initTimelinePlayhead({
     if (settings && settings.fps) fps = settings.fps;
   } catch (_) {}
 
-  alignToLayerContent();
   updateTimeDisplay(0, 0);
 
   // Initial sync
@@ -162,7 +157,6 @@ export function initTimelinePlayhead({
   }
 
   return {
-    alignToLayerContent,
     setProgress,
     formatTime
   };
