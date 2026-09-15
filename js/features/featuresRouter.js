@@ -1,6 +1,9 @@
 // ================================================================
 //  js/features/featuresRouter.js
 //  Uses panelState.js for scroll memory + back-button routing.
+//
+//  🆕 Back se wapas aane pe shelf LAST-CLICKED feature pe scroll
+//     ho jayega — user ko dobara scroll karne ki zaroorat nahi.
 // ================================================================
 
 import * as panelState from '../workspace/panelState.js';
@@ -34,6 +37,12 @@ const featureModules = new Map();
 let currentView = { level: 0, key: 'root', title: 'Tools', items: [] };
 const parentHistory = [];
 let lastRenderedKey = null;
+
+// ═══════════════════════════════════════════════════════════════
+//  🆕 Remember last-clicked feature at ROOT level
+//     (used to restore shelf scroll when user comes back)
+// ═══════════════════════════════════════════════════════════════
+let lastSelectedFeatureKey = null;
 
 const state = {
   register(key, module) { featureModules.set(key, module); },
@@ -96,6 +105,7 @@ const router = {
   reset() {
     parentHistory.length = 0;
     currentView = { level: 0, key: 'root', title: 'Tools', items: [] };
+    lastSelectedFeatureKey = null;
     this.render(currentView);
   },
 
@@ -104,7 +114,7 @@ const router = {
   render(view) {
     if (!this.shelf) return;
 
-    // Save scroll of PREVIOUS feature
+    // Save scroll of PREVIOUS feature (for panel-level scroll memory)
     if (lastRenderedKey && lastRenderedKey !== view.key) {
       panelState.onFeatureClose(lastRenderedKey, this.shelf);
     }
@@ -115,9 +125,22 @@ const router = {
     this.shelf.style.cssText = '';
     this.shelf.replaceChildren();
 
+    // ═══════════════════════════════════════════════════════════
+    //  Restore hook — runs AFTER children are rendered
+    // ═══════════════════════════════════════════════════════════
     const restoreAfter = () => {
       panelState.restoreScroll(view.key, this.shelf);
       lastRenderedKey = view.key;
+
+      // 🆕 At root level → scroll last-clicked feature into center
+      if (view.level === 0 && lastSelectedFeatureKey) {
+        const self = this;
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            self._scrollFeatureIntoView(lastSelectedFeatureKey);
+          });
+        });
+      }
     };
 
     const CUSTOM_PANELS = {
@@ -178,7 +201,40 @@ const router = {
     restoreAfter();
   },
 
+  // ═══════════════════════════════════════════════════════════
+  //  🆕 Scroll a feature button to the center of the shelf
+  // ═══════════════════════════════════════════════════════════
+  _scrollFeatureIntoView(featureKey) {
+    if (!this.shelf || !featureKey) return;
+
+    const btn = this.shelf.querySelector(
+      '[data-feature="' + featureKey + '"]'
+    );
+    if (!btn) return;
+
+    const shelfWidth = this.shelf.clientWidth;
+    if (shelfWidth <= 0) return;
+
+    const btnOffsetLeft = btn.offsetLeft;
+    const btnWidth = btn.offsetWidth;
+
+    // Compute scroll so button is centered
+    let target = btnOffsetLeft - (shelfWidth / 2) + (btnWidth / 2);
+
+    // Clamp to valid range
+    const maxScroll = Math.max(0, this.shelf.scrollWidth - shelfWidth);
+    target = Math.max(0, Math.min(maxScroll, target));
+
+    // Instant scroll (no animation → no flicker on back)
+    this.shelf.scrollLeft = target;
+  },
+
   select(item) {
+    // 🆕 Remember user's click at ROOT level (for back scroll restore)
+    if (currentView.level === 0) {
+      lastSelectedFeatureKey = item.key;
+    }
+
     const module = state.get(item.key);
     if (module?.open) { module.open({ router: this, item }); return; }
     if (item.children?.length) {

@@ -1,17 +1,13 @@
 // ================================================================
 //  js/features/duplicate.js
-//  Duplicates the selected timeline clip into the next layer above.
+//  Duplicates the selected clip into the next layer ABOVE.
 //
-//  How it works (all self-contained):
-//   1. Read selected clip info from the DOM (.clip.selected)
-//   2. Read clip data from appState.timeline
-//   3. Push a copy to the SOURCE track (state only, DOM not updated)
-//   4. Fire a synthetic "drop" event on the TARGET track element.
-//      timelineEngine's existing drop handler moves the copy from
-//      source → target AND calls render(), so DOM updates correctly.
+//  How it works (self-contained, no synthetic events):
+//   1. Read selected clip from appState
+//   2. Deep-copy it with a fresh ID + unique name
+//   3. Push to the NEXT track (auto-create if needed)
+//   4. Re-render timeline + auto-select the copy
 // ================================================================
-
-import { appState } from '../app.js';
 
 export const featureKey = 'duplicate';
 
@@ -63,7 +59,7 @@ function duplicateSelected() {
     return { ok: false, message: 'Select a clip first' };
   }
 
-  const trackLabel = selectedEl.dataset.track || ''; // e.g. "V1", "A2"
+  const trackLabel = selectedEl.dataset.track || '';
   if (!trackLabel) {
     return { ok: false, message: 'Invalid selection' };
   }
@@ -77,104 +73,107 @@ function duplicateSelected() {
     return { ok: false, message: 'Invalid track' };
   }
 
-  if (nextIndex > 3) {
-    return { ok: false, message: `No layer above ${trackLabel}` };
+  // 2) Get appState
+  const appState = window.__appState;
+  if (!appState) {
+    return { ok: false, message: 'App state missing' };
   }
 
-  // 2) Read clip data from appState
   const list = group === 'visual'
     ? appState.timeline.visual
     : appState.timeline.audio;
+  if (!Array.isArray(list)) {
+    return { ok: false, message: 'Invalid timeline' };
+  }
 
   const clipIdx = Number(selectedEl.dataset.clip);
   const clip = list[trackIndex]?.[clipIdx];
-
   if (!clip) {
     return { ok: false, message: 'Clip not found' };
   }
 
-  // Ensure both tracks exist in state
-  if (!Array.isArray(list[trackIndex])) list[trackIndex] = [];
-  if (!Array.isArray(list[nextIndex])) list[nextIndex] = [];
-
-  // 3) Find the target track element
-  const targetTrackEl = document.querySelector(
-    `.track[data-group="${group}"][data-track-index="${nextIndex}"]`
-  );
-
-  if (!targetTrackEl) {
-    return { ok: false, message: 'Timeline not ready' };
-  }
-
-  // 4) Push copy to SOURCE track (temporary home for the new clip)
-  const copy = { ...clip, name: (clip.name || 'Layer') + ' copy' };
-  list[trackIndex].push(copy);
-  const tempCopyIndex = list[trackIndex].length - 1;
-
-  // 5) Fire a synthetic drop that tells timelineEngine to move this
-  //    clip from SOURCE track → TARGET track (and re-render).
-  const moved = dispatchSyntheticDrop(
-    targetTrackEl,
-    `clip:${group}:${trackIndex}:${tempCopyIndex}`
-  );
-
-  if (!moved) {
-    // Rollback
-    list[trackIndex].pop();
-    return { ok: false, message: 'Could not duplicate' };
-  }
-
-  // 6) Highlight the new clip (visual feedback)
-  highlightLastClip(group, nextIndex);
-
-  const label = (group === 'visual' ? 'V' : 'A') + (nextIndex + 1);
-  return { ok: true, message: `Duplicated to ${label}` };
-}
-
-// ─── Synthetic drop event ──────────────────────────────────────
-// We dispatch a plain "drop" Event with a fake dataTransfer object
-// whose getData() returns the string timelineEngine's drop handler
-// expects. This avoids needing any changes in timelineEngine.js.
-function dispatchSyntheticDrop(targetEl, dataString) {
-  const dropEvent = new Event('drop', { bubbles: true, cancelable: true });
-
-  const fakeDataTransfer = {
-    getData: (type) => (type === 'text/plain' ? dataString : ''),
-    setData: () => {},
-    clearData: () => {},
-    types: ['text/plain'],
-    files: [],
-    items: [],
-    dropEffect: 'none',
-    effectAllowed: 'all'
-  };
-
+  // ═══════════════════════════════════════════════════════════
+  //  🆕 Deep copy with fresh IDs (no shared references)
+  // ═══════════════════════════════════════════════════════════
+  let copy;
   try {
-    Object.defineProperty(dropEvent, 'dataTransfer', {
-      value: fakeDataTransfer,
-      writable: false,
-      configurable: true
-    });
+    copy = JSON.parse(JSON.stringify(clip));
   } catch (_) {
-    return false;
+    copy = Object.assign({}, clip);
   }
 
-  targetEl.dispatchEvent(dropEvent);
-  return true;
-}
+  copy.name = (clip.name || 'Layer') + ' copy';
 
-// ─── Highlight the newest clip in the target track ─────────────
-function highlightLastClip(group, targetIndex) {
-  const trackEl = document.querySelector(
-    `.track[data-group="${group}"][data-track-index="${targetIndex}"]`
-  );
-  if (!trackEl) return;
-  const clips = trackEl.querySelectorAll('.clip');
-  if (!clips.length) return;
+  // Generate unique timestamps
+  const now = Date.now();
+  const rnd = Math.random().toString(36).slice(2, 7);
 
-  document.querySelectorAll('.clip.selected')
-    .forEach(el => el.classList.remove('selected'));
+  // Remove linked ID so it doesn't auto-mirror with original
+  delete copy.__linkedId;
 
-  const last = clips[clips.length - 1];
-  last.classList.add('selected');
+  // Regenerate IDs so filter/effect/text/sticker layers don't conflict
+  if (copy.__effectId) {
+    copy.__effectId = 'fx-' + now + '-' + rnd;
+    copy.url = 'effect://' + copy.__effectId;
+  }
+  if (copy.__textId) {
+    copy.__textId = 'tx-' + now + '-' + rnd;
+    copy.url = 'text://' + copy.__textId;
+  }
+  if (copy.__stickerId) {
+    copy.__stickerId = 'sk-' + now + '-' + rnd;
+    copy.url = 'sticker://' + copy.__stickerId;
+  }
+  if (copy.__audioFxId) {
+    copy.__audioFxId = 'afx-' + now + '-' + rnd;
+    copy.url = 'audiofx://' + copy.__audioFxId;
+  }
+  if (copy.__soundId) {
+    copy.__soundId = 'se-' + now + '-' + rnd;
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  //  3) Ensure next track exists, then push copy
+  // ═══════════════════════════════════════════════════════════
+  while (list.length <= nextIndex) list.push([]);
+
+  list[nextIndex].push(copy);
+
+  // Sort target track by startTime
+  list[nextIndex].sort((a, b) => {
+    const sa = Number.isFinite(a.startTime) ? a.startTime : 0;
+    const sb = Number.isFinite(b.startTime) ? b.startTime : 0;
+    return sa - sb;
+  });
+
+  // 4) Fire timeline change
+  document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
+
+  // 5) Auto-select the new copy after re-render
+  const copyUrl = copy.url;
+  setTimeout(() => {
+    const appState2 = window.__appState;
+    if (!appState2) return;
+    const list2 = group === 'visual'
+      ? appState2.timeline.visual
+      : appState2.timeline.audio;
+    const newTrack = list2[nextIndex];
+    if (!Array.isArray(newTrack)) return;
+    const newIdx = newTrack.indexOf(copy);
+    if (newIdx < 0) return;
+    const label = (group === 'visual' ? 'V' : 'A') + (nextIndex + 1);
+    const el = document.querySelector(
+      '.clip[data-track="' + label + '"][data-clip="' + newIdx + '"]'
+    );
+    if (el) {
+      try {
+        el.dispatchEvent(new MouseEvent('mousedown', {
+          bubbles: true, cancelable: true, button: 0
+        }));
+      } catch (_) {}
+    }
+  }, 60);
+
+  const finalLabel = (group === 'visual' ? 'V' : 'A') + (nextIndex + 1);
+  return { ok: true, message: 'Duplicated to ' + finalLabel };
 }

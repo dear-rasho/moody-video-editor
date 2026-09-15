@@ -8,10 +8,12 @@
 //    • Back-button interception (auto, via capture on parent)
 //    • Custom state     (any key/value per feature)
 // ================================================================
-
 const _features = {};               // featureKey -> { subView, ... }
 const _scroll  = {};                // featureKey -> { scrollKey -> number }
 const _backRegistry = new Map();    // featureKey -> { wrapper, header, handler }
+
+// 🆕 Feature shelf ka apna horizontal scroll — per view key
+const _shelfScroll = {};            // featureKey -> scrollLeft
 
 // Known scroll regions (classes to auto-track)
 const SCROLL_CLASSES = [
@@ -99,7 +101,25 @@ export function restoreScroll(featureKey, rootEl) {
     });
   });
 }
+// ═══════════════════════════════════════════════════════════════
+//  🆕 SHELF SCROLL MEMORY
+//  #feature-shelf element ka apna scrollLeft — per view key
+//  (Iske bina back karne pe shelf hamesha top pe chala jata hai)
+// ═══════════════════════════════════════════════════════════════
+export function saveShelfScroll(featureKey, scrollLeft) {
+  if (!featureKey) return;
+  _shelfScroll[featureKey] = Number(scrollLeft) || 0;
+}
 
+export function getShelfScroll(featureKey) {
+  if (!featureKey) return 0;
+  const v = _shelfScroll[featureKey];
+  return typeof v === 'number' ? v : 0;
+}
+
+export function clearShelfScroll(featureKey) {
+  if (featureKey) delete _shelfScroll[featureKey];
+}
 // ═══════════════════════════════════════════════════════════════
 //  BACK BUTTON INTERCEPTOR
 //  Feature supplies a handler(container) → returns true if handled
@@ -155,10 +175,10 @@ export function onFeatureOpen(featureKey) {
 export function onFeatureClose(featureKey, rootEl) {
   if (rootEl) saveScroll(featureKey, rootEl);
 }
-
 export function resetAll() {
   Object.keys(_features).forEach(k => delete _features[k]);
   Object.keys(_scroll).forEach(k => delete _scroll[k]);
+  Object.keys(_shelfScroll).forEach(k => delete _shelfScroll[k]);   // 🆕
   _backRegistry.forEach((rec, key) => {
     rec.header.removeEventListener('click', rec.wrapper, true);
   });
