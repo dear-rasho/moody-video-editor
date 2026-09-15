@@ -1,6 +1,8 @@
 // ================================================================
 //  js/workspace/keyframeUI.js
-//  Keyframe button + clickable markers + selection state.
+//  Keyframe button + clickable markers + DRAGGABLE markers.
+//  🆕 Markers can be dragged horizontally to change keyframe time.
+//     Clamped within the clip's duration (start → end).
 // ================================================================
 
 import {
@@ -13,6 +15,7 @@ const CSS_ID = 'keyframe-ui-styles';
 
 let btnEl = null;
 let selectedKf = null;
+let isDragging = false;   // 🆕 suppress redraw during drag
 
 function injectStyles() {
   if (document.getElementById(CSS_ID)) return;
@@ -54,6 +57,7 @@ function injectStyles() {
       pointer-events: none;
       z-index: 25;
     }
+
     .kf-marker {
       position: absolute;
       top: 2px;
@@ -64,12 +68,17 @@ function injectStyles() {
       transform: translateX(-50%) rotate(45deg);
       box-shadow: 0 0 4px rgba(79,157,255,0.6);
       pointer-events: auto;
-      cursor: pointer;
+      cursor: grab;
       touch-action: none;
-      transition: background 0.12s ease, transform 0.12s ease;
+      transition: background 0.12s ease, box-shadow 0.12s ease;
+      user-select: none;
+      -webkit-user-select: none;
     }
     .kf-marker:hover {
       background: #7ab5ff;
+    }
+    .kf-marker:active {
+      cursor: grabbing;
     }
     .kf-marker.active {
       background: #ffd166;
@@ -82,6 +91,51 @@ function injectStyles() {
       transform: translateX(-50%) rotate(45deg) scale(1.15);
       z-index: 30;
     }
+
+    /* 🆕 Dragging state */
+    .kf-marker.dragging {
+      background: #22c55e !important;
+      border-color: #fff !important;
+      box-shadow: 0 0 0 2px #22c55e, 0 0 16px rgba(34,197,94,0.9) !important;
+      transform: translateX(-50%) rotate(45deg) scale(1.3) !important;
+      z-index: 40 !important;
+      cursor: grabbing !important;
+      transition: none !important;
+    }
+
+    body.kf-dragging,
+    body.kf-dragging * {
+      cursor: grabbing !important;
+      user-select: none !important;
+      -webkit-user-select: none !important;
+    }
+
+    /* 🆕 Time tooltip during drag */
+    .kf-drag-tooltip {
+      position: fixed;
+      transform: translate(-50%, -100%);
+      background: #22c55e;
+      color: #000;
+      padding: 5px 11px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+      z-index: 100002;
+      pointer-events: none;
+      font-family: inherit;
+      letter-spacing: 0.02em;
+    }
+    .kf-drag-tooltip::after {
+      content: '';
+      position: absolute;
+      left: 50%; top: 100%;
+      transform: translateX(-50%);
+      border: 5px solid transparent;
+      border-top-color: #22c55e;
+    }
   `;
   document.head.appendChild(s);
 }
@@ -93,27 +147,17 @@ export function initKeyframeUI(buttonEl) {
 
   btnEl.addEventListener('click', onButtonClick);
 
-   document.addEventListener('playback:tick', refresh);
+  document.addEventListener('playback:tick', refresh);
   document.addEventListener('playback:state', refresh);
   document.addEventListener('editor:timeline-changed', refresh);
   document.addEventListener('keyframe:changed', refresh);
   document.addEventListener('transform:changed', refresh);
 
-  // 🆕 Selection change pe bhi ◆ button ka state update karo
   document.addEventListener('editor:clip-selected', refresh);
 
   document.addEventListener('playback:tick', scheduleMarkers);
   document.addEventListener('editor:timeline-changed', scheduleMarkers);
   document.addEventListener('keyframe:changed', scheduleMarkers);
-
-  // ═══════════════════════════════════════════════════════════
-  //  🆕 FIX: Clip select/deselect hone pe markers redraw karo
-  //
-  //  Pehle: clip pe click karne se markers wapas nahi aate the
-  //         (kyunki koi event fire nahi hota tha)
-  //
-  //  Ab:    editor:clip-selected fire hota hai → markers redraw
-  // ═══════════════════════════════════════════════════════════
   document.addEventListener('editor:clip-selected', scheduleMarkers);
 
   refresh();
@@ -152,12 +196,41 @@ function getPlayheadTime() {
   const eng = window.__playbackEngine;
   return eng && typeof eng.getTime === 'function' ? eng.getTime() : 0;
 }
-
+// ═══════════════════════════════════════════════════════════════
+//  🆕 CAPTURE PROPERTIES (from text/sticker/transform state)
+//
+//  Text clip → textState se positionX/Y, scale, rotation
+//  Sticker clip → stickerState se x, y, scale, rotation
+//  Normal clip → __transform
+// ═══════════════════════════════════════════════════════════════
 function captureProperties(clip) {
-  const base = clip.__transform || {};
   const props = {};
+  const base = clip.__transform || {};
+
+  // 🆕 Text clip — pull from textState
+  const textState = (clip.__textId && clip.textState) ? clip.textState : null;
+  const stickerState = (clip.__stickerId && clip.stickerState) ? clip.stickerState : null;
+
   ANIMATABLE_PROPS.forEach(p => {
     let v = base[p];
+
+    // Text clip: override from textState
+    if (textState) {
+      if (p === 'x' && textState.positionX != null) v = textState.positionX;
+      else if (p === 'y' && textState.positionY != null) v = textState.positionY;
+      else if (p === 'scale' && textState.scale != null) v = textState.scale;
+      else if (p === 'rotation' && textState.rotation != null) v = textState.rotation;
+    }
+
+    // Sticker clip: override from stickerState
+    if (stickerState) {
+      if (p === 'x' && stickerState.x != null) v = stickerState.x;
+      else if (p === 'y' && stickerState.y != null) v = stickerState.y;
+      else if (p === 'scale' && stickerState.scale != null) v = stickerState.scale;
+      else if (p === 'rotation' && stickerState.rotation != null) v = stickerState.rotation;
+    }
+
+    // Fallback defaults
     if (v == null) {
       if (p === 'x' || p === 'y' || p === 'anchorX' || p === 'anchorY') v = 50;
       else if (p === 'scale') v = 100;
@@ -165,6 +238,7 @@ function captureProperties(clip) {
     }
     props[p] = v;
   });
+
   return props;
 }
 
@@ -226,6 +300,8 @@ function setSign(btn, sign) {
 
 let rafMarkers = false;
 function scheduleMarkers() {
+  // 🆕 Skip redraw during drag to preserve marker element identity
+  if (isDragging) return;
   if (rafMarkers) return;
   rafMarkers = true;
   requestAnimationFrame(() => {
@@ -270,7 +346,7 @@ function drawMarkers() {
 
   times.forEach(kt => {
     const relTime = kt - startTime;
-    if (relTime < 0 || relTime > duration) return;
+    if (relTime < -0.01 || relTime > duration + 0.01) return;
     const pct = relTime / duration;
     const m = document.createElement('span');
     m.className = 'kf-marker';
@@ -280,10 +356,11 @@ function drawMarkers() {
     if (Math.abs(playhead - kt) < 0.06) m.classList.add('active');
     if (isSel && Math.abs(selectedKf.time - kt) < 0.05) m.classList.add('selected');
 
+    // 🆕 Drag support
     m.addEventListener('pointerdown', (e) => {
       e.stopPropagation();
       e.preventDefault();
-      selectKeyframe(clip, kt, m);
+      startKeyframeDrag(e, clip, kt, m, clipEl);
     });
 
     layer.appendChild(m);
@@ -292,6 +369,141 @@ function drawMarkers() {
   clipEl.appendChild(layer);
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  🆕 KEYFRAME DRAG
+// ═══════════════════════════════════════════════════════════════
+function startKeyframeDrag(e, clip, kfTime, markerEl, clipEl) {
+  if (!clip || !markerEl || !clipEl) return;
+
+  const clipStart = Number.isFinite(clip.startTime) ? clip.startTime : 0;
+  const clipDur = Number.isFinite(clip.duration) ? clip.duration : 0;
+  if (clipDur <= 0) return;
+
+  const clipWidthPx = clipEl.offsetWidth || 0;
+  if (clipWidthPx <= 0) return;
+
+  // Find all props that have a keyframe at this time
+  const props = getPropsWithKeyframeAt(clip, kfTime);
+  if (!props.length) return;
+
+  const startX = e.clientX;
+  const startKfTime = kfTime;
+  let currentTime = kfTime;
+  let moved = false;
+  let wasSelected = selectedKf && selectedKf.clip === clip &&
+                    Math.abs(selectedKf.time - kfTime) < 0.05;
+
+  // Ensure keyframes are sorted
+  props.forEach(p => {
+    const list = clip.__keyframes[p];
+    if (Array.isArray(list)) list.sort((a, b) => a.time - b.time);
+  });
+
+  isDragging = true;
+  markerEl.classList.add('dragging');
+  document.body.classList.add('kf-dragging');
+
+  // Tooltip
+  const tooltip = document.createElement('div');
+  tooltip.className = 'kf-drag-tooltip';
+  tooltip.textContent = formatKfTime(startKfTime);
+  document.body.appendChild(tooltip);
+
+  function updateTooltip(clientX, clientY) {
+    tooltip.style.left = clientX + 'px';
+    tooltip.style.top = Math.max(20, clientY - 20) + 'px';
+  }
+  updateTooltip(e.clientX, e.clientY);
+
+  function onMove(ev) {
+    const dx = ev.clientX - startX;
+    if (Math.abs(dx) > 3) moved = true;
+
+    // Convert pixel delta to time delta
+    const dtSec = (dx / clipWidthPx) * clipDur;
+    let newTime = startKfTime + dtSec;
+
+    // 🆕 Clamp within clip duration
+    const clipEnd = clipStart + clipDur;
+    newTime = Math.max(clipStart, Math.min(clipEnd, newTime));
+
+    // Snap to 0.05s (frame-ish)
+    newTime = Math.round(newTime * 20) / 20;
+
+    if (Math.abs(newTime - currentTime) < 0.001) {
+      updateTooltip(ev.clientX, ev.clientY);
+      return;
+    }
+    currentTime = newTime;
+
+    // Update all props that share this keyframe time
+    props.forEach(p => {
+      const list = clip.__keyframes[p];
+      if (!Array.isArray(list)) return;
+      const kf = list.find(k => Math.abs(k.time - startKfTime) < 0.05);
+      if (kf) kf.time = newTime;
+      list.sort((a, b) => a.time - b.time);
+    });
+
+    // Update marker position visually
+    const relTime = newTime - clipStart;
+    const pct = relTime / clipDur;
+    markerEl.style.left = (pct * 100) + '%';
+    markerEl.dataset.kfTime = String(newTime);
+
+    // Update tooltip
+    tooltip.textContent = formatKfTime(newTime);
+    updateTooltip(ev.clientX, ev.clientY);
+
+    // 🆕 Live preview — fire transform:changed (safe, doesn't redraw markers)
+    document.dispatchEvent(new CustomEvent('transform:changed'));
+  }
+
+  function onUp(ev) {
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    window.removeEventListener('pointercancel', onUp);
+
+    isDragging = false;
+    markerEl.classList.remove('dragging');
+    document.body.classList.remove('kf-dragging');
+    tooltip.remove();
+
+    if (!moved) {
+      // Treat as click — select keyframe
+      selectKeyframe(clip, startKfTime, markerEl);
+      return;
+    }
+
+    // Update selection time if this keyframe was selected
+    if (wasSelected) {
+      selectedKf = { clip: clip, time: currentTime };
+      window.__selectedKeyframe = selectedKf;
+      document.dispatchEvent(new CustomEvent('keyframe:selected', {
+        detail: { clip: clip, time: currentTime, props: props }
+      }));
+    }
+
+    // Fire final commit events
+    document.dispatchEvent(new CustomEvent('keyframe:changed'));
+    document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
+
+    showToast('◆ Keyframe → ' + currentTime.toFixed(2) + 's');
+  }
+
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp);
+  window.addEventListener('pointercancel', onUp);
+}
+
+function formatKfTime(sec) {
+  if (!Number.isFinite(sec)) sec = 0;
+  return sec.toFixed(2) + 's';
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  SELECT
+// ═══════════════════════════════════════════════════════════════
 function selectKeyframe(clip, time, markerEl) {
   if (selectedKf && selectedKf.clip === clip &&
       Math.abs(selectedKf.time - time) < 0.05) {
@@ -320,7 +532,7 @@ function showToast(msg, ok) {
     'transform:translateX(-50%)',
     'background:' + (ok ? 'rgba(0,0,0,0.9)' : 'rgba(180,40,40,0.92)'),
     'color:#fff','padding:9px 18px','border-radius:20px',
-    'font-size:12px','font-weight:600','z-index:9999',
+    'font-size:12px','font-weight:600','z-index:99999',
     'pointer-events:none','font-family:inherit'
   ].join(';');
   document.body.appendChild(el);

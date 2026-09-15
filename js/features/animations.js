@@ -50,47 +50,49 @@ function ensureKeyframes() {
   if (document.getElementById(KF_ID)) return;
   const style = document.createElement('style');
   style.id = KF_ID;
-  style.textContent = `
-    /* Base transform helpers respect --tx-scale + alignment origin */
+   style.textContent = `
+    /* 🆕 Animations now use NO -50% base translate.
+       Position is handled by the WRAPPER element. */
+
     @keyframes tx-fadeIn {
       from { opacity: 0; }
       to   { opacity: 1; }
     }
     @keyframes tx-fadeUp {
-      from { opacity: 0; margin-top: 24px; }
-      to   { opacity: 1; margin-top: 0; }
+      from { opacity: 0; transform: translateY(24px); }
+      to   { opacity: 1; transform: translateY(0); }
     }
     @keyframes tx-fadeDown {
-      from { opacity: 0; margin-top: -24px; }
-      to   { opacity: 1; margin-top: 0; }
+      from { opacity: 0; transform: translateY(-24px); }
+      to   { opacity: 1; transform: translateY(0); }
     }
     @keyframes tx-slideLeft {
-      from { transform: translate(calc(-50% - 80px), -50%) scale(var(--tx-scale,1)) rotate(var(--tx-rot,0deg)); opacity: 0; }
-      to   { transform: translate(-50%, -50%) scale(var(--tx-scale,1)) rotate(var(--tx-rot,0deg)); opacity: 1; }
+      from { transform: translate(-80px, 0); opacity: 0; }
+      to   { transform: translate(0, 0); opacity: 1; }
     }
     @keyframes tx-slideRight {
-      from { transform: translate(calc(-50% + 80px), -50%) scale(var(--tx-scale,1)) rotate(var(--tx-rot,0deg)); opacity: 0; }
-      to   { transform: translate(-50%, -50%) scale(var(--tx-scale,1)) rotate(var(--tx-rot,0deg)); opacity: 1; }
+      from { transform: translate(80px, 0); opacity: 0; }
+      to   { transform: translate(0, 0); opacity: 1; }
     }
     @keyframes tx-slideUp {
-      from { transform: translate(-50%, calc(-50% + 80px)) scale(var(--tx-scale,1)) rotate(var(--tx-rot,0deg)); opacity: 0; }
-      to   { transform: translate(-50%, -50%) scale(var(--tx-scale,1)) rotate(var(--tx-rot,0deg)); opacity: 1; }
+      from { transform: translate(0, 80px); opacity: 0; }
+      to   { transform: translate(0, 0); opacity: 1; }
     }
     @keyframes tx-slideDown {
-      from { transform: translate(-50%, calc(-50% - 80px)) scale(var(--tx-scale,1)) rotate(var(--tx-rot,0deg)); opacity: 0; }
-      to   { transform: translate(-50%, -50%) scale(var(--tx-scale,1)) rotate(var(--tx-rot,0deg)); opacity: 1; }
+      from { transform: translate(0, -80px); opacity: 0; }
+      to   { transform: translate(0, 0); opacity: 1; }
     }
     @keyframes tx-popIn {
-      0%   { transform: translate(-50%, -50%) scale(0)    rotate(var(--tx-rot,0deg)); opacity: 0; }
-      60%  { transform: translate(-50%, -50%) scale(1.12) rotate(var(--tx-rot,0deg)); opacity: 1; }
-      80%  { transform: translate(-50%, -50%) scale(0.96) rotate(var(--tx-rot,0deg)); }
-      100% { transform: translate(-50%, -50%) scale(var(--tx-scale,1)) rotate(var(--tx-rot,0deg)); }
+      0%   { transform: scale(0); opacity: 0; }
+      60%  { transform: scale(1.12); opacity: 1; }
+      80%  { transform: scale(0.96); }
+      100% { transform: scale(1); }
     }
     @keyframes tx-bounceIn {
-      0%   { transform: translate(-50%, -50%) scale(0.2) rotate(var(--tx-rot,0deg)); opacity: 0; }
-      40%  { transform: translate(-50%, -50%) scale(1.25) rotate(var(--tx-rot,0deg)); opacity: 1; }
-      70%  { transform: translate(-50%, -50%) scale(0.9)  rotate(var(--tx-rot,0deg)); }
-      100% { transform: translate(-50%, -50%) scale(var(--tx-scale,1)) rotate(var(--tx-rot,0deg)); }
+      0%   { transform: scale(0.2); opacity: 0; }
+      40%  { transform: scale(1.25); opacity: 1; }
+      70%  { transform: scale(0.9); }
+      100% { transform: scale(1); }
     }
     @keyframes tx-flicker {
       0%, 100% { opacity: 1; }
@@ -110,69 +112,64 @@ function ensureKeyframes() {
       60%  { filter: blur(3px);  opacity: 1; letter-spacing: 0.02em; }
       100% { filter: blur(0);    opacity: 1; letter-spacing: normal; }
     }
-    /* ─── 3D ─────────────────────────────────────── */
     @keyframes tx-flip3DX {
-      0%   { transform: translate(-50%, -50%) perspective(600px) rotateX(90deg) scale(var(--tx-scale,1)); opacity: 0; }
+      0%   { transform: perspective(600px) rotateX(90deg); opacity: 0; }
       60%  { opacity: 1; }
-      100% { transform: translate(-50%, -50%) perspective(600px) rotateX(0deg) scale(var(--tx-scale,1)); opacity: 1; }
+      100% { transform: perspective(600px) rotateX(0deg); opacity: 1; }
     }
     @keyframes tx-flip3DY {
-      0%   { transform: translate(-50%, -50%) perspective(600px) rotateY(90deg) scale(var(--tx-scale,1)); opacity: 0; }
+      0%   { transform: perspective(600px) rotateY(90deg); opacity: 0; }
       60%  { opacity: 1; }
-      100% { transform: translate(-50%, -50%) perspective(600px) rotateY(0deg) scale(var(--tx-scale,1)); opacity: 1; }
+      100% { transform: perspective(600px) rotateY(0deg); opacity: 1; }
     }
     @keyframes tx-rotate3D {
-      0%   { transform: translate(-50%, -50%) perspective(700px) rotate3d(1, 1, 1, 0deg) scale(var(--tx-scale,1)); }
-      100% { transform: translate(-50%, -50%) perspective(700px) rotate3d(1, 1, 1, 360deg) scale(var(--tx-scale,1)); }
+      0%   { transform: perspective(700px) rotate3d(1, 1, 1, 0deg); }
+      100% { transform: perspective(700px) rotate3d(1, 1, 1, 360deg); }
     }
-    /* ─── Scribble: reveal by clip-path sweep ───── */
     @keyframes tx-scribble {
       0%   { clip-path: inset(0 100% 0 0); opacity: 0.2; }
       100% { clip-path: inset(0 0 0 0);     opacity: 1; }
     }
-    /* ─── Glitch: RGB split + jitter ─────────────── */
     @keyframes tx-glitch {
-      0%, 100% { transform: translate(-50%, -50%) scale(var(--tx-scale,1)); text-shadow: 0 0 0 transparent; }
-      10% { transform: translate(calc(-50% - 3px), -50%) scale(var(--tx-scale,1)); text-shadow:  3px 0 #ff0044, -3px 0 #00ffee; }
-      20% { transform: translate(calc(-50% + 3px), calc(-50% + 2px)) scale(var(--tx-scale,1)); text-shadow: -4px 0 #ff0044,  4px 0 #00ffee; }
-      30% { transform: translate(-50%, -50%) scale(var(--tx-scale,1)); text-shadow: 0 0 0 transparent; }
-      40% { transform: translate(calc(-50% - 2px), -50%) scale(var(--tx-scale,1)); text-shadow:  2px 0 #00ffee, -2px 0 #ff0044; }
-      50% { transform: translate(calc(-50% + 4px), -50%) scale(var(--tx-scale,1)); text-shadow: -3px 0 #ff0044,  3px 0 #00ffee; }
-      60% { transform: translate(-50%, -50%) scale(var(--tx-scale,1)); text-shadow: 0 0 0 transparent; }
-      70% { transform: translate(calc(-50% - 4px), calc(-50% - 2px)) scale(var(--tx-scale,1)); text-shadow:  4px 0 #ff0044, -4px 0 #00ffee; }
-      80% { transform: translate(-50%, -50%) scale(var(--tx-scale,1)); text-shadow: 0 0 0 transparent; }
+      0%, 100% { transform: translate(0, 0); text-shadow: 0 0 0 transparent; }
+      10% { transform: translate(-3px, 0); text-shadow: 3px 0 #ff0044, -3px 0 #00ffee; }
+      20% { transform: translate(3px, 2px); text-shadow: -4px 0 #ff0044, 4px 0 #00ffee; }
+      30% { transform: translate(0, 0); text-shadow: 0 0 0 transparent; }
+      40% { transform: translate(-2px, 0); text-shadow: 2px 0 #00ffee, -2px 0 #ff0044; }
+      50% { transform: translate(4px, 0); text-shadow: -3px 0 #ff0044, 3px 0 #00ffee; }
+      60% { transform: translate(0, 0); text-shadow: 0 0 0 transparent; }
+      70% { transform: translate(-4px, -2px); text-shadow: 4px 0 #ff0044, -4px 0 #00ffee; }
+      80% { transform: translate(0, 0); text-shadow: 0 0 0 transparent; }
     }
-    /* ─── Wave (subtle vertical bob) ─────────────── */
     @keyframes tx-wave {
-      0%, 100% { transform: translate(-50%, -50%) scale(var(--tx-scale,1)) translateY(0); }
-      25%      { transform: translate(-50%, -50%) scale(var(--tx-scale,1)) translateY(-8px); }
-      50%      { transform: translate(-50%, -50%) scale(var(--tx-scale,1)) translateY(0); }
-      75%      { transform: translate(-50%, -50%) scale(var(--tx-scale,1)) translateY(8px); }
+      0%, 100% { transform: translateY(0); }
+      25%      { transform: translateY(-8px); }
+      50%      { transform: translateY(0); }
+      75%      { transform: translateY(8px); }
     }
     @keyframes tx-bounceWave {
-      0%, 20%, 50%, 80%, 100% { transform: translate(-50%, -50%) scale(var(--tx-scale,1)) translateY(0); }
-      40% { transform: translate(-50%, -50%) scale(var(--tx-scale,1)) translateY(-18px); }
-      60% { transform: translate(-50%, -50%) scale(var(--tx-scale,1)) translateY(-10px); }
+      0%, 20%, 50%, 80%, 100% { transform: translateY(0); }
+      40% { transform: translateY(-18px); }
+      60% { transform: translateY(-10px); }
     }
     @keyframes tx-pulse {
-      0%, 100% { transform: translate(-50%, -50%) scale(var(--tx-scale,1)); }
-      50%      { transform: translate(-50%, -50%) scale(calc(var(--tx-scale,1) * 1.1)); }
+      0%, 100% { transform: scale(1); }
+      50%      { transform: scale(1.1); }
     }
     @keyframes tx-shake {
-      0%, 100% { transform: translate(-50%, -50%) scale(var(--tx-scale,1)); }
-      20%, 60% { transform: translate(calc(-50% - 6px), -50%) scale(var(--tx-scale,1)); }
-      40%, 80% { transform: translate(calc(-50% + 6px), -50%) scale(var(--tx-scale,1)); }
+      0%, 100% { transform: translate(0, 0); }
+      20%, 60% { transform: translate(-6px, 0); }
+      40%, 80% { transform: translate(6px, 0); }
     }
     @keyframes tx-zoomIn {
-      0%   { transform: translate(-50%, -50%) scale(0.3); opacity: 0; }
-      100% { transform: translate(-50%, -50%) scale(var(--tx-scale,1)); opacity: 1; }
+      0%   { transform: scale(0.3); opacity: 0; }
+      100% { transform: scale(1); opacity: 1; }
     }
     @keyframes tx-zoomOut {
-      0%   { transform: translate(-50%, -50%) scale(2); opacity: 0; }
-      100% { transform: translate(-50%, -50%) scale(var(--tx-scale,1)); opacity: 1; }
+      0%   { transform: scale(2); opacity: 0; }
+      100% { transform: scale(1); opacity: 1; }
     }
 
-    /* Typewriter caret */
     .tx-caret::after {
       content: '▍';
       margin-left: 2px;

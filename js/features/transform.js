@@ -701,7 +701,23 @@ function autoSelectFirstVisualClip() {
     } catch (_) {}
   }
 }
-
+// ═══════════════════════════════════════════════════════════════
+//  🆕 APPLY TRANSFORM with AUTO-KEYFRAME
+//
+//  Jab bhi user slider move kare:
+//    - Agar playhead clip ke andar hai → AUTO keyframe set karo
+//    - Text clip ho → textState bhi update karo
+//    - Sticker clip ho → stickerState bhi update karo
+//
+//  Isse user ko sirf ◆ button dabane ki zaroorat nahi.
+//  Slider move = keyframe auto-create.
+// ═══════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
+//  🆕 AUTO-KEYFRAME — pehli change pe bhi keyframe banega
+//
+//  Pehle: `if (hasAnyKeyframes)` gate tha → pehla keyframe nahi banta
+//  Ab:    Har change pe keyframe banta hai (agar playhead clip ke andar)
+// ═══════════════════════════════════════════════════════════════
 function applyTransform() {
   if (!activeClip) return;
 
@@ -729,19 +745,27 @@ function applyTransform() {
     activeClip.stickerState.rotation = state.rotation;
   }
 
-  if (hasAnyKeyframes(activeClip)) {
+  // 🆕 ALWAYS auto-keyframe (no gate)
+  const changedKeys = Object.keys(changed);
+  if (changedKeys.length > 0) {
     const eng = window.__playbackEngine;
     const t = eng && typeof eng.getTime === 'function' ? eng.getTime() : 0;
-    Object.keys(changed).forEach(prop => {
-      setKeyframe(activeClip, prop, t, changed[prop]);
-    });
-    document.dispatchEvent(new CustomEvent('keyframe:changed'));
+    const clipStart = Number.isFinite(activeClip.startTime) ? activeClip.startTime : 0;
+    const clipDur = Number.isFinite(activeClip.duration) ? activeClip.duration : 3;
+    const clipEnd = clipStart + clipDur;
+
+    // Sirf tab jab playhead clip ke andar ho
+    if (t >= clipStart - 0.001 && t <= clipEnd + 0.001) {
+      changedKeys.forEach(prop => {
+        setKeyframe(activeClip, prop, t, changed[prop]);
+      });
+      document.dispatchEvent(new CustomEvent('keyframe:changed'));
+    }
   }
 
   document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
   document.dispatchEvent(new CustomEvent('transform:changed'));
 }
-
 // ═══════════════════════════════════════════════════════════════
 //  HELPERS
 // ═══════════════════════════════════════════════════════════════

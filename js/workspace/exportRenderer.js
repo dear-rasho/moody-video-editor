@@ -1,48 +1,72 @@
 // ================================================================
 //  js/workspace/exportRenderer.js
 //  Export frames — HIERARCHY-AWARE.
-//  Same rules as preview effectRenderer.
+//  🆕 Image support + Text/Sticker keyframe sampling
 // ================================================================
 
 import { hasAnyKeyframes, sampleAll } from './keyframeStore.js';
 import { isTransitionActive, getTransitionProgress, renderTransitionBlend } from './transitionEngine.js';
-// ═══════════════════════════════════════════════════════════════
-//  🆕 Color channel helpers (same as effectRenderer.js)
-// ═══════════════════════════════════════════════════════════════
-const COLOR_CHANNELS = [
-  { key: 'reds',      center: 0,   range: 30 },
-  { key: 'oranges',   center: 30,  range: 30 },
-  { key: 'yellows',   center: 60,  range: 30 },
-  { key: 'greens',    center: 120, range: 90 },
-  { key: 'cyans',     center: 180, range: 30 },
-  { key: 'blues',     center: 225, range: 60 },
-  { key: 'purples',   center: 270, range: 30 },
-  { key: 'magentas',  center: 315, range: 60 },
-  { key: 'skinTones', center: 20,  range: 25 }
-];
 
-function rgbToHsl(r, g, b) {
-  r /= 255; g /= 255; b /= 255;
-  const max = Math.max(r, g, b), min = Math.min(r, g, b);
-  let h = 0, s = 0;
-  const l = (max + min) / 2;
-  if (max !== min) {
-    const d = max - min;
-    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-    if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) * 60;
-    else if (max === g) h = ((b - r) / d + 2) * 60;
-    else h = ((r - g) / d + 4) * 60;
+// ═══════════════════════════════════════════════════════════════
+//  🆕 IMAGE CACHE (for export)
+// ═══════════════════════════════════════════════════════════════
+const _imageCache = new Map();
+
+export function preloadImage(url) {
+  return new Promise(resolve => {
+    if (!url) { resolve(null); return; }
+    const cached = _imageCache.get(url);
+    if (cached && cached.complete && cached.naturalWidth > 0) {
+      resolve(cached);
+      return;
+    }
+    const img = new Image();
+    img.onload = () => {
+      _imageCache.set(url, img);
+      resolve(img);
+    };
+    img.onerror = () => {
+      console.warn('[export] image load failed:', String(url).slice(0, 60));
+      resolve(null);
+    };
+    _imageCache.set(url, img);
+    img.src = url;
+  });
+}
+
+export async function preloadAllImages() {
+  const appState = window.__appState;
+  if (!appState) return;
+  const urls = new Set();
+  const allTracks = []
+    .concat(appState.timeline.visual || [])
+    .concat(appState.timeline.audio || []);
+  for (let i = 0; i < allTracks.length; i++) {
+    const track = allTracks[i];
+    if (!Array.isArray(track)) continue;
+    for (let j = 0; j < track.length; j++) {
+      const clip = track[j];
+      if (clip && clip.type && clip.type.indexOf('image/') === 0 && clip.url) {
+        urls.add(clip.url);
+      }
+    }
   }
-  return [h, s * 100, l * 100];
+  if (urls.size === 0) return;
+  console.log('[export] preloading', urls.size, 'image(s)');
+  await Promise.all([...urls].map(u => preloadImage(u)));
+  console.log('[export] preload done');
 }
 
-function getChannelWeight(hue, center, range) {
-  let d = Math.abs(hue - center);
-  if (d > 180) d = 360 - d;
-  if (d >= range) return 0;
-  return 1 - d / range;
+function getImageSync(url) {
+  const img = _imageCache.get(url);
+  if (!img) return null;
+  if (!img.complete || img.naturalWidth === 0) return null;
+  return img;
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  MAIN RENDER
+// ═══════════════════════════════════════════════════════════════
 export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime, prevFrameCanvas) {
   const appState = window.__appState;
   if (!appState) { drawVideoContainFit(ctx, source, W, H, null); return; }
@@ -91,8 +115,7 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime,
     }
   }
 
-    // ─── Layer transform (video/image only) ───────────────────
-  // Text & stickers have their own transform via textState/stickerState
+  // Layer transform (video/image only)
   let topVideoOrImageClip = null;
   for (let i = active.length - 1; i >= 0; i--) {
     const c = active[i].clip;
@@ -107,6 +130,7 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime,
   if (topVideoOrImageClip && hasAnyKeyframes(topVideoOrImageClip)) {
     layerXform = sampleAll(topVideoOrImageClip, timelineTime, layerXform || {});
   }
+
   // Draw base
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.globalAlpha = 1;
@@ -142,7 +166,19 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime,
       c.translate(-originX, -originY);
     }
 
-    drawVideoContainFit(c, source, w, h, layerXform);
+    // 🆕 IMAGE HANDLING
+    let drawSource = source;
+    if (topVideoOrImageClip && topVideoOrImageClip.type &&
+        topVideoOrImageClip.type.indexOf('image/') === 0) {
+      const img = getImageSync(topVideoOrImageClip.url);
+      if (img) {
+        drawSource = img;
+      } else {
+        drawSource = null;
+      }
+    }
+
+    drawVideoContainFit(c, drawSource, w, h, layerXform);
     c.restore();
     try { c.filter = 'none'; } catch (_) {}
   }
@@ -203,7 +239,7 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime,
   for (let i = 0; i < active.length; i++) {
     const c = active[i].clip;
     if (c.__stickerId && c.stickerState) {
-      try { drawStickerOverlay(ctx, W, H, c.stickerState); } catch (_) {}
+      try { drawStickerOverlay(ctx, W, H, c.stickerState, c, timelineTime); } catch (_) {}
     }
   }
 }
@@ -305,9 +341,28 @@ function computeMotionRaw(m, time) {
   return null;
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  🆕 TEXT OVERLAY (with keyframe sampling)
+// ═══════════════════════════════════════════════════════════════
 function drawTextOverlay(ctx, W, H, ts, timelineTime, clip) {
   const fullContent = ts.content || '';
   if (!fullContent) return;
+
+  // Sample keyframes for position/scale/rotation
+  let sampledX = ts.positionX != null ? ts.positionX : 50;
+  let sampledY = ts.positionY != null ? ts.positionY : 50;
+  let sampledScale = ts.scale != null ? ts.scale : 100;
+  let sampledRot = ts.rotation || 0;
+
+  if (clip && hasAnyKeyframes(clip)) {
+    const base = { x: sampledX, y: sampledY, scale: sampledScale, rotation: sampledRot };
+    const sampled = sampleAll(clip, timelineTime, base);
+    sampledX = sampled.x;
+    sampledY = sampled.y;
+    sampledScale = sampled.scale;
+    sampledRot = sampled.rotation;
+  }
+
   const anim = ts.animation || 'none';
   const animDur = ts.animationDuration != null ? ts.animationDuration : 0.6;
   const clipStart = clip && Number.isFinite(clip.startTime) ? clip.startTime : 0;
@@ -329,13 +384,13 @@ function drawTextOverlay(ctx, W, H, ts, timelineTime, clip) {
   ctx.textAlign = ts.alignment || 'center';
   ctx.textBaseline = 'middle';
 
-  const x = W * ((ts.positionX != null ? ts.positionX : 50) / 100);
-  const y = H * ((ts.positionY != null ? ts.positionY : 50) / 100);
+  const x = W * (sampledX / 100);
+  const y = H * (sampledY / 100);
   ctx.translate(x + (animState.tx || 0) * scaleFactor, y + (animState.ty || 0) * scaleFactor);
-  const totalRot = (ts.rotation || 0) + (animState.rot || 0);
+  const totalRot = sampledRot + (animState.rot || 0);
   if (totalRot) ctx.rotate(totalRot * Math.PI / 180);
 
-  const userScale = (ts.scale != null ? ts.scale : 100) / 100;
+  const userScale = sampledScale / 100;
   const animScale = animState.scale != null ? animState.scale : 1;
   const finalScale = userScale * animScale;
   if (finalScale !== 1) ctx.scale(finalScale, finalScale);
@@ -422,20 +477,75 @@ function easeOutBounce(t) {
   return n1 * (t -= 2.625 / d1) * t + 0.984375;
 }
 
-function drawStickerOverlay(ctx, W, H, s) {
+// ═══════════════════════════════════════════════════════════════
+//  🆕 STICKER OVERLAY (with keyframe sampling)
+// ═══════════════════════════════════════════════════════════════
+function drawStickerOverlay(ctx, W, H, s, clip, timelineTime) {
   if (!s || !s.emoji) return;
+
+  let sx = s.x != null ? s.x : 50;
+  let sy = s.y != null ? s.y : 50;
+  let sScale = s.scale != null ? s.scale : 100;
+  let sRot = s.rotation || 0;
+
+  if (clip && hasAnyKeyframes(clip)) {
+    const base = { x: sx, y: sy, scale: sScale, rotation: sRot };
+    const sampled = sampleAll(clip, timelineTime, base);
+    sx = sampled.x;
+    sy = sampled.y;
+    sScale = sampled.scale;
+    sRot = sampled.rotation;
+  }
+
   const scaleFactor = W / 400;
-  const fontSize = 96 * scaleFactor * ((s.scale != null ? s.scale : 100) / 100);
+  const fontSize = 96 * scaleFactor * (sScale / 100);
   ctx.save();
-  const x = W * ((s.x != null ? s.x : 50) / 100);
-  const y = H * ((s.y != null ? s.y : 50) / 100);
+  const x = W * (sx / 100);
+  const y = H * (sy / 100);
   ctx.translate(x, y);
-  if (s.rotation) ctx.rotate(s.rotation * Math.PI / 180);
+  if (sRot) ctx.rotate(sRot * Math.PI / 180);
   ctx.font = fontSize + 'px "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   try { ctx.fillText(s.emoji, 0, 0); } catch (_) {}
   ctx.restore();
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  ADJUSTMENT / COLOR WHEEL / CHROMA
+// ═══════════════════════════════════════════════════════════════
+const COLOR_CHANNELS = [
+  { key: 'reds',      center: 0,   range: 30 },
+  { key: 'oranges',   center: 30,  range: 30 },
+  { key: 'yellows',   center: 60,  range: 30 },
+  { key: 'greens',    center: 120, range: 90 },
+  { key: 'cyans',     center: 180, range: 30 },
+  { key: 'blues',     center: 225, range: 60 },
+  { key: 'purples',   center: 270, range: 30 },
+  { key: 'magentas',  center: 315, range: 60 },
+  { key: 'skinTones', center: 20,  range: 25 }
+];
+
+function rgbToHsl(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  let h = 0, s = 0;
+  const l = (max + min) / 2;
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) * 60;
+    else if (max === g) h = ((b - r) / d + 2) * 60;
+    else h = ((r - g) / d + 4) * 60;
+  }
+  return [h, s * 100, l * 100];
+}
+
+function getChannelWeight(hue, center, range) {
+  let d = Math.abs(hue - center);
+  if (d > 180) d = 360 - d;
+  if (d >= range) return 0;
+  return 1 - d / range;
 }
 
 function applyAdjustment(data, w, h, s) {
@@ -487,7 +597,6 @@ function applyAdjustment(data, w, h, s) {
     if (tiA) { g -= tiA * 28; r += tiA * 12; b += tiA * 12; }
     r = clamp(r); g = clamp(g); b = clamp(b);
 
-    // Color channel adjustment
     if (hasColorChannels) {
       const [hue, sat, lightness] = rgbToHsl(r, g, b);
       if (sat > 2) {
@@ -537,47 +646,33 @@ function applyColorWheel(data, w, h, cw) {
 }
 
 function hslToRgb(h, s, l) {
-  s /= 100; l /= 100;
+  h = ((h % 360) + 360) % 360;
+  s = Math.max(0, Math.min(100, s)) / 100;
+  l = Math.max(0, Math.min(100, l)) / 100;
   const k = n => (n + h / 30) % 12;
   const a = s * Math.min(l, 1 - l);
   const f = n => l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1));
   return [Math.round(f(0) * 255), Math.round(f(8) * 255), Math.round(f(4) * 255)];
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  CHROMA KEY — same as effectRenderer (works for ANY color)
-// ═══════════════════════════════════════════════════════════════
 function applyChroma(data, w, h, c) {
   if (!c || !c.keyColor) return;
-
-  const kr = c.keyColor.r;
-  const kg = c.keyColor.g;
-  const kb = c.keyColor.b;
-
+  const kr = c.keyColor.r, kg = c.keyColor.g, kb = c.keyColor.b;
   const sim = (c.similarity != null ? c.similarity : 30) / 100;
   const sm = (c.smoothness != null ? c.smoothness : 20) / 100;
   const inten = (c.intensity != null ? c.intensity : 100) / 100;
   const sp = (c.spill != null ? c.spill : 50) / 100;
-
   const maxDist = Math.sqrt(3 * 255 * 255) || 1;
   const simEnd = sim;
   const softEnd = sim + sm;
-
   for (let i = 0; i < data.length; i += 4) {
-    const r = data[i];
-    const g = data[i + 1];
-    const b = data[i + 2];
-
-    const dr = r - kr;
-    const dg = g - kg;
-    const db = b - kb;
+    const r = data[i], g = data[i + 1], b = data[i + 2];
+    const dr = r - kr, dg = g - kg, db = b - kb;
     const dist = Math.sqrt(dr * dr + dg * dg + db * db) / maxDist;
-
     let removal = 0;
     if (dist <= simEnd) removal = 1;
     else if (sm > 0 && dist <= softEnd) removal = 1 - (dist - simEnd) / sm;
     removal *= inten;
-
     if (removal > 0) {
       const keep = 1 - removal;
       data[i]     = Math.round(r * keep);
@@ -585,7 +680,6 @@ function applyChroma(data, w, h, c) {
       data[i + 2] = Math.round(b * keep);
       data[i + 3] = Math.round(data[i + 3] * keep);
     }
-
     if (sp > 0 && removal < 1 && dist < softEnd + 0.15) {
       const prox = 1 - Math.min(1, dist / (softEnd + 0.15));
       const bl = sp * prox * 0.8;

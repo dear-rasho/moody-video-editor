@@ -1,19 +1,14 @@
 // ================================================================
 //  js/codebase/codebaseEngine.js
 //  Prompt → commands → layers
-//  Full: adjustments, filters, effects, transitions, speed,
-//        text, stickers, color wheel, chroma, transform,
-//        keyframes (sequential), audio FX, Hinglish.
-//  100% offline, no AI.
+//  🆕 FIX: TEXT/STICKER pehle create hote hain, phir un par
+//     keyframes/transform/speed apply hote hain.
 // ================================================================
 
 import { createEffectLayer } from '../workspace/effectLayer.js';
 import { createAudioFxLayer } from '../workspace/audioEffectLayer.js';
 import { placeClipAtTime } from '../layers/layersManager.js';
 
-// ═══════════════════════════════════════════════════════════════
-//  REGISTRIES
-// ═══════════════════════════════════════════════════════════════
 const ADJUSTMENT_KEYS = [
   'brightness', 'contrast', 'exposure', 'whites', 'blacks',
   'shadows', 'highlights', 'clarity', 'saturation', 'vibrance',
@@ -23,7 +18,6 @@ const ADJUSTMENT_KEYS = [
 ];
 
 const FILTER_KEYS = ['grayscale', 'sepia', 'invert', 'blur', 'hue', 'opacity'];
-
 const FILTER_RANGES = {
   grayscale: [0, 100], sepia: [0, 100], invert: [0, 100],
   blur: [0, 20], hue: [0, 360], opacity: [0, 100]
@@ -76,6 +70,9 @@ const SYNONYMS = {
   hara: 'greens', neela: 'blues', jamuni: 'purples', gulabi: 'magentas'
 };
 
+// 🆕 Track newly-created clips so later commands can find them
+let _lastCreatedClips = [];   // array (text/sticker creates multiple)
+
 // ═══════════════════════════════════════════════════════════════
 //  PARSER
 // ═══════════════════════════════════════════════════════════════
@@ -87,7 +84,7 @@ export function parsePrompt(rawPrompt) {
     adjustments: {}, filters: {}, effectPreset: null, speed: null,
     transition: null, texts: [], stickers: [], colorWheel: null,
     chroma: null, transforms: {}, keyframes: [], audioFx: [],
-    trimOps: [],   // 🆕 ["left", "right", "split"]
+    trimOps: [],
     target: 'selected'
   };
   let prompt = rawPrompt.toLowerCase().trim();
@@ -101,13 +98,11 @@ export function parsePrompt(rawPrompt) {
 }
 
 function parseSegment(seg, state) {
-  // ─── KEYFRAME: "scale 100 to 200 over 3s" ────────
   const kfM = seg.match(/\b(scale|zoom|rotation|rotate|x|y|position|opacity)\s+(-?[\d.]+)(?:\s*,?\s*(-?[\d.]+))?\s+to\s+(-?[\d.]+)(?:\s*,?\s*(-?[\d.]+))?\s+(?:over|in)\s+([\d.]+)\s*s?/i);
   if (kfM) {
     const propRaw = kfM[1].toLowerCase();
     const prop = mapKeyframeProp(propRaw);
     const isPosition = prop === 'position';
-
     let from, to;
     if (isPosition) {
       from = { x: parseFloat(kfM[2]), y: parseFloat(kfM[3] || kfM[2]) };
@@ -117,12 +112,10 @@ function parseSegment(seg, state) {
       to   = { value: parseFloat(kfM[4]) };
     }
     const duration = parseFloat(kfM[6]) || 3;
-
     state.keyframes.push({ prop, from, to, duration, isPosition, source: propRaw });
     return;
   }
 
-  // ─── COLOR WHEEL: "shadows red 50 40" ────────────
   const cwM = seg.match(/\b(shadows?|midtones?|mid|highlights?|highs?)\s+(\w+)(?:\s+(\d+))?(?:\s+(\d+))?/i);
   if (cwM) {
     const toneRaw = cwM[1].toLowerCase();
@@ -140,7 +133,6 @@ function parseSegment(seg, state) {
     }
   }
 
-  // ─── HDR ─────────────────────────────────────────
   const hdrM = seg.match(/^hdr\s+(\d+)/i);
   if (hdrM) {
     if (!state.colorWheel) state.colorWheel = { tones: {}, hdrWhite: 100 };
@@ -148,7 +140,6 @@ function parseSegment(seg, state) {
     return;
   }
 
-  // ─── CHROMA ──────────────────────────────────────
   const chromaM = seg.match(/(?:chroma(?:\s*key)?|green\s*screen|blue\s*screen)\s*(#[0-9a-fA-F]{3,6})?/i);
   if (chromaM) {
     let hex = chromaM[1];
@@ -174,7 +165,6 @@ function parseSegment(seg, state) {
     }
   }
 
-  // ─── AUDIO FX ────────────────────────────────────
   const audioM = seg.match(/\b(?:audio|sound|awaaz|soundfx)\s+([a-z][a-z\s]*)/i);
   if (audioM) {
     const words = audioM[1].trim().split(/\s+/);
@@ -187,26 +177,7 @@ function parseSegment(seg, state) {
     state.audioFx.push(seg);
     return;
   }
-  // ═══════════════════════════════════════════════════════════
-  //  🆕 TRIM / SPLIT COMMANDS
-  //  "trim left"  → playhead se left wala hissa hatao
-  //  "trim right" → playhead se right wala hissa hatao
-  //  "split"      → playhead pe 2 hisse karo
-  // ═══════════════════════════════════════════════════════════
-  if (/^(trim\s*left|left\s*trim)$/i.test(seg)) {
-    state.trimOps.push('left');
-    return;
-  }
-  if (/^(trim\s*right|right\s*trim)$/i.test(seg)) {
-    state.trimOps.push('right');
-    return;
-  }
-  if (/^(split|cut|split\s*clip)$/i.test(seg)) {
-    state.trimOps.push('split');
-    return;
-  }
 
-  // ─── TEXT ────────────────────────────────────────
   let textMatch = seg.match(/text\s+["']([^"']+)["'](.*)/i);
   if (!textMatch) textMatch = seg.match(/["']([^"']+)["'](.*)/);
   if (textMatch && /text|likho|write/i.test(seg)) {
@@ -224,25 +195,16 @@ function parseSegment(seg, state) {
     return;
   }
 
-  // ─── STICKER ─────────────────────────────────────
   const stickerM = seg.match(/(?:sticker|emoji)\s+(.)/u);
   if (stickerM) { state.stickers.push({ emoji: stickerM[1] }); return; }
 
-   // ═══════════════════════════════════════════════════════════════
-  //  SPEED — applies to clip AND its linked audio
-  // ═══════════════════════════════════════════════════════════════
-  if (state.speed != null) {
-    const clip = getSelectedClip(appState);
-    if (clip) {
-      applySpeedToClip(clip, state.speed);
-      syncLinkedSpeed(appState, clip, state.speed);
-      results.push('speed:' + state.speed + 'x');
-    } else {
-      results.push('⚠️ speed: clip select karein');
-    }
+  let speedM = seg.match(/(?:speed|tez)\s+([\d.]+)\s*x?/i);
+  if (!speedM) speedM = seg.match(/^([\d.]+)\s*x\b/i);
+  if (speedM) {
+    const v = parseFloat(speedM[1]);
+    if (Number.isFinite(v) && v >= 0.1 && v <= 16) { state.speed = v; return; }
   }
 
-  // ─── TRANSITION ──────────────────────────────────
   const transM = seg.match(/(fade\s*black|fade\s*white|fade|dissolve|slide\s*left|slide\s*right|slide\s*up|slide\s*down|zoom\s*in|zoom\s*out|wipe\s*left|wipe\s*right|circle\s*in)\s*(?:in|out|transition)?\s*([\d.]+)?/i);
   if (transM) {
     const raw = transM[1].toLowerCase().replace(/\s+/g, '');
@@ -259,7 +221,10 @@ function parseSegment(seg, state) {
     return;
   }
 
-  // ─── POSITION (direct) ───────────────────────────
+  if (/^(trim\s*left|left\s*trim)$/i.test(seg)) { state.trimOps.push('left'); return; }
+  if (/^(trim\s*right|right\s*trim)$/i.test(seg)) { state.trimOps.push('right'); return; }
+  if (/^(split|cut|split\s*clip)$/i.test(seg)) { state.trimOps.push('split'); return; }
+
   const transTfM = seg.match(/^position\s+(\d+)\s+(\d+)$/i);
   if (transTfM) {
     state.transforms.x = clamp(parseFloat(transTfM[1]), 0, 100);
@@ -267,7 +232,6 @@ function parseSegment(seg, state) {
     return;
   }
 
-  // ─── TRANSFORM: scale 150, rotation 45 ───────────
   const tfM = seg.match(/^([a-z]+)\s+(-?[\d.]+)\s*%?$/i);
   if (tfM) {
     const key = tfM[1].toLowerCase();
@@ -279,14 +243,12 @@ function parseSegment(seg, state) {
     }
   }
 
-  // ─── EFFECT PRESET ───────────────────────────────
   const words = seg.split(/\s+/).filter(Boolean);
   if (words.length === 1 && EFFECT_PRESETS.includes(words[0])) {
     state.effectPreset = words[0];
     return;
   }
 
-  // ─── ADJUSTMENT / FILTER ─────────────────────────
   const kvM = seg.match(/^([a-z][a-z\s]*?)\s+(-?\d+(?:\.\d+)?)\s*%?$/);
   if (kvM) {
     let key = kvM[1].trim().replace(/\s+/g, '');
@@ -303,7 +265,6 @@ function parseSegment(seg, state) {
     }
   }
 
-  // ─── FLAG WORD ───────────────────────────────────
   if (words.length === 1) {
     const w = words[0];
     const key = SYNONYMS[w] || w;
@@ -322,12 +283,10 @@ function mapKeyframeProp(raw) {
   if (raw === 'position') return 'position';
   return raw;
 }
-
 function clamp(v, min, max) {
   if (!Number.isFinite(v)) return 0;
   return Math.max(min, Math.min(max, v));
 }
-
 function hexToRgb(hex) {
   if (!hex) return null;
   let h = hex.replace('#', '');
@@ -341,321 +300,27 @@ function hexToRgb(hex) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  EXECUTOR
+//  EXECUTOR  🆕 TEXT/STICKER pehle
 // ═══════════════════════════════════════════════════════════════
 export function executePrompt(state) {
   if (!state) return { ok: false, error: 'No state' };
   const appState = window.__appState;
   if (!appState) return { ok: false, error: 'App state missing' };
-  if (!hasAnyClips(appState)) {
-    return { ok: false, error: 'Timeline khaali hai — pehle clip daalein' };
-  }
 
+  _lastCreatedClips = [];
+
+  const hasClips = hasAnyClips(appState);
   const results = [];
+  const warnings = [];
 
-  // ─── ADJUSTMENTS ─────────────────────────────────
-  const adjKeys = Object.keys(state.adjustments);
-  if (adjKeys.length > 0) {
-    try {
-      const id = createEffectLayer('adjustment', { adjustments: state.adjustments }, 'Adjustments');
-      if (id) results.push('adjustments');
-    } catch (e) { console.warn(e); }
-  }
-
-  // ─── FILTER ──────────────────────────────────────
-  const filterKeys = Object.keys(state.filters);
-  if (filterKeys.length > 0) {
-    const filters = {
-      brightness: 100, contrast: 100, saturation: 100, hue: 0,
-      grayscale: 0, sepia: 0, invert: 0, blur: 0, opacity: 100
-    };
-    Object.assign(filters, state.filters);
-    try {
-      const id = createEffectLayer('filter', { filters }, 'Filter');
-      if (id) results.push('filter');
-    } catch (e) { console.warn(e); }
-  }
-
-  // ─── EFFECT PRESET ───────────────────────────────
-  if (state.effectPreset) {
-    const baseFilters = {
-      brightness: 100, contrast: 100, saturation: 100, hue: 0,
-      grayscale: 0, sepia: 0, invert: 0, blur: 0, opacity: 100
-    };
-    try {
-      const id = createEffectLayer('effect',
-        { presetKey: state.effectPreset, filters: baseFilters, motion: null },
-        capitalize(state.effectPreset));
-      if (id) results.push('effect:' + state.effectPreset);
-    } catch (e) { console.warn(e); }
-  }
-
-  // ─── COLOR WHEEL ─────────────────────────────────
-  if (state.colorWheel) {
-    try {
-      const id = createEffectLayer('colorWheel', { colorWheel: state.colorWheel }, 'Color Wheel');
-      if (id) results.push('colorWheel');
-    } catch (e) { console.warn(e); }
-  }
-
-  // ─── CHROMA ──────────────────────────────────────
-  if (state.chroma) {
-    try {
-      const id = createEffectLayer('chroma', { chroma: state.chroma }, 'Chroma Key');
-      if (id) results.push('chroma');
-    } catch (e) { console.warn(e); }
-  }
-
-  // ─── TRANSFORM ───────────────────────────────────
-  const tfKeys = Object.keys(state.transforms);
-  if (tfKeys.length > 0) {
-    const clip = getSelectedClip(appState);
-    if (clip) {
-      if (!clip.__transform) clip.__transform = {};
-      Object.assign(clip.__transform, state.transforms);
-      if (clip.__textId && clip.textState) {
-        if (state.transforms.x != null) clip.textState.positionX = state.transforms.x;
-        if (state.transforms.y != null) clip.textState.positionY = state.transforms.y;
-        if (state.transforms.scale != null) clip.textState.scale = state.transforms.scale;
-        if (state.transforms.rotation != null) clip.textState.rotation = state.transforms.rotation;
-      }
-      if (clip.__stickerId && clip.stickerState) {
-        if (state.transforms.x != null) clip.stickerState.x = state.transforms.x;
-        if (state.transforms.y != null) clip.stickerState.y = state.transforms.y;
-        if (state.transforms.scale != null) clip.stickerState.scale = state.transforms.scale;
-        if (state.transforms.rotation != null) clip.stickerState.rotation = state.transforms.rotation;
-      }
-      results.push('transform');
-    } else {
-      results.push('⚠️ transform: clip select karein');
-    }
-  }
-
-    // ═══════════════════════════════════════════════════════════════
-  //  🆕 TRIM OPERATIONS
-  //  Selected clip + playhead position pe base
-  // ═══════════════════════════════════════════════════════════════
-  if (state.trimOps.length > 0) {
-    const clip = getSelectedClip(appState);
-    if (!clip) {
-      results.push('⚠️ trim: pehle clip select karo');
-    } else {
-      const eng = window.__playbackEngine;
-      const playhead = eng && typeof eng.getTime === 'function' ? eng.getTime() : 0;
-
-      const clipStart = Number.isFinite(clip.startTime) ? clip.startTime : 0;
-      const clipDur   = Number.isFinite(clip.duration)  ? clip.duration  : 3;
-      const clipEnd   = clipStart + clipDur;
-
-      for (const op of state.trimOps) {
-        // Recompute in case previous op changed clip
-        const curStart = Number.isFinite(clip.startTime) ? clip.startTime : 0;
-        const curDur   = Number.isFinite(clip.duration)  ? clip.duration  : 3;
-        const curEnd   = curStart + curDur;
-
-        // Playhead clip ke andar hona chahiye
-        const inside = playhead > curStart + 0.01 && playhead < curEnd - 0.01;
-
-        if (!inside) {
-          results.push('⚠️ ' + op + ': playhead clip ke andar rakho (' +
-            playhead.toFixed(2) + 's vs ' + curStart.toFixed(2) + '-' + curEnd.toFixed(2) + 's)');
-          continue;
-        }
-
-        if (op === 'left') {
-          const cutAmount = playhead - curStart;
-          const newDur = curEnd - playhead;
-
-          clip.startTime = playhead;
-          clip.duration  = newDur;
-          clip.sourceIn  = (Number.isFinite(clip.sourceIn) ? clip.sourceIn : 0) + cutAmount;
-          clip.__trimmed = true;
-
-          // Sync linked audio
-          syncLinkedTrim(appState, clip, clip.startTime, clip.duration, clip.sourceIn);
-
-          results.push('trimLeft:' + cutAmount.toFixed(2) + 's');
-        }
-        else if (op === 'right') {
-          const cutAmount = curEnd - playhead;
-          const newDur = playhead - curStart;
-
-          clip.startTime = curStart;
-          clip.duration  = newDur;
-          clip.__trimmed = true;
-
-          syncLinkedTrim(appState, clip, clip.startTime, clip.duration, clip.sourceIn);
-
-          results.push('trimRight:' + cutAmount.toFixed(2) + 's');
-        }
-        else if (op === 'split') {
-          // Two pieces
-          const firstDur  = playhead - curStart;
-          const secondDur = curEnd - playhead;
-          const srcIn     = Number.isFinite(clip.sourceIn) ? clip.sourceIn : 0;
-
-          // Left piece = existing clip
-          clip.startTime = curStart;
-          clip.duration  = firstDur;
-          clip.sourceIn  = srcIn;
-          clip.__trimmed = true;
-
-          // Right piece = new clip
-          const secondClip = Object.assign({}, clip);
-          secondClip.startTime = playhead;
-          secondClip.duration  = secondDur;
-          secondClip.sourceIn  = srcIn + firstDur;
-          secondClip.name = (clip.name || 'Clip') + ' (2)';
-          secondClip.__trimmed = true;
-
-          // Remove linked ID from second piece (avoid mirror conflict)
-          delete secondClip.__linkedId;
-
-          // Deep copy keyframes (filter by time window)
-          if (clip.__keyframes) {
-            secondClip.__keyframes = JSON.parse(JSON.stringify(clip.__keyframes));
-            for (const prop of Object.keys(secondClip.__keyframes)) {
-              secondClip.__keyframes[prop] = (secondClip.__keyframes[prop] || [])
-                .filter(k => k.time >= playhead);
-            }
-            // Trim left piece keyframes
-            for (const prop of Object.keys(clip.__keyframes)) {
-              clip.__keyframes[prop] = (clip.__keyframes[prop] || [])
-                .filter(k => k.time < playhead);
-            }
-          }
-
-          if (clip.__transform) {
-            secondClip.__transform = JSON.parse(JSON.stringify(clip.__transform));
-          }
-
-          // Find clip's track and insert after
-          let inserted = false;
-          const tracks = appState.timeline.visual || [];
-          for (let t = 0; t < tracks.length; t++) {
-            const track = tracks[t];
-            if (!Array.isArray(track)) continue;
-            const idx = track.indexOf(clip);
-            if (idx >= 0) {
-              track.splice(idx + 1, 0, secondClip);
-              inserted = true;
-              break;
-            }
-          }
-          // If not in visual, try audio
-          if (!inserted) {
-            const aTracks = appState.timeline.audio || [];
-            for (let t = 0; t < aTracks.length; t++) {
-              const track = aTracks[t];
-              if (!Array.isArray(track)) continue;
-              const idx = track.indexOf(clip);
-              if (idx >= 0) {
-                track.splice(idx + 1, 0, secondClip);
-                break;
-              }
-            }
-          }
-
-          results.push('split@' + playhead.toFixed(2) + 's');
-        }
-      }
-    }
-  }
-
-  // ═══════════════════════════════════════════════════════════════
-  //  🆕 KEYFRAMES — Sequential + Sorted + Deduped
-  // ═══════════════════════════════════════════════════════════════
-  if (state.keyframes.length > 0) {
-    const clip = getSelectedClip(appState);
-    if (clip) {
-      const eng = window.__playbackEngine;
-      const now = eng && typeof eng.getTime === 'function' ? eng.getTime() : 0;
-      const base = Number.isFinite(clip.startTime) ? clip.startTime : 0;
-      let currentTime = Math.max(base, now);
-
-      if (!clip.__keyframes) clip.__keyframes = {};
-
-      for (const kf of state.keyframes) {
-        if (kf.isPosition) {
-          if (!clip.__keyframes.x) clip.__keyframes.x = [];
-          if (!clip.__keyframes.y) clip.__keyframes.y = [];
-          clip.__keyframes.x.push({ time: currentTime, value: kf.from.x, ease: 'easeInOut' });
-          clip.__keyframes.x.push({ time: currentTime + kf.duration, value: kf.to.x, ease: 'easeInOut' });
-          clip.__keyframes.y.push({ time: currentTime, value: kf.from.y, ease: 'easeInOut' });
-          clip.__keyframes.y.push({ time: currentTime + kf.duration, value: kf.to.y, ease: 'easeInOut' });
-        } else {
-          const prop = kf.prop;
-          if (!clip.__keyframes[prop]) clip.__keyframes[prop] = [];
-          clip.__keyframes[prop].push({ time: currentTime, value: kf.from.value, ease: 'easeInOut' });
-          clip.__keyframes[prop].push({ time: currentTime + kf.duration, value: kf.to.value, ease: 'easeInOut' });
-        }
-        currentTime += kf.duration;
-      }
-
-      // Sort + dedupe
-      for (const prop of Object.keys(clip.__keyframes)) {
-        const arr = clip.__keyframes[prop];
-        if (!Array.isArray(arr)) continue;
-        arr.sort((a, b) => a.time - b.time);
-        const deduped = [];
-        for (let i = 0; i < arr.length; i++) {
-          if (i > 0 && Math.abs(arr[i].time - arr[i - 1].time) < 0.001) {
-            deduped[deduped.length - 1] = arr[i];
-          } else {
-            deduped.push(arr[i]);
-          }
-        }
-        clip.__keyframes[prop] = deduped;
-      }
-
-      results.push('keyframes:' + state.keyframes.length);
-    } else {
-      results.push('⚠️ keyframes: clip select karein');
-    }
-  }
-
-  // ═══════════════════════════════════════════════════════════════
-  //  SPEED — applies to clip AND its linked audio
-  // ═══════════════════════════════════════════════════════════════
-  if (state.speed != null) {
-    const clip = getSelectedClip(appState);
-    if (clip) {
-      applySpeedToClip(clip, state.speed);
-      syncLinkedSpeed(appState, clip, state.speed);
-      results.push('speed:' + state.speed + 'x');
-    } else {
-      results.push('⚠️ speed: clip select karein');
-    }
-  }
-  // ─── TRANSITION ──────────────────────────────────
-  if (state.transition) {
-    const clip = getSelectedClip(appState);
-    if (clip) {
-      clip.__transitionIn = {
-        key: state.transition.type,
-        duration: state.transition.duration
-      };
-      results.push('transition:' + state.transition.type);
-    } else {
-      results.push('⚠️ transition: clip select karein');
-    }
-  }
-
-  // ─── AUDIO FX ────────────────────────────────────
-  if (state.audioFx.length > 0) {
-    state.audioFx.forEach(key => {
-      try {
-        const id = createAudioFxLayer(key, key);
-        if (id) results.push('audio:' + key);
-      } catch (e) { console.warn(e); }
-    });
-  }
-
-  // ─── TEXT ────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════
+  //  1) 🆕 TEXT — PEHLE (so keyframes can attach to new clip)
+  // ═══════════════════════════════════════════════════════════
   if (state.texts.length > 0) {
     if (!Array.isArray(appState.timeline.visual)) appState.timeline.visual = [];
     const eng = window.__playbackEngine;
     const atTime = eng && typeof eng.getTime === 'function' ? eng.getTime() : 0;
+
     state.texts.forEach((t, i) => {
       const id = 'tx-' + Date.now() + '-' + i + '-' + Math.random().toString(36).slice(2, 6);
       const clipData = {
@@ -672,15 +337,23 @@ export function executePrompt(state) {
         startTime: atTime, duration: 3
       };
       placeClipAtTime(appState.timeline.visual, clipData, atTime);
+
+      // Track created clip
+      const created = findClipByUrl(appState.timeline.visual, clipData.url);
+      if (created) _lastCreatedClips.push(created);
+
       results.push('text:"' + t.content + '"');
     });
   }
 
-  // ─── STICKERS ────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════
+  //  2) 🆕 STICKER
+  // ═══════════════════════════════════════════════════════════
   if (state.stickers.length > 0) {
     if (!Array.isArray(appState.timeline.visual)) appState.timeline.visual = [];
     const eng = window.__playbackEngine;
     const atTime = eng && typeof eng.getTime === 'function' ? eng.getTime() : 0;
+
     state.stickers.forEach((s, i) => {
       const id = 'sk-' + Date.now() + '-' + i + '-' + Math.random().toString(36).slice(2, 6);
       const clipData = {
@@ -689,19 +362,296 @@ export function executePrompt(state) {
         startTime: atTime, duration: 3
       };
       placeClipAtTime(appState.timeline.visual, clipData, atTime);
+
+      const created = findClipByUrl(appState.timeline.visual, clipData.url);
+      if (created) _lastCreatedClips.push(created);
+
       results.push('sticker:' + s.emoji);
     });
   }
 
-  // ─── Fire events ─────────────────────────────────
+  // ═══════════════════════════════════════════════════════════
+  //  3) AUDIO FX
+  // ═══════════════════════════════════════════════════════════
+  if (state.audioFx.length > 0) {
+    state.audioFx.forEach(key => {
+      try {
+        const id = createAudioFxLayer(key, key);
+        if (id) results.push('audio:' + key);
+      } catch (e) { console.warn(e); }
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  //  4) 🆕 Now resolve "target clip" for transform/trim/kf/speed
+  //     Priority: selected clip → last created clip
+  // ═══════════════════════════════════════════════════════════
+  let targetClip = getSelectedClip(appState);
+  if (!targetClip && _lastCreatedClips.length > 0) {
+    targetClip = _lastCreatedClips[_lastCreatedClips.length - 1];
+  }
+
+  // TRANSFORM
+  const tfKeys = Object.keys(state.transforms);
+  if (tfKeys.length > 0) {
+    if (targetClip) {
+      if (!targetClip.__transform) targetClip.__transform = {};
+      Object.assign(targetClip.__transform, state.transforms);
+      if (targetClip.__textId && targetClip.textState) {
+        if (state.transforms.x != null) targetClip.textState.positionX = state.transforms.x;
+        if (state.transforms.y != null) targetClip.textState.positionY = state.transforms.y;
+        if (state.transforms.scale != null) targetClip.textState.scale = state.transforms.scale;
+        if (state.transforms.rotation != null) targetClip.textState.rotation = state.transforms.rotation;
+      }
+      if (targetClip.__stickerId && targetClip.stickerState) {
+        if (state.transforms.x != null) targetClip.stickerState.x = state.transforms.x;
+        if (state.transforms.y != null) targetClip.stickerState.y = state.transforms.y;
+        if (state.transforms.scale != null) targetClip.stickerState.scale = state.transforms.scale;
+        if (state.transforms.rotation != null) targetClip.stickerState.rotation = state.transforms.rotation;
+      }
+      results.push('transform');
+    } else {
+      warnings.push('transform: clip select karein');
+    }
+  }
+
+  // TRIM
+  if (state.trimOps.length > 0) {
+    if (!targetClip) {
+      warnings.push('trim: clip select karein');
+    } else {
+      const eng = window.__playbackEngine;
+      const playhead = eng && typeof eng.getTime === 'function' ? eng.getTime() : 0;
+      for (const op of state.trimOps) {
+        const curStart = Number.isFinite(targetClip.startTime) ? targetClip.startTime : 0;
+        const curDur   = Number.isFinite(targetClip.duration)  ? targetClip.duration  : 3;
+        const curEnd   = curStart + curDur;
+        const inside = playhead > curStart + 0.01 && playhead < curEnd - 0.01;
+        if (!inside) {
+          warnings.push(op + ': playhead clip ke andar rakho');
+          continue;
+        }
+        if (op === 'left') {
+          const cutAmount = playhead - curStart;
+          targetClip.startTime = playhead;
+          targetClip.duration  = curEnd - playhead;
+          targetClip.sourceIn  = (Number.isFinite(targetClip.sourceIn) ? targetClip.sourceIn : 0) + cutAmount;
+          targetClip.__trimmed = true;
+          syncLinkedTrim(appState, targetClip, targetClip.startTime, targetClip.duration, targetClip.sourceIn);
+          results.push('trimLeft:' + cutAmount.toFixed(2) + 's');
+        } else if (op === 'right') {
+          const cutAmount = curEnd - playhead;
+          targetClip.startTime = curStart;
+          targetClip.duration  = playhead - curStart;
+          targetClip.__trimmed = true;
+          syncLinkedTrim(appState, targetClip, targetClip.startTime, targetClip.duration, targetClip.sourceIn);
+          results.push('trimRight:' + cutAmount.toFixed(2) + 's');
+        } else if (op === 'split') {
+          const firstDur  = playhead - curStart;
+          const secondDur = curEnd - playhead;
+          const srcIn     = Number.isFinite(targetClip.sourceIn) ? targetClip.sourceIn : 0;
+          targetClip.startTime = curStart;
+          targetClip.duration  = firstDur;
+          targetClip.sourceIn  = srcIn;
+          targetClip.__trimmed = true;
+          const secondClip = Object.assign({}, targetClip);
+          secondClip.startTime = playhead;
+          secondClip.duration  = secondDur;
+          secondClip.sourceIn  = srcIn + firstDur;
+          secondClip.name = (targetClip.name || 'Clip') + ' (2)';
+          secondClip.__trimmed = true;
+          delete secondClip.__linkedId;
+          if (targetClip.__keyframes) {
+            secondClip.__keyframes = JSON.parse(JSON.stringify(targetClip.__keyframes));
+            for (const prop of Object.keys(secondClip.__keyframes)) {
+              secondClip.__keyframes[prop] = (secondClip.__keyframes[prop] || []).filter(k => k.time >= playhead);
+            }
+            for (const prop of Object.keys(targetClip.__keyframes)) {
+              targetClip.__keyframes[prop] = (targetClip.__keyframes[prop] || []).filter(k => k.time < playhead);
+            }
+          }
+          let inserted = false;
+          const tracks = appState.timeline.visual || [];
+          for (let t = 0; t < tracks.length; t++) {
+            const track = tracks[t];
+            if (!Array.isArray(track)) continue;
+            const idx = track.indexOf(targetClip);
+            if (idx >= 0) { track.splice(idx + 1, 0, secondClip); inserted = true; break; }
+          }
+          if (!inserted) {
+            const aTracks = appState.timeline.audio || [];
+            for (let t = 0; t < aTracks.length; t++) {
+              const track = aTracks[t];
+              if (!Array.isArray(track)) continue;
+              const idx = track.indexOf(targetClip);
+              if (idx >= 0) { track.splice(idx + 1, 0, secondClip); break; }
+            }
+          }
+          results.push('split@' + playhead.toFixed(2) + 's');
+        }
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  //  KEYFRAMES  🆕 ab naye text clip par bhi apply honge
+  // ═══════════════════════════════════════════════════════════
+  if (state.keyframes.length > 0) {
+    if (!targetClip) {
+      warnings.push('keyframes: clip select karein');
+    } else {
+      const eng = window.__playbackEngine;
+      const now = eng && typeof eng.getTime === 'function' ? eng.getTime() : 0;
+      const base = Number.isFinite(targetClip.startTime) ? targetClip.startTime : 0;
+      let currentTime = Math.max(base, now);
+
+      if (!targetClip.__keyframes) targetClip.__keyframes = {};
+
+      for (const kf of state.keyframes) {
+        if (kf.isPosition) {
+          if (!targetClip.__keyframes.x) targetClip.__keyframes.x = [];
+          if (!targetClip.__keyframes.y) targetClip.__keyframes.y = [];
+          targetClip.__keyframes.x.push({ time: currentTime, value: kf.from.x, ease: 'easeInOut' });
+          targetClip.__keyframes.x.push({ time: currentTime + kf.duration, value: kf.to.x, ease: 'easeInOut' });
+          targetClip.__keyframes.y.push({ time: currentTime, value: kf.from.y, ease: 'easeInOut' });
+          targetClip.__keyframes.y.push({ time: currentTime + kf.duration, value: kf.to.y, ease: 'easeInOut' });
+        } else {
+          const prop = kf.prop;
+          if (!targetClip.__keyframes[prop]) targetClip.__keyframes[prop] = [];
+          targetClip.__keyframes[prop].push({ time: currentTime, value: kf.from.value, ease: 'easeInOut' });
+          targetClip.__keyframes[prop].push({ time: currentTime + kf.duration, value: kf.to.value, ease: 'easeInOut' });
+        }
+        currentTime += kf.duration;
+      }
+
+      // Sort + dedupe
+      for (const prop of Object.keys(targetClip.__keyframes)) {
+        const arr = targetClip.__keyframes[prop];
+        if (!Array.isArray(arr)) continue;
+        arr.sort((a, b) => a.time - b.time);
+        const deduped = [];
+        for (let i = 0; i < arr.length; i++) {
+          if (i > 0 && Math.abs(arr[i].time - arr[i - 1].time) < 0.001) {
+            deduped[deduped.length - 1] = arr[i];
+          } else {
+            deduped.push(arr[i]);
+          }
+        }
+        targetClip.__keyframes[prop] = deduped;
+      }
+
+      results.push('keyframes:' + state.keyframes.length);
+    }
+  }
+
+  // SPEED
+  if (state.speed != null) {
+    if (targetClip) {
+      applySpeedToClip(targetClip, state.speed);
+      syncLinkedSpeed(appState, targetClip, state.speed);
+      results.push('speed:' + state.speed + 'x');
+    } else {
+      warnings.push('speed: clip select karein');
+    }
+  }
+
+  // TRANSITION
+  if (state.transition) {
+    if (targetClip) {
+      targetClip.__transitionIn = {
+        key: state.transition.type,
+        duration: state.transition.duration
+      };
+      results.push('transition:' + state.transition.type);
+    } else {
+      warnings.push('transition: clip select karein');
+    }
+  }
+
+  // ADJUSTMENTS (needs clip)
+  const adjKeys = Object.keys(state.adjustments);
+  if (adjKeys.length > 0) {
+    if (!hasClips && _lastCreatedClips.length === 0) {
+      warnings.push('adjustments: clip daalein');
+    } else {
+      try {
+        const id = createEffectLayer('adjustment', { adjustments: state.adjustments }, 'Adjustments');
+        if (id) results.push('adjustments');
+      } catch (e) { console.warn(e); }
+    }
+  }
+
+  // FILTER
+  const filterKeys = Object.keys(state.filters);
+  if (filterKeys.length > 0) {
+    if (!hasClips && _lastCreatedClips.length === 0) {
+      warnings.push('filter: clip daalein');
+    } else {
+      const filters = {
+        brightness: 100, contrast: 100, saturation: 100, hue: 0,
+        grayscale: 0, sepia: 0, invert: 0, blur: 0, opacity: 100
+      };
+      Object.assign(filters, state.filters);
+      try {
+        const id = createEffectLayer('filter', { filters }, 'Filter');
+        if (id) results.push('filter');
+      } catch (e) { console.warn(e); }
+    }
+  }
+
+  // EFFECT PRESET
+  if (state.effectPreset) {
+    if (!hasClips && _lastCreatedClips.length === 0) {
+      warnings.push('effect: clip daalein');
+    } else {
+      const baseFilters = {
+        brightness: 100, contrast: 100, saturation: 100, hue: 0,
+        grayscale: 0, sepia: 0, invert: 0, blur: 0, opacity: 100
+      };
+      try {
+        const id = createEffectLayer('effect',
+          { presetKey: state.effectPreset, filters: baseFilters, motion: null },
+          capitalize(state.effectPreset));
+        if (id) results.push('effect:' + state.effectPreset);
+      } catch (e) { console.warn(e); }
+    }
+  }
+
+  // COLOR WHEEL
+  if (state.colorWheel) {
+    if (!hasClips && _lastCreatedClips.length === 0) {
+      warnings.push('colorWheel: clip daalein');
+    } else {
+      try {
+        const id = createEffectLayer('colorWheel', { colorWheel: state.colorWheel }, 'Color Wheel');
+        if (id) results.push('colorWheel');
+      } catch (e) { console.warn(e); }
+    }
+  }
+
+  // CHROMA
+  if (state.chroma) {
+    if (!hasClips && _lastCreatedClips.length === 0) {
+      warnings.push('chroma: clip daalein');
+    } else {
+      try {
+        const id = createEffectLayer('chroma', { chroma: state.chroma }, 'Chroma Key');
+        if (id) results.push('chroma');
+      } catch (e) { console.warn(e); }
+    }
+  }
+
+  // Fire events
   document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
   document.dispatchEvent(new CustomEvent('effects:refresh'));
   document.dispatchEvent(new CustomEvent('keyframe:changed'));
   document.dispatchEvent(new CustomEvent('transform:changed'));
 
   if (results.length === 0) {
-    return { ok: false, error: 'Koi command execute nahi hui' };
+    const errMsg = warnings.length ? warnings.join(' • ') : 'Koi command execute nahi hui';
+    return { ok: false, error: errMsg };
   }
+  if (warnings.length > 0) results.push('⚠️ ' + warnings.join(', '));
   return { ok: true, results };
 }
 
@@ -714,6 +664,18 @@ function hasAnyClips(appState) {
   for (const t of v) if (Array.isArray(t) && t.length) return true;
   for (const t of a) if (Array.isArray(t) && t.length) return true;
   return false;
+}
+
+function findClipByUrl(list, url) {
+  if (!Array.isArray(list)) return null;
+  for (let t = 0; t < list.length; t++) {
+    const track = list[t];
+    if (!Array.isArray(track)) continue;
+    for (let c = 0; c < track.length; c++) {
+      if (track[c] && track[c].url === url) return track[c];
+    }
+  }
+  return null;
 }
 
 function getSelectedClip(appState) {
@@ -729,14 +691,12 @@ function getSelectedClip(appState) {
   if (!Array.isArray(track)) return null;
   return track[clipIdx] || null;
 }
+
 function capitalize(s) {
   if (!s) return '';
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  🆕 SPEED HELPERS
-// ═══════════════════════════════════════════════════════════════
 function applySpeedToClip(clip, speed) {
   if (!clip) return;
   if (!Number.isFinite(clip.__speedBase) || clip.__speedBase <= 0) {
@@ -749,13 +709,11 @@ function applySpeedToClip(clip, speed) {
 
 function syncLinkedSpeed(appState, primaryClip, speed) {
   if (!primaryClip || !primaryClip.__linkedId) return;
-
   const linkedId = primaryClip.__linkedId;
   const allTracks = [].concat(
     appState.timeline.visual || [],
     appState.timeline.audio || []
   );
-
   for (let t = 0; t < allTracks.length; t++) {
     const track = allTracks[t];
     if (!Array.isArray(track)) continue;
@@ -763,15 +721,12 @@ function syncLinkedSpeed(appState, primaryClip, speed) {
       const other = track[c];
       if (other === primaryClip) continue;
       if (!other || other.__linkedId !== linkedId) continue;
-
       applySpeedToClip(other, speed);
       other.startTime = primaryClip.startTime;
     }
   }
 }
-// ═══════════════════════════════════════════════════════════════
-//  🆕 Sync linked audio trim
-// ═══════════════════════════════════════════════════════════════
+
 function syncLinkedTrim(appState, clip, startTime, duration, sourceIn) {
   if (!clip || !clip.__linkedId) return;
   const allTracks = [].concat(

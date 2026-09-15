@@ -1,23 +1,19 @@
 // ================================================================
 //  js/features/delete.js
-//  Deletes the currently selected timeline clip.
-//
-//  How it works (fully self-contained):
-//   1. Look for .clip.selected in the timeline DOM
-//   2. Ensure timelineEngine's internal `selected` var is synced
-//      (important on touch devices — mousedown may not have fired)
-//   3. Dispatch the SAME event that the timeline's delete button
-//      already fires (`editor:delete-selected`).
-//      timelineEngine's listener then:
-//        - removes the clip from appState.timeline
-//        - calls onDeleteSelected() (in app.js) for media cleanup
-//        - re-renders the timeline
-//   4. Show a toast with the deleted clip's name.
+//  Delete feature (from feature shelf).
+//  🆕 Smart: Keyframe selected → delete keyframe.
+//            Otherwise → delete selected layer.
 // ================================================================
 
-export const featureKey = 'delete';
+import { removeAllKeyframesAtTime } from '../workspace/keyframeStore.js';
 
-// ─── Toast feedback (same style as duplicate.js) ───────────────
+export const featureKey = 'delete';
+export const featureLabel = 'Delete';
+export const featureIcon = '🗑️';
+
+// ═══════════════════════════════════════════════════════════════
+//  TOAST
+// ═══════════════════════════════════════════════════════════════
 function showToast(message, ok = true) {
   const el = document.createElement('div');
   el.textContent = message;
@@ -32,7 +28,7 @@ function showToast(message, ok = true) {
     border-radius: 22px;
     font-size: 13px;
     font-weight: 600;
-    z-index: 9999;
+    z-index: 99999;
     pointer-events: none;
     opacity: 0;
     box-shadow: 0 4px 16px rgba(0,0,0,0.4);
@@ -55,12 +51,42 @@ function showToast(message, ok = true) {
   }, 1500);
 }
 
-// ─── Router entry ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+//  ROUTER ENTRY
+// ═══════════════════════════════════════════════════════════════
 export function open({ router }) {
+  // 🆕 Priority 1: Keyframe selected?
+  const kfUI = window.__keyframeUI;
+  const selKf = (kfUI && typeof kfUI.getSelectedKeyframe === 'function')
+    ? kfUI.getSelectedKeyframe()
+    : null;
+
+  if (selKf && selKf.clip) {
+    const { clip, time } = selKf;
+
+    try {
+      removeAllKeyframesAtTime(clip, time);
+    } catch (err) {
+      console.warn('[delete feature] keyframe removal failed', err);
+    }
+
+    if (typeof kfUI.clearKeyframeSelection === 'function') {
+      try { kfUI.clearKeyframeSelection(); } catch (_) {}
+    }
+
+    document.dispatchEvent(new CustomEvent('keyframe:changed'));
+    document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
+    document.dispatchEvent(new CustomEvent('transform:changed'));
+
+    showToast('◆ Keyframe removed at ' + (time || 0).toFixed(2) + 's');
+    return;
+  }
+
+  // ─── Priority 2: Delete selected layer ────────────────────
   const selectedEl = document.querySelector('.clip.selected');
 
   if (!selectedEl) {
-    showToast('Select a clip first', false);
+    showToast('Select a clip or keyframe first', false);
     return;
   }
 
@@ -68,24 +94,17 @@ export function open({ router }) {
     .replace(/\s+/g, ' ')
     .trim();
 
-  // Make sure timelineEngine's internal `selected` variable points
-  // to this clip (needed on touch where mousedown may not have run).
-  // The mousedown handler is idempotent — safe to dispatch again.
+  // Sync timelineEngine's internal `selected`
   try {
     selectedEl.dispatchEvent(new MouseEvent('mousedown', {
       bubbles: true,
       cancelable: true,
       button: 0
     }));
-  } catch (_) {
-    // Ignore — fallback to whatever `selected` currently is
-  }
+  } catch (_) {}
 
-  // Fire the same event the timeline's delete button uses.
-  // timelineEngine handles state removal + re-render; app.js's
-  // onDeleteSelected callback cleans up the media library.
+  // Fire the delete event
   document.dispatchEvent(new CustomEvent('editor:delete-selected'));
 
-  // Confirm to the user
   showToast(`Deleted "${clipName}"`);
 }
