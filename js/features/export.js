@@ -1244,15 +1244,36 @@ async function exportVideoFast(filename) {
     while (t < clipStartTime - 0.001) { emitBlackFrame(t); t += frameInterval; }
   }
 
+  // 🆕 Speed-aware export
+  const clipSpeed = (matchedClip && Number.isFinite(matchedClip.__speed) && matchedClip.__speed > 0)
+    ? matchedClip.__speed
+    : 1;
+  const sourceSpan = (clipSpeed !== 1) ? clipDuration * clipSpeed : clipDuration;
+
   let decoderError = null;
+  let lastEncodedTimeline = -1;
+  const minFrameInterval = 1 / fps * 0.5;
+
   const decoder = new VideoDecoder({
     output: (frame) => {
       if (decoderError) { try { frame.close(); } catch (_) {} return; }
       try {
         const sourceTime = frame.timestamp / 1e6;
-        const timelineTime = sourceTime - clipSourceIn + clipStartTime;
+
+        // 🆕 Speed-aware timeline mapping
+        // Normal: timelineTime = sourceTime - sourceIn + startTime
+        // Speed 2x: timeline advances HALF as fast as source
+        const timelineTime = clipStartTime + (sourceTime - clipSourceIn) / clipSpeed;
+
         if (timelineTime < clipStartTime - 0.03) { frame.close(); return; }
         if (timelineTime >= clipEnd) { frame.close(); return; }
+
+        // 🆕 Skip frames so output fps stays consistent
+        if (timelineTime - lastEncodedTimeline < minFrameInterval) {
+          frame.close();
+          return;
+        }
+        lastEncodedTimeline = timelineTime;
 
         const clipAtTime = findClipAtTimelineTime(timelineTime);
         const transitionActive = clipAtTime && isTransitionActive(clipAtTime, timelineTime);
@@ -1319,7 +1340,7 @@ async function exportVideoFast(filename) {
   if (hasAudio) {
     try {
       await encodeAudioFromURL(videoEl.src, muxer, audioTrackInfo,
-                               clipSourceIn, clipDuration, clipStartTime);
+                               clipSourceIn, clipDuration, clipStartTime, clipSpeed);
     } catch (_) {}
   } else if (audioMuted) {
     console.log('[export] Linked audio track is MUTED — skipping audio encode');
@@ -1339,7 +1360,9 @@ async function exportVideoFast(filename) {
   if (saved) showToast('Saved ' + filename);
 }
 
-async function encodeAudioFromURL(url, muxer, audioTrackInfo, sourceIn, clipDur, timelineStart) {
+async function encodeAudioFromURL(url, muxer, audioTrackInfo, sourceIn, clipDur, timelineStart, clipSpeed) {
+  const speed = (Number.isFinite(clipSpeed) && clipSpeed > 0) ? clipSpeed : 1;
+
   const resp = await fetch(url);
   const ab = await resp.arrayBuffer();
   const AC = window.AudioContext || window.webkitAudioContext;
@@ -1348,7 +1371,6 @@ async function encodeAudioFromURL(url, muxer, audioTrackInfo, sourceIn, clipDur,
   try { rawBuffer = await ac.decodeAudioData(ab); }
   catch (e) { try { ac.close(); } catch (_) {} throw e; }
   try { ac.close(); } catch (_) {}
-
   const fxLayers = getAudioFxLayersInRange(timelineStart, timelineStart + clipDur);
   let processedBuffer = rawBuffer;
   if (fxLayers.length) {
@@ -1356,17 +1378,25 @@ async function encodeAudioFromURL(url, muxer, audioTrackInfo, sourceIn, clipDur,
       processedBuffer = await applyAudioFxLayers(rawBuffer, fxLayers, sourceIn, clipDur, timelineStart);
     } catch (_) {}
   }
-
   const targetRate = 48000;
   const numCh = Math.min(2, processedBuffer.numberOfChannels || 1);
   const srcRate = processedBuffer.sampleRate;
   const startSample = Math.max(0, Math.floor((sourceIn || 0) * srcRate));
-  const endSample = (clipDur && clipDur > 0)
-    ? Math.min(processedBuffer.length, Math.floor(((sourceIn || 0) + clipDur) * srcRate))
-    : processedBuffer.length;
-  const totalFrames = Math.max(0, endSample - startSample);
-  if (totalFrames === 0) return;
 
+  // 🆕 Speed-aware: output duration stays clipDur (already speed-adjusted).
+  //    Source samples needed = clipDur * speed seconds.
+  const sourceEndSample = Math.min(
+    processedBuffer.length,
+    Math.floor(((sourceIn || 0) + clipDur * speed) * srcRate)
+  );
+  const sourceSpan = Math.max(0, sourceEndSample - startSample);
+
+  // Total output frames = clipDur seconds at targetRate
+  const totalFrames = (clipDur && clipDur > 0)
+    ? Math.max(0, Math.floor(clipDur * targetRate))
+    : Math.max(0, Math.floor(sourceSpan / speed / srcRate * targetRate));
+
+  if (totalFrames === 0) return;
   const audioEncoder = new AudioEncoder({
     output: (c, m) => { try { muxer.addAudioChunk(c, m); } catch (_) {} },
     error: (e) => console.warn('AudioEncoder', e)
@@ -1381,6 +1411,7 @@ async function encodeAudioFromURL(url, muxer, audioTrackInfo, sourceIn, clipDur,
 
   const chunkFrames = 1024;
   const timeOffset = Number.isFinite(timelineStart) ? timelineStart : 0;
+  const step = (srcRate / targetRate) * speed;   // 🆕 Speed-aware source step
   let offset = 0;
   while (offset < totalFrames) {
     const len = Math.min(chunkFrames, totalFrames - offset);
@@ -1388,17 +1419,12 @@ async function encodeAudioFromURL(url, muxer, audioTrackInfo, sourceIn, clipDur,
     for (let c = 0; c < numCh; c++) {
       const src = channels[c];
       const dstOff = c * len;
-      const srcStart = startSample + offset;
       for (let i = 0; i < len; i++) {
-        if (srcRate === targetRate) {
-          planar[dstOff + i] = src[srcStart + i] || 0;
-        } else {
-          const srcIdx = srcStart + i * (srcRate / targetRate);
-          const i0 = Math.floor(srcIdx);
-          const i1 = Math.min(processedBuffer.length - 1, i0 + 1);
-          const frac = srcIdx - i0;
-          planar[dstOff + i] = (src[i0] || 0) * (1 - frac) + (src[i1] || 0) * frac;
-        }
+        const srcIdx = startSample + (offset + i) * step;   // 🆕 Speed applied here
+        const i0 = Math.floor(srcIdx);
+        const i1 = Math.min(processedBuffer.length - 1, i0 + 1);
+        const frac = srcIdx - i0;
+        planar[dstOff + i] = (src[i0] || 0) * (1 - frac) + (src[i1] || 0) * frac;
       }
     }
     try {

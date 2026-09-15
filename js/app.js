@@ -6,7 +6,7 @@
 
 import { initTextRenderer } from './workspace/textRenderer.js';
 import { featuresRouter } from './features/featuresRouter.js';
-import { initHomeController } from './home/homeController.js';
+import { initHomeController, initCodebaseShelf, initAiPromptHelper } from './home/homeController.js';
 import { initRecentProjects } from './home/recentProjects.js';
 import { initTemplatesShelf } from './home/templatesShelf.js';
 import { initHeaderBar } from './workspace/headerBar.js';
@@ -29,8 +29,8 @@ import { initKeyframeUI, clearKeyframeSelection, getSelectedKeyframe } from './w
 import { initMagnetTool } from './workspace/magnetTool.js';
 import { initTransitionMarkers } from './workspace/transitionMarkers.js';
 import * as keyframeStore from './workspace/keyframeStore.js';
-
 import * as featureModules from './features/index.js';
+import { initPromptUI } from './codebase/promptUI.js';
 
 // ═══════════════════════════════════════════════════════════════
 //  APP STATE
@@ -80,12 +80,26 @@ function showPage(page) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+//  🆕 CODE BASE EDITOR
+//  Phase 1: sirf console log + toast
+//  (Phase 2 mein prompt panel open hoga)
+// ═══════════════════════════════════════════════════════════════
+function openCodeEditor(mode) {
+  console.log('[Code Editor] Opening with mode:', mode || 'new');
+
+  // Create project in code mode
+  createProject('code');
+
+  // 🆕 If 'examples' mode, pre-fill input (future)
+  // For now, both modes open the same editor
+}
+// ═══════════════════════════════════════════════════════════════
 //  CREATE NEW PROJECT
 // ═══════════════════════════════════════════════════════════════
-function createProject() {
+function createProject(mode) {
   appState.project = {
     id: crypto.randomUUID(),
-    name: 'Untitled Project',
+    name: mode === 'code' ? 'Code Project' : 'Untitled Project',
     createdAt: Date.now()
   };
   appState.media = [];
@@ -104,8 +118,21 @@ function createProject() {
   if (playbackEngine) playbackEngine.seek(0);
   if (previewHud) previewHud.refresh();
 
+  // 🆕 Set editor mode
+  setEditorMode(mode || 'feature');
+
   document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
   showPage('workspace');
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  🆕 EDITOR MODE TOGGLE (feature ⇄ code)
+// ═══════════════════════════════════════════════════════════════
+function setEditorMode(mode) {
+  appState.mode = mode;
+  if (!elements.workspace) return;
+  elements.workspace.classList.toggle('mode-code', mode === 'code');
+  elements.workspace.classList.toggle('mode-feature', mode !== 'code');
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -123,10 +150,18 @@ function registerFeatures() {
 //  BOOTSTRAP
 // ═══════════════════════════════════════════════════════════════
 async function bootstrap() {
-  // ─── Home / dashboard ──────────────────────────────────────
-  initHomeController({ onNewProject: createProject });
+
+  initHomeController({
+    onNewProject: createProject,
+    onCodeEditor: openCodeEditor  // 🆕
+  });
   initRecentProjects(document.querySelector('#recent-projects-grid'));
   initTemplatesShelf(document.querySelector('#templates-shelf'));
+  initCodebaseShelf(
+    document.querySelector('#codebase-shelf'),
+    { onOpen: (mode) => openCodeEditor(mode) }  // 🆕
+  );
+  initAiPromptHelper(); 
   initHeaderBar({ exportButton: document.querySelector('#export-btn') });
 
   const previewVideo = document.querySelector('#preview-video');
@@ -312,8 +347,14 @@ async function bootstrap() {
     backButton: elements.featureBack
   });
 
-  // ─── Back button + export button ───────────────────────────
-  elements.workspaceBack.addEventListener('click', function () { showPage('dashboard'); });
+  // 🆕 Prompt UI (Code Mode)
+  initPromptUI();
+  
+    elements.workspaceBack.addEventListener('click', function () {
+    // 🆕 Reset mode so next feature project opens normally
+    setEditorMode('feature');
+    showPage('dashboard');
+  });
 
   const exportBtn = document.querySelector('#export-btn');
   if (exportBtn) {

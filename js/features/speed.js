@@ -106,15 +106,51 @@ function ensureBase(clip) {
   return clip.__speedBase;
 }
 
-// 🆕 Apply speed: change duration AND update playback rate on video el
 function applySpeed(clip, speed) {
   const base = ensureBase(clip);
   clip.__speed = speed;
   clip.duration = base / speed;
   clip.__trimmed = true;
 
+  // 🆕 Sync linked audio clip (video ↔ auto-audio)
+  syncLinkedSpeed(clip, speed);
+
   // Update live video/audio playback rate if this clip is currently playing
   applyToMediaElements(clip, speed);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  🆕 Sync speed to linked clips (video ↔ auto-generated audio)
+// ═══════════════════════════════════════════════════════════════
+function syncLinkedSpeed(primaryClip, speed) {
+  if (!primaryClip || !primaryClip.__linkedId) return;
+
+  const appState2 = window.__appState || appState;
+  if (!appState2) return;
+
+  const linkedId = primaryClip.__linkedId;
+  const allTracks = [].concat(
+    appState2.timeline.visual || [],
+    appState2.timeline.audio || []
+  );
+
+  for (let t = 0; t < allTracks.length; t++) {
+    const track = allTracks[t];
+    if (!Array.isArray(track)) continue;
+    for (let c = 0; c < track.length; c++) {
+      const other = track[c];
+      if (other === primaryClip) continue;
+      if (!other || other.__linkedId !== linkedId) continue;
+
+      if (!Number.isFinite(other.__speedBase) || other.__speedBase <= 0) {
+        other.__speedBase = Number.isFinite(other.duration) ? other.duration : 3;
+      }
+      other.__speed = speed;
+      other.duration = other.__speedBase / speed;
+      other.__trimmed = true;
+      other.startTime = primaryClip.startTime;
+    }
+  }
 }
 
 function applyToMediaElements(clip, speed) {

@@ -11,6 +11,7 @@ import {
   getPropsWithKeyframeAt, hasKeyframeAt, easeFn
 } from '../workspace/keyframeStore.js';
 import { getSelectedKeyframe, clearKeyframeSelection } from '../workspace/keyframeUI.js';
+import { openKeyframeGraph } from '../workspace/keyframeGraph.js';
 
 export const featureKey = 'transform';
 export const featureLabel = 'Transform';
@@ -381,6 +382,19 @@ export function renderTo(container) {
   // ─── Easing graph panel ───────────────────────────────────
   const kfPanel = buildKeyframeGraphPanel(found.clip);
   if (kfPanel) panel.appendChild(kfPanel);
+    // ─── 🆕 Graph button ──────────────────────────────────────
+  if (hasAnyKeyframes(found.clip)) {
+    const graphBtn = document.createElement('button');
+    graphBtn.type = 'button';
+    graphBtn.className = 'tf-reset-all';
+    graphBtn.style.cssText = 'background: linear-gradient(135deg, #4f9dff 0%, #7c3aed 100%); color: #fff; border: 0; margin-bottom: 8px;';
+    graphBtn.textContent = '📊 View Keyframe Graph';
+    graphBtn.addEventListener('click', () => {
+      openKeyframeGraph();
+    });
+    panel.appendChild(graphBtn);
+  }
+
 
   // ─── Reset all ────────────────────────────────────────────
   const resetAll = document.createElement('button');

@@ -519,20 +519,31 @@ export function initTimelineEngine(config) {
         }
       }
 
-      const end = atTime + realDur;
+          const end = atTime + realDur;
       const freeIdx = findFreeTrackIndex(list, atTime, end, null);
       while (list.length <= freeIdx) list.push([]);
 
-      list[freeIdx].push({
+      // 🆕 Image ko unlimited duration — user jitna chhota/bada kare
+      const isImageItem = item.type.indexOf('image/') === 0;
+
+      const clipEntry = {
         name: item.name || 'Media',
         url: item.url,
         type: item.type,
         duration: realDur,
         startTime: atTime,
         sourceIn: 0,
-        __sourceTotalDuration: realDur,
         __linkedId: linkedId
-      });
+      };
+
+      // Images: __sourceTotalDuration mat set karo
+      // → trimHandles mein "Infinity" default ho jayega
+      // → user kisi bhi lambai tak extend kar sakta hai
+      if (!isImageItem) {
+        clipEntry.__sourceTotalDuration = realDur;
+      }
+
+      list[freeIdx].push(clipEntry);
     }
     render();
     notifyChanged();

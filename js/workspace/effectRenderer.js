@@ -1,11 +1,7 @@
 // ================================================================
 //  js/workspace/effectRenderer.js
 //  Visual effects on preview canvas — HIERARCHY-AWARE.
-//
 //  Rule: Effect at track Ti applies to ALL display clips BELOW it.
-//        Effects do NOT affect layers above.
-//
-//  Live: called synchronously by playbackEngine each frame.
 // ================================================================
 
 import { isIdentity } from './transformApplier.js';
@@ -37,9 +33,6 @@ function injectStyles() {
   document.head.appendChild(s);
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  INIT
-// ═══════════════════════════════════════════════════════════════
 export function initEffectRenderer() {
   injectStyles();
   window.__applyVisualEffects = applyVisualEffects;
@@ -57,19 +50,46 @@ export function initEffectRenderer() {
   });
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  🆕 DEBOUNCED REFRESH
+//
+//  Problem: prompt se 5 layers banti hain → 7 events fire hote
+//  hain → 7 RAFs scheduled → applyVisualEffects 7 baar chalti
+//  hai → pixel effects COMPOUND ho jate hain → pehla look kharab
+//
+//  Fix: Sirf EK RAF ko chalne do, aur usme base redraw karke
+//  ek hi baar effects apply karo.
+// ═══════════════════════════════════════════════════════════════
+let pendingRefresh = false;
+
 function onPausedRefresh() {
   const eng = window.__playbackEngine;
   if (eng && eng.isPlaying && eng.isPlaying()) return;
-  const t = eng ? eng.getTime() : 0;
+
+  // Redraw immediately (visual feedback ke liye)
   const preview = window.__previewCanvasInstance;
   if (preview && typeof preview.redraw === 'function') {
     try { preview.redraw(); } catch (_) {}
   }
+
+  // Agar already pending hai to skip — sirf ek hi RAF chalega
+  if (pendingRefresh) return;
+  pendingRefresh = true;
+
   requestAnimationFrame(function () {
-    applyVisualEffects(t);
+    pendingRefresh = false;
+
+    // Fresh base redraw karo (compounding rokne ke liye)
+    const preview2 = window.__previewCanvasInstance;
+    if (preview2 && typeof preview2.redraw === 'function') {
+      try { preview2.redraw(); } catch (_) {}
+    }
+
+    const eng2 = window.__playbackEngine;
+    const t2 = eng2 ? eng2.getTime() : 0;
+    applyVisualEffects(t2);
   });
 }
-
 // ═══════════════════════════════════════════════════════════════
 //  HELPERS
 // ═══════════════════════════════════════════════════════════════
@@ -187,10 +207,7 @@ function applyVisualEffects(time) {
     currentMotionKey = motionStr;
   }
 
-   // 3) LAYER TRANSFORM — video/image clips ONLY
-  //    Text & sticker clips have their own CSS-based transform
-  //    (via textState.positionX/scale/rotation), they should NOT
-  //    trigger canvas-level transform.
+  // 3) LAYER TRANSFORM — video/image ONLY
   const preview = window.__previewCanvasInstance;
   if (preview && typeof preview.setLayerTransform === 'function') {
     const active = getActiveVisualClips(time);
@@ -321,11 +338,59 @@ function computeMotion(m, time) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  PIXEL PROCESSORS
+//  🆕 COLOR CHANNEL HELPERS (HSL-based)
+// ═══════════════════════════════════════════════════════════════
+const COLOR_CHANNELS = [
+  { key: 'reds',      center: 0,   range: 30 },
+  { key: 'oranges',   center: 30,  range: 30 },
+  { key: 'yellows',   center: 60,  range: 30 },
+  { key: 'greens',    center: 120, range: 90 },
+  { key: 'cyans',     center: 180, range: 30 },
+  { key: 'blues',     center: 225, range: 60 },
+  { key: 'purples',   center: 270, range: 30 },
+  { key: 'magentas',  center: 315, range: 60 },
+  { key: 'skinTones', center: 20,  range: 25 }
+];
+
+function rgbToHsl(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  let h = 0, s = 0;
+  const l = (max + min) / 2;
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) * 60;
+    else if (max === g) h = ((b - r) / d + 2) * 60;
+    else h = ((r - g) / d + 4) * 60;
+  }
+  return [h, s * 100, l * 100];
+}
+
+function hslToRgb(h, s, l) {
+  h = ((h % 360) + 360) % 360;
+  s = Math.max(0, Math.min(100, s)) / 100;
+  l = Math.max(0, Math.min(100, l)) / 100;
+  const k = n => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = n => l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1));
+  return [Math.round(f(0) * 255), Math.round(f(8) * 255), Math.round(f(4) * 255)];
+}
+
+function getChannelWeight(hue, center, range) {
+  let d = Math.abs(hue - center);
+  if (d > 180) d = 360 - d;
+  if (d >= range) return 0;
+  return 1 - d / range;
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  ADJUSTMENT
 // ═══════════════════════════════════════════════════════════════
 function applyAdjustment(data, w, h, s) {
   if (!s) return;
   const clamp = v => v < 0 ? 0 : v > 255 ? 255 : v;
+
   const bA = (s.brightness || 0) / 100, cA = (s.contrast || 0) / 100;
   const eA = Math.pow(2, (s.exposure || 0) / 100);
   const wA = (s.whites || 0) / 100, blA = (s.blacks || 0) / 100;
@@ -334,12 +399,24 @@ function applyAdjustment(data, w, h, s) {
   const viA = (s.vibrance || 0) / 100, teA = (s.temperature || 0) / 100;
   const tiA = (s.tint || 0) / 100, noA = (s.noise || 0) / 100;
   const shpA = (s.sharpen || 0) / 100, vgA = (s.vignette || 0) / 100;
+
+  // Color channels
+  const colorVals = {};
+  let hasColorChannels = false;
+  for (const ch of COLOR_CHANNELS) {
+    const v = (s[ch.key] || 0) / 100;
+    colorVals[ch.key] = v;
+    if (Math.abs(v) > 0.01) hasColorChannels = true;
+  }
+
   const cx = w / 2, cy = h / 2;
   const maxDist = Math.sqrt(cx * cx + cy * cy) || 1;
+
   for (let i = 0; i < data.length; i += 4) {
     let r = data[i], g = data[i + 1], b = data[i + 2];
     const idx = i / 4, px = idx % w, py = (idx - px) / w;
     const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+
     if (bA) { const a = bA * 110; r += a; g += a; b += a; }
     if (eA !== 1) { r *= eA; g *= eA; b *= eA; }
     if (cA) { const f = 1 + cA; r = (r - 128) * f + 128; g = (g - 128) * f + 128; b = (b - 128) * f + 128; }
@@ -353,13 +430,40 @@ function applyAdjustment(data, w, h, s) {
     if (teA) { r += teA * 35; b -= teA * 35; }
     if (tiA) { g -= tiA * 28; r += tiA * 12; b += tiA * 12; }
     r = clamp(r); g = clamp(g); b = clamp(b);
+
+    // Per-color-channel HSL adjustment
+    if (hasColorChannels) {
+      const [hue, sat, lightness] = rgbToHsl(r, g, b);
+      if (sat > 2) {
+        let satMul = 1;
+        let hueShift = 0;
+        for (const ch of COLOR_CHANNELS) {
+          const val = colorVals[ch.key];
+          if (Math.abs(val) < 0.01) continue;
+          const w = getChannelWeight(hue, ch.center, ch.range);
+          if (w > 0.01) {
+            satMul += val * w * 0.8;
+            hueShift += val * w * 3;
+          }
+        }
+        if (Math.abs(satMul - 1) > 0.01 || Math.abs(hueShift) > 0.5) {
+          const rgb2 = hslToRgb(hue + hueShift, sat * satMul, lightness);
+          r = rgb2[0]; g = rgb2[1]; b = rgb2[2];
+        }
+      }
+    }
+
     if (shpA) { const f = 1 + shpA * 0.18; r = (r - 128) * f + 128; g = (g - 128) * f + 128; b = (b - 128) * f + 128; }
     if (noA) { const grain = (Math.random() - 0.5) * noA * 45; r += grain; g += grain; b += grain; }
     if (vgA) { const dx = px - cx, dy = py - cy; const d = Math.sqrt(dx * dx + dy * dy) / maxDist; const v = 1 - Math.max(0, d - 0.4) * vgA * 1.8; r *= v; g *= v; b *= v; }
+
     data[i] = clamp(r); data[i + 1] = clamp(g); data[i + 2] = clamp(b);
   }
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  COLOR WHEEL
+// ═══════════════════════════════════════════════════════════════
 function applyColorWheel(data, w, h, cw) {
   if (!cw) return;
   const tones = cw.tones || {};
@@ -377,18 +481,8 @@ function applyColorWheel(data, w, h, cw) {
   }
 }
 
-function hslToRgb(h, s, l) {
-  s /= 100; l /= 100;
-  const k = n => (n + h / 30) % 12;
-  const a = s * Math.min(l, 1 - l);
-  const f = n => l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1));
-  return [Math.round(f(0) * 255), Math.round(f(8) * 255), Math.round(f(4) * 255)];
-}
-
 // ═══════════════════════════════════════════════════════════════
-//  CHROMA KEY — works for ANY picked color
-//  Uses kr/kg/kb = user's picked RGB (not hardcoded green)
-//  Blends RGB toward black so it works in OPAQUE export canvas
+//  CHROMA KEY
 // ═══════════════════════════════════════════════════════════════
 function applyChroma(data, w, h, c) {
   if (!c || !c.keyColor) return;
@@ -411,7 +505,6 @@ function applyChroma(data, w, h, c) {
     const g = data[i + 1];
     const b = data[i + 2];
 
-    // Distance from user's picked color (any color, not just green)
     const dr = r - kr;
     const dg = g - kg;
     const db = b - kb;
@@ -423,8 +516,6 @@ function applyChroma(data, w, h, c) {
     removal *= inten;
 
     if (removal > 0) {
-      // FIX: blend RGB toward black (works in opaque export canvas)
-      // AND reduce alpha (works in transparent preview canvas).
       const keep = 1 - removal;
       data[i]     = Math.round(r * keep);
       data[i + 1] = Math.round(g * keep);
@@ -432,7 +523,6 @@ function applyChroma(data, w, h, c) {
       data[i + 3] = Math.round(data[i + 3] * keep);
     }
 
-    // Spill suppression (for non-removed pixels near the key color)
     if (sp > 0 && removal < 1 && dist < softEnd + 0.15) {
       const prox = 1 - Math.min(1, dist / (softEnd + 0.15));
       const bl = sp * prox * 0.8;

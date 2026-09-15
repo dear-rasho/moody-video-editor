@@ -6,6 +6,42 @@
 
 import { hasAnyKeyframes, sampleAll } from './keyframeStore.js';
 import { isTransitionActive, getTransitionProgress, renderTransitionBlend } from './transitionEngine.js';
+// ═══════════════════════════════════════════════════════════════
+//  🆕 Color channel helpers (same as effectRenderer.js)
+// ═══════════════════════════════════════════════════════════════
+const COLOR_CHANNELS = [
+  { key: 'reds',      center: 0,   range: 30 },
+  { key: 'oranges',   center: 30,  range: 30 },
+  { key: 'yellows',   center: 60,  range: 30 },
+  { key: 'greens',    center: 120, range: 90 },
+  { key: 'cyans',     center: 180, range: 30 },
+  { key: 'blues',     center: 225, range: 60 },
+  { key: 'purples',   center: 270, range: 30 },
+  { key: 'magentas',  center: 315, range: 60 },
+  { key: 'skinTones', center: 20,  range: 25 }
+];
+
+function rgbToHsl(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  let h = 0, s = 0;
+  const l = (max + min) / 2;
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) * 60;
+    else if (max === g) h = ((b - r) / d + 2) * 60;
+    else h = ((r - g) / d + 4) * 60;
+  }
+  return [h, s * 100, l * 100];
+}
+
+function getChannelWeight(hue, center, range) {
+  let d = Math.abs(hue - center);
+  if (d > 180) d = 360 - d;
+  if (d >= range) return 0;
+  return 1 - d / range;
+}
 
 export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime, prevFrameCanvas) {
   const appState = window.__appState;
@@ -405,20 +441,38 @@ function drawStickerOverlay(ctx, W, H, s) {
 function applyAdjustment(data, w, h, s) {
   if (!s) return;
   const clamp = v => v < 0 ? 0 : v > 255 ? 255 : v;
-  const bA = (s.brightness || 0) / 100, cA = (s.contrast || 0) / 100;
-  const eA = Math.pow(2, (s.exposure || 0) / 100);
-  const wA = (s.whites || 0) / 100, blA = (s.blacks || 0) / 100;
-  const shA = (s.shadows || 0) / 100, hiA = (s.highlights || 0) / 100;
-  const clA = (s.clarity || 0) / 100, saA = (s.saturation || 0) / 100;
-  const viA = (s.vibrance || 0) / 100, teA = (s.temperature || 0) / 100;
-  const tiA = (s.tint || 0) / 100, noA = (s.noise || 0) / 100;
-  const shpA = (s.sharpen || 0) / 100, vgA = (s.vignette || 0) / 100;
+  const c100 = v => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return 0;
+    return Math.max(-100, Math.min(100, n));
+  };
+
+  const bA = c100(s.brightness) / 100, cA = c100(s.contrast) / 100;
+  const eA = Math.pow(2, c100(s.exposure) / 100);
+  const wA = c100(s.whites) / 100, blA = c100(s.blacks) / 100;
+  const shA = c100(s.shadows) / 100, hiA = c100(s.highlights) / 100;
+  const clA = c100(s.clarity) / 100, saA = c100(s.saturation) / 100;
+  const viA = c100(s.vibrance) / 100, teA = c100(s.temperature) / 100;
+  const tiA = c100(s.tint) / 100, noA = c100(s.noise) / 100;
+  const shpA = c100(s.sharpen) / 100, vgA = c100(s.vignette) / 100;
+
+  const colorVals = {};
+  let hasColorChannels = false;
+  for (const ch of COLOR_CHANNELS) {
+    const raw = c100(s[ch.key]);
+    const v = raw / 100;
+    colorVals[ch.key] = v;
+    if (Math.abs(v) > 0.01) hasColorChannels = true;
+  }
+
   const cx = w / 2, cy = h / 2;
   const maxDist = Math.sqrt(cx * cx + cy * cy) || 1;
+
   for (let i = 0; i < data.length; i += 4) {
     let r = data[i], g = data[i + 1], b = data[i + 2];
     const idx = i / 4, px = idx % w, py = (idx - px) / w;
     const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+
     if (bA) { const a = bA * 110; r += a; g += a; b += a; }
     if (eA !== 1) { r *= eA; g *= eA; b *= eA; }
     if (cA) { const f = 1 + cA; r = (r - 128) * f + 128; g = (g - 128) * f + 128; b = (b - 128) * f + 128; }
@@ -432,9 +486,35 @@ function applyAdjustment(data, w, h, s) {
     if (teA) { r += teA * 35; b -= teA * 35; }
     if (tiA) { g -= tiA * 28; r += tiA * 12; b += tiA * 12; }
     r = clamp(r); g = clamp(g); b = clamp(b);
+
+    // Color channel adjustment
+    if (hasColorChannels) {
+      const [hue, sat, lightness] = rgbToHsl(r, g, b);
+      if (sat > 2) {
+        let satMul = 1;
+        let hueShift = 0;
+        for (const ch of COLOR_CHANNELS) {
+          const val = colorVals[ch.key];
+          if (Math.abs(val) < 0.01) continue;
+          const w = getChannelWeight(hue, ch.center, ch.range);
+          if (w > 0.01) {
+            satMul += val * w * 0.8;
+            hueShift += val * w * 3;
+          }
+        }
+        satMul = Math.max(0.1, Math.min(3, satMul));
+        hueShift = Math.max(-20, Math.min(20, hueShift));
+        if (Math.abs(satMul - 1) > 0.01 || Math.abs(hueShift) > 0.5) {
+          const rgb2 = hslToRgb(hue + hueShift, sat * satMul, lightness);
+          r = rgb2[0]; g = rgb2[1]; b = rgb2[2];
+        }
+      }
+    }
+
     if (shpA) { const f = 1 + shpA * 0.18; r = (r - 128) * f + 128; g = (g - 128) * f + 128; b = (b - 128) * f + 128; }
     if (noA) { const grain = (Math.random() - 0.5) * noA * 45; r += grain; g += grain; b += grain; }
     if (vgA) { const dx = px - cx, dy = py - cy; const d = Math.sqrt(dx * dx + dy * dy) / maxDist; const v = 1 - Math.max(0, d - 0.4) * vgA * 1.8; r *= v; g *= v; b *= v; }
+
     data[i] = clamp(r); data[i + 1] = clamp(g); data[i + 2] = clamp(b);
   }
 }

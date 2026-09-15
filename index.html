@@ -25,9 +25,33 @@
           <div id="recent-projects-grid" class="recent-projects-grid" data-columns="2"></div>
         </section>
 
-        <section class="dashboard-section" aria-labelledby="templates-title">
+              <section class="dashboard-section" aria-labelledby="templates-title">
           <div class="section-heading"><h2 id="templates-title">Templates</h2></div>
           <div id="templates-shelf" class="templates-shelf" role="list"></div>
+        </section>
+
+               <!-- Code Base Editing section -->
+        <section class="dashboard-section codebase-section" aria-labelledby="codebase-title">
+          <div class="section-heading">
+            <h2 id="codebase-title">Code Base Editing</h2>
+            <button id="codebase-new-btn" class="icon-button primary" type="button" aria-label="New code project">＋</button>
+          </div>
+          <div id="codebase-shelf" class="codebase-shelf" role="list"></div>
+        </section>
+
+        <!-- 🆕 AI Prompt section -->
+        <section class="dashboard-section ai-prompt-section" aria-labelledby="ai-prompt-title">
+          <div class="section-heading">
+            <h2 id="ai-prompt-title">AI Prompt Helper</h2>
+          </div>
+          <p class="ai-prompt-hint">
+            Yeh prompt AI (ChatGPT, Claude, Gemini) ko do — woh tumhare liye
+            editor ke commands likh dega. Phir copy karke Code Editor mein paste karo.
+          </p>
+          <pre id="ai-prompt-text" class="ai-prompt-box"></pre>
+          <button id="ai-prompt-copy-btn" class="ai-prompt-copy-btn" type="button">
+            📋 Copy Prompt
+          </button>
         </section>
       </section>
 
@@ -86,12 +110,36 @@
           </div>
         </section>
 
-        <section id="feature-shelf-box" class="feature-shelf-box" aria-label="Feature options">
+              <section id="feature-shelf-box" class="feature-shelf-box" aria-label="Feature options">
           <div class="feature-shelf-header">
             <button id="feature-back-btn" class="icon-button" type="button" aria-label="Back one feature level">‹</button>
             <h2 id="feature-level-title">Tools</h2>
           </div>
           <div id="feature-shelf" class="feature-shelf" role="navigation" aria-label="Feature options"></div>
+        </section>
+
+             <!-- 🆕 PROMPT PANEL (Code Mode) -->
+        <section id="prompt-panel-box" class="prompt-panel-box" aria-label="Prompt panel">
+          <!-- 🆕 Category shelf (replaces old CODE MODE header) -->
+          <div class="prompt-cat-shelf" id="prompt-cat-shelf"></div>
+
+          <!-- Chips shelf (scrolls per selected category) -->
+          <div class="prompt-examples" id="prompt-examples"></div>
+
+          <textarea
+            id="prompt-input"
+            class="prompt-input"
+            placeholder="Prompt likho… e.g. brightness 120, fade in 0.5, zoom 2x"
+            rows="3"
+            spellcheck="false"
+          ></textarea>
+
+          <div class="prompt-action-row">
+            <button id="prompt-clear-btn" class="prompt-clear-btn" type="button">Clear</button>
+            <button id="prompt-apply-btn" class="prompt-apply-btn" type="button">
+              ✨ Apply
+            </button>
+          </div>
         </section>
       </section>
     </main>

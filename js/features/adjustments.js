@@ -34,10 +34,13 @@ const ADJUSTMENTS = [
   { key: 'sharpen',     label: 'Sharpen'     },
   { key: 'vignette',    label: 'Vignette'    },
   { key: 'reds',        label: 'Reds'        },
+  { key: 'oranges',     label: 'Oranges'     },
   { key: 'yellows',     label: 'Yellows'     },
   { key: 'greens',      label: 'Greens'      },
+  { key: 'cyans',       label: 'Cyans'       },
   { key: 'blues',       label: 'Blues'       },
   { key: 'purples',     label: 'Purples'     },
+  { key: 'magentas',    label: 'Magentas'    },
   { key: 'skinTones',   label: 'Skin Tones'  }
 ];
 
