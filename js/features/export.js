@@ -1,12 +1,7 @@
-// ================================================================
-//  js/features/export.js
-//  Export panel — MP4 (with/without video) + PNG Seq + Audio.
-//  Audio is skipped when the linked audio track is muted.
-//  Default location memory via File System Access API.
-//  🆕 Image preloading + keyframe-aware export
-// ================================================================
+
 
 import { renderFrameToCanvas, preloadAllImages } from '../workspace/exportRenderer.js';
+import { showError, showInfo } from '../workspace/errorNotifier.js';
 import { getBuilder } from '../workspace/audioFxBuilders.js';
 import { isTransitionActive } from '../workspace/transitionEngine.js';
 
@@ -134,15 +129,19 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // ═══════════════════════════════════════════════════════════════
 //  TOAST
-// ═══════════════════════════════════════════════════════════════
 function showToast(message, ok) {
   if (ok === undefined) ok = true;
+  // 🆕 Route errors through copyable notifier
+  if (!ok) {
+    showError('Export Error', message, '');
+    return;
+  }
   const el = document.createElement('div');
   el.textContent = message;
   el.style.cssText = [
     'position:fixed','bottom:110px','left:50%',
     'transform:translateX(-50%) translateY(8px)',
-    'background:' + (ok ? 'rgba(0,0,0,0.9)' : 'rgba(180,40,40,0.92)'),
+    'background:rgba(0,0,0,0.9)',
     'color:#fff','padding:10px 20px','border-radius:22px',
     'font-size:13px','font-weight:600','z-index:100000',
     'pointer-events:none','opacity:0',
@@ -159,8 +158,6 @@ function showToast(message, ok) {
     setTimeout(() => el.remove(), 300);
   }, 1800);
 }
-
-// ═══════════════════════════════════════════════════════════════
 //  CSS
 // ═══════════════════════════════════════════════════════════════
 const CSS_ID = 'export-styles';
@@ -939,7 +936,21 @@ async function exportVideo(filename, fmt) {
     }
   } catch (e) {
     console.error('Export failed:', e);
-    showToast('Export failed: ' + (e && e.message ? e.message : 'unknown'), false);
+    const msg = 'Export failed: ' + (e && e.message ? e.message : 'unknown');
+    const details = [
+      'Error name:    ' + (e && e.name ? e.name : 'n/a'),
+      'Error message: ' + (e && e.message ? e.message : 'n/a'),
+      'Stack:',
+      (e && e.stack) ? e.stack : '(no stack)',
+      '',
+      'Export settings:',
+      '  format:  ' + settings.format,
+      '  quality: ' + settings.quality,
+      '  fps:     ' + settings.fps,
+      '  bitrate: ' + settings.bitrateKbps + ' kbps',
+      '  filename:' + settings.fileName
+    ].join('\n');
+    showError('Export Failed', msg, details);
     hideProgress();
   }
 }
@@ -1432,7 +1443,11 @@ async function exportPngSequence(baseName) {
     await exportPngSequenceCanvasOnly(defaultDirHandle, totalFrames, fps);
   } catch (e) {
     console.error('PNG seq failed:', e);
-    showToast('Export failed: ' + (e && e.message ? e.message : 'unknown'), false);
+    showError(
+      'PNG Export Failed',
+      'PNG sequence export failed: ' + (e && e.message ? e.message : 'unknown'),
+      (e && e.stack) ? e.stack : '(no stack)'
+    );
     hideProgress();
   }
 }

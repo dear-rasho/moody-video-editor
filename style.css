@@ -1238,3 +1238,40 @@ h2 {
   max-height: 140px;
   overflow-y: auto;
 }
+
+
+/* ═══════════════════════════════════════════════════════════════
+   PROMPT FEEDBACK — copy button layout
+   ═══════════════════════════════════════════════════════════════ */
+.prompt-feedback {
+  /* ensure flex layout from JS works */
+  min-height: 32px;
+}
+.prompt-feedback.err {
+  color: #ff6b6b;
+  background: rgba(255, 107, 107, 0.12);
+  border: 1px solid #ff6b6b;
+  font-size: 11px;
+  line-height: 1.5;
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 10px 12px;
+}
+.prompt-feedback.ok {
+  color: #22c55e;
+  background: rgba(34, 197, 94, 0.12);
+  border: 1px solid #22c55e;
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 10px 12px;
+}
+.prompt-feedback.warn {
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid #f59e0b;
+  font-size: 11px;
+  line-height: 1.5;
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 10px 12px;
+}

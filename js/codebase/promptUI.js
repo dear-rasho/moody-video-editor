@@ -1,13 +1,7 @@
-// ================================================================
-//  js/codebase/promptUI.js
-//  Prompt panel UI — categorized chips + apply.
-// ================================================================
+
 
 import { parsePrompt, executePrompt } from './codebaseEngine.js';
-
-// ═══════════════════════════════════════════════════════════════
-//  CATEGORIES + EXAMPLES
-// ═══════════════════════════════════════════════════════════════
+import { showError } from '../workspace/errorNotifier.js';
 const CATEGORIES = [
     {
     key: 'fonts',
@@ -31,6 +25,44 @@ const CATEGORIES = [
       'font "Bebas Neue" size 60'
     ]
   },
+   {
+    key: 'align',
+    label: 'Align',
+    icon: '🎯',
+    examples: [
+      'text "Hello" align left',
+      'text "Hello" align center',
+      'text "Hello" align right',
+      'text "Top" positionX 50 positionY 20',
+      'text "Bottom" positionX 50 positionY 80',
+      'text "Left" positionX 20 positionY 50',
+      'text "Right" positionX 80 positionY 50',
+      'text "Center" position 50 50',
+      'text "Corner" position 10 10',
+      'text "Mixed" positionX 70 positionY 30',
+      'align right',
+      'align center'
+    ]
+  },
+  {
+    key: 'anchor',
+    label: 'Anchor',
+    icon: '⚓',
+    examples: [
+      'text "TL" position 0 0 anchor top-left',
+      'text "TC" position 50 0 anchor top-center',
+      'text "TR" position 100 0 anchor top-right',
+      'text "CL" position 0 50 anchor center-left',
+      'text "C" position 50 50 anchor center',
+      'text "CR" position 100 50 anchor center-right',
+      'text "BL" position 0 100 anchor bottom-left',
+      'text "BC" position 50 100 anchor bottom-center',
+      'text "BR" position 100 100 anchor bottom-right',
+      'text "Custom" position 30 70 anchor 0 50',
+      'anchor top-left',
+      'anchor center'
+    ]
+  },
   {
     key: 'timeline',
     label: 'Timeline',
@@ -41,7 +73,10 @@ const CATEGORIES = [
       '[00:08 - 00:15] "Third line" color ramp #00FF87 to #60EFFF',
       '[00:15 - 00:20] "Fourth" color white, shadow',
       '[00:00 - 00:03] "Hi" font Impact size 48',
-      '[00:03 - 00:06] "Bye" font handwriting size 20'
+      '[00:03 - 00:06] "Bye" font handwriting size 20',
+      '[00:00 - 00:10] [seg "i am " font music size 24 italic] [seg "Fine" font Impact size 72] position 50 50 anchor center',
+      '[00:00 - 00:10] [seg "THE" font bold size 28 color #00FF87 animation fadeIn] [seg "SECRET" font Anton size 44 color ramp #60EFFF to #00FF87 animation bounce] [seg "OF" font bold size 28 color #ffcc00 animation typewriter] position 50 45 anchor center',
+      '[00:00 - 00:08] "Subscribe" font Anton size 60 color ramp #ff0066 to #ffcc00 position 50 45 anchor center'
     ]
   },
   {
@@ -135,17 +170,28 @@ const CATEGORIES = [
       'softGlow'
     ]
   },
-  {
+   {
     key: 'transform',
     label: 'Transform',
     icon: '🔲',
     examples: [
       'scale 150',
       'scale 80',
+      'scale 50',
+      'scale 200',
       'rotation 45',
       'rotation -90',
+      'rotation 180',
+      'positionX 30',
+      'positionX 70',
+      'positionY 20',
+      'positionY 80',
       'position 30 70',
       'position 50 20',
+      'position 70 30',
+      'anchor top-left',
+      'anchor center',
+      'anchor bottom-right',
       'cropL 10',
       'cropR 10',
       'cropT 5',
@@ -216,7 +262,7 @@ const CATEGORIES = [
       'split'
     ]
   },
-  {
+   {
     key: 'text',
     label: 'Text',
     icon: '📝',
@@ -225,7 +271,15 @@ const CATEGORIES = [
       'text "Welcome" at top',
       'text "Subscribe" at bottom',
       'text "Bye" size 72 color #ff0066',
-      'text "Hi" size 36'
+      'text "Hi" size 36',
+      'text "Bold" font Anton size 60',
+      'text "Italic" italic size 40',
+      'text "Shadow" shadow size 48',
+      'text "Gradient" color ramp #ff0066 to #ffcc00',
+      'text "Center" position 50 50',
+      'text "Top" position 50 20',
+      'text "Bottom" position 50 80',
+      'text "Corner" position 10 10 anchor top-left'
     ]
   },
   {
@@ -399,10 +453,9 @@ function onApply() {
     showFeedback('Please likho kuch…', 'err');
     return;
   }
-
   const parseResult = parsePrompt(prompt);
   if (!parseResult.ok) {
-    showFeedback('❌ ' + (parseResult.error || 'Parse fail'), 'err');
+    showFeedback('❌ Parse failed: ' + (parseResult.error || 'unknown'), 'err');
     return;
   }
 
@@ -413,7 +466,7 @@ function onApply() {
 
   let hasSomething = false;
 
-  if (isTimestamped) {
+   if (isTimestamped) {
     hasSomething = true;
   } else {
     // Safe checks — har field guard karo
@@ -430,21 +483,45 @@ function onApply() {
     const hasKeyframes = state.keyframes && state.keyframes.length > 0;
     const hasAudioFx = state.audioFx && state.audioFx.length > 0;
     const hasTrim = state.trimOps && state.trimOps.length > 0;
+    // 🆕 Standalone text props (align, anchor, positionX/Y, etc.)
+    const hasTextProps = state.textProps && Object.keys(state.textProps).length > 0;
 
     hasSomething = hasAdjust || hasFilters || hasEffect || hasSpeed ||
                    hasTransition || hasTexts || hasStickers || hasWheel ||
                    hasChroma || hasTransforms || hasKeyframes ||
-                   hasAudioFx || hasTrim;
+                   hasAudioFx || hasTrim || hasTextProps;
   }
 
   if (!hasSomething) {
     showFeedback('❌ Kuch samajh nahi aaya — category chips try karein', 'err');
     return;
   }
-
-   const result = executePrompt(state);
+  const result = executePrompt(state);
   if (!result.ok) {
-    showFeedback('❌ ' + (result.error || 'Execute fail'), 'err');
+    let msg = '❌ ' + (result.error || 'Execute fail');
+    if (result.unknown && result.unknown.length > 0) {
+      msg += '\n\n❓ Could not understand:';
+      for (let i = 0; i < result.unknown.length; i++) {
+        msg += '\n   • ' + result.unknown[i];
+      }
+    }
+    showFeedback(msg, 'err');
+    return;
+  }
+
+  // 🆕 Show unknown warnings even on success
+  if (result.unknown && result.unknown.length > 0) {
+    let msg = '⚠️ Applied with issues';
+    msg += '\n\n❓ Could not understand:';
+    for (let i = 0; i < result.unknown.length && i < 5; i++) {
+      msg += '\n   • ' + result.unknown[i];
+    }
+    if (result.unknown.length > 5) {
+      msg += '\n   ... and ' + (result.unknown.length - 5) + ' more';
+    }
+    showFeedback(msg, 'err', 10000);
+    inputEl.value = '';
+    inputEl.blur();
     return;
   }
 
@@ -471,17 +548,85 @@ function onApply() {
 //  FEEDBACK
 function showFeedback(msg, type, durationMs) {
   clearFeedback();
+
   feedbackEl = document.createElement('div');
   feedbackEl.className = 'prompt-feedback ' + (type || 'ok');
   feedbackEl.style.whiteSpace = 'pre-wrap';
-  feedbackEl.textContent = msg;
+  feedbackEl.style.display = 'flex';
+  feedbackEl.style.alignItems = 'flex-start';
+  feedbackEl.style.gap = '8px';
+  feedbackEl.style.justifyContent = 'space-between';
+
+  // Message text
+  const textEl = document.createElement('div');
+  textEl.style.flex = '1';
+  textEl.style.minWidth = '0';
+  textEl.style.wordBreak = 'break-word';
+  textEl.textContent = msg;
+
+  // 🆕 Copy button — always visible
+  const copyBtn = document.createElement('button');
+  copyBtn.type = 'button';
+  copyBtn.textContent = '📋';
+  copyBtn.title = 'Copy this message';
+  copyBtn.style.cssText = [
+    'flex:0 0 auto',
+    'width:32px',
+    'height:32px',
+    'padding:0',
+    'border-radius:8px',
+    'border:1px solid rgba(255,255,255,0.2)',
+    'background:rgba(255,255,255,0.08)',
+    'color:#fff',
+    'font-size:14px',
+    'cursor:pointer',
+    'font-family:inherit',
+    'display:grid',
+    'place-items:center',
+    'transition:all 0.12s ease',
+    '-webkit-tap-highlight-color:transparent'
+  ].join(';');
+
+  copyBtn.addEventListener('click', async function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+
+    // Build full payload with environment info
+    const payload = buildPromptFeedbackCopy(msg, type);
+
+    const ok = await copyToClipboard(payload);
+
+    if (ok) {
+      copyBtn.textContent = '✅';
+      copyBtn.style.background = 'rgba(0,255,135,0.25)';
+      copyBtn.style.borderColor = '#00FF87';
+      copyBtn.style.color = '#00FF87';
+      setTimeout(function () {
+        copyBtn.textContent = '📋';
+        copyBtn.style.background = 'rgba(255,255,255,0.08)';
+        copyBtn.style.borderColor = 'rgba(255,255,255,0.2)';
+        copyBtn.style.color = '#fff';
+      }, 1500);
+    } else {
+      copyBtn.textContent = '❌';
+      setTimeout(function () { copyBtn.textContent = '📋'; }, 1200);
+    }
+  });
+
+  copyBtn.addEventListener('pointerdown', function (e) {
+    e.stopPropagation();
+  });
+
+  feedbackEl.appendChild(textEl);
+  feedbackEl.appendChild(copyBtn);
 
   const actionRow = applyBtn && applyBtn.parentElement;
   if (actionRow && actionRow.parentNode) {
     actionRow.parentNode.insertBefore(feedbackEl, actionRow);
   }
 
-  const ms = durationMs || 3500;
+  // 🆕 Errors stay longer (8s), success shorter (4s)
+  const ms = durationMs || (type === 'err' ? 8000 : 4000);
   setTimeout(() => {
     if (feedbackEl) {
       feedbackEl.remove();
@@ -489,10 +634,98 @@ function showFeedback(msg, type, durationMs) {
     }
   }, ms);
 }
-
 function clearFeedback() {
   if (feedbackEl) {
     feedbackEl.remove();
     feedbackEl = null;
+  }
+}
+// ═══════════════════════════════════════════════════════════════
+//  🆕 COPY HELPERS
+// ═══════════════════════════════════════════════════════════════
+function buildPromptFeedbackCopy(msg, type) {
+  const lines = [];
+  lines.push('=== MOODY EDITOR — PROMPT FEEDBACK ===');
+  lines.push('Type:  ' + (type || 'info'));
+  lines.push('Time:  ' + new Date().toISOString());
+  lines.push('');
+  lines.push('Message:');
+  lines.push(msg || '(empty)');
+  lines.push('');
+
+  // Current prompt text
+  try {
+    const inp = document.querySelector('#prompt-input');
+    if (inp && inp.value) {
+      lines.push('Prompt (current):');
+      lines.push(inp.value);
+      lines.push('');
+    }
+  } catch (_) {}
+
+  // Selected clip info
+  try {
+    const sel = document.querySelector('.clip.selected');
+    if (sel) {
+      const track = sel.dataset.track || '?';
+      const clip = sel.dataset.clip || '?';
+      const type2 = sel.dataset.clipType || '?';
+      lines.push('Selected clip:');
+      lines.push('  Track: ' + track);
+      lines.push('  Index: ' + clip);
+      lines.push('  Type:  ' + type2);
+      lines.push('');
+    } else {
+      lines.push('Selected clip: (none)');
+      lines.push('');
+    }
+  } catch (_) {}
+
+  // Environment
+  try {
+    lines.push('Environment:');
+    lines.push('  User Agent: ' + (navigator.userAgent || 'n/a'));
+    lines.push('  Platform:   ' + (navigator.platform || 'n/a'));
+    lines.push('  Viewport:   ' + window.innerWidth + '×' + window.innerHeight);
+    const ratio = window.__offlineEditorRatio;
+    if (ratio) {
+      lines.push('  Ratio:      ' + (ratio.key || '?') + ' (' + ratio.w + ':' + ratio.h + ')');
+    }
+    const appState = window.__appState;
+    if (appState && appState.timeline) {
+      const vt = (appState.timeline.visual || []).length;
+      const at = (appState.timeline.audio || []).length;
+      lines.push('  Visual tracks: ' + vt);
+      lines.push('  Audio tracks:  ' + at);
+    }
+  } catch (_) {}
+
+  lines.push('');
+  lines.push('=== END ===');
+  return lines.join('\n');
+}
+
+async function copyToClipboard(text) {
+  // Modern API
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (_) {}
+
+  // Fallback
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    return ok;
+  } catch (_) {
+    return false;
   }
 }

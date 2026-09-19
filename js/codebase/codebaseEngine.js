@@ -84,33 +84,65 @@ function _addUnknown(part, context) {
 
 // ═══════════════════════════════════════════════════════════════
 //  🆕 SPLIT PROPERTY STRING
-//  "font Anton size 180 color black" → 3 parts
 // ═══════════════════════════════════════════════════════════════
-const PROP_KEYWORDS_RE = /\b(font|size|color|colour|position|animation|shadow|align|alignment|scale|rotation|opacity|stroke)\b/g;
+//  🆕 PATTERN-BASED PROPERTY SPLITTER
+//  Consumes properties from START of string — robust against
+//  apostrophes, no-space separation, and "font bold" cases.
+// ═══════════════════════════════════════════════════════════════
+const PROP_PATTERNS = [
+  /^(?:font\s*[-]?size)\s+\d+/i,
+  /^(?:colou?r\s+ramp|gradient|ramp)\s+#[0-9a-fA-F]+\s+(?:to|→|->)\s+#[0-9a-fA-F]+/i,
+  /^(?:colou?r\s+ramp|gradient|ramp)\s+#[0-9a-fA-F]+\s+#[0-9a-fA-F]+/i,
+  /^position\s+-?\d+(?:\.\d+)?\s+-?\d+(?:\.\d+)?/i,
+  /^position\s+(?:top|bottom|center|middle|left|right)\b/i,
+  /^position\s*[xy]\s+-?\d+(?:\.\d+)?/i,
+  /^anchor\s+-?\d+(?:\.\d+)?\s+-?\d+(?:\.\d+)?/i,
+  /^anchor\s*[xy]\s+-?\d+(?:\.\d+)?/i,
+  /^anchor\s+(?:top-left|top-center|top-right|center-left|center-right|bottom-left|bottom-center|bottom-right|top|bottom|center|middle|left|right)\b/i,
+  /^animation\s+[a-z][a-z0-9]*/i,
+  /^font\s+(?:bold|italic)\b/i,
+  /^font\s+[A-Za-z][A-Za-z0-9_-]*(?:\s+(?!(?:size|color|colour|position|animation|shadow|align|alignment|scale|rotation|opacity|stroke|anchor|newline|linebreak|bold|italic)\b)[A-Za-z][A-Za-z0-9_-]*)*/i,
+  /^font\s+\S+/i,
+  /^size\s+\d+/i,
+  /^colou?r\s+#[0-9a-fA-F]+/i,
+  /^colou?r\s+[a-zA-Z]+/i,
+  /^shadow\b/i,
+  /^bold\b/i,
+  /^italic\b/i,
+  /^newline\b/i,
+  /^linebreak\b/i,
+  /^align(?:ment)?\s+(?:left|center|right)\b/i,
+  /^scale\s+-?\d+/i,
+  /^rot(?:ation)?\s+-?\d+/i,
+  /^opacity\s+\d+/i,
+  /^stroke\s*[- ]?(?:width\s+)?\d+(?:\s+#[0-9a-fA-F]+)?/i
+];
 
 function splitPropString(str) {
   if (!str) return [];
-  const commaParts = str.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+  const commaParts = String(str).split(',').map(function (s) { return s.trim(); }).filter(Boolean);
   const result = [];
 
   for (let ci = 0; ci < commaParts.length; ci++) {
-    const part = commaParts[ci];
-    PROP_KEYWORDS_RE.lastIndex = 0;
-    const indices = [];
-    let m;
-    while ((m = PROP_KEYWORDS_RE.exec(part)) !== null) {
-      indices.push(m.index);
-    }
-    if (indices.length === 0) {
-      result.push(part);
-      continue;
-    }
-    if (indices[0] > 0) indices.unshift(0);
-    for (let i = 0; i < indices.length; i++) {
-      const s = indices[i];
-      const e = (i + 1 < indices.length) ? indices[i + 1] : part.length;
-      const chunk = part.slice(s, e).trim();
-      if (chunk) result.push(chunk);
+    let rest = commaParts[ci];
+    let safety = 0;
+    while (rest && safety++ < 30) {
+      rest = rest.replace(/^[\s,]+/, '');
+      if (!rest) break;
+      let matched = false;
+      for (let pi = 0; pi < PROP_PATTERNS.length; pi++) {
+        const m = rest.match(PROP_PATTERNS[pi]);
+        if (m && m.index === 0 && m[0].length > 0) {
+          result.push(m[0].trim());
+          rest = rest.slice(m[0].length);
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) {
+        result.push(rest);
+        break;
+      }
     }
   }
   return result;
@@ -139,19 +171,27 @@ function applyRatio(ratioStr) {
 
 // ═══════════════════════════════════════════════════════════════
 //  TIMESTAMPED LAYERS
-// ═══════════════════════════════════════════════════════════════
 function hasTimestampedLayers(rawPrompt) {
   if (!rawPrompt || typeof rawPrompt !== 'string') return false;
-  return /\[\s*\d{1,2}:\d{2}(?::\d{2})?\s*[-–—]\s*\d{1,2}:\d{2}(?::\d{2})?\s*\]/.test(rawPrompt);
+  // 🆕 Support fractional seconds: 00:01.5, 1:23.75, 01:23:45.5
+  return /\[\s*\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?\s*[-–—]\s*\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?\s*\]/.test(rawPrompt);
 }
-
 function parseTimeStr(str) {
-  const parts = String(str).split(':').map(function (n) { return parseInt(n, 10) || 0; });
-  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
-  if (parts.length === 2) return parts[0] * 60 + parts[1];
-  return parts[0] || 0;
+  const s = String(str).trim();
+  const parts = s.split(':');
+  if (parts.length === 3) {
+    const h = parseInt(parts[0], 10) || 0;
+    const m = parseInt(parts[1], 10) || 0;
+    const sec = parseFloat(parts[2]) || 0;
+    return h * 3600 + m * 60 + sec;
+  }
+  if (parts.length === 2) {
+    const m = parseInt(parts[0], 10) || 0;
+    const sec = parseFloat(parts[1]) || 0;
+    return m * 60 + sec;
+  }
+  return parseFloat(parts[0]) || 0;
 }
-
 function fmtSec(s) {
   if (!Number.isFinite(s)) s = 0;
   const m = Math.floor(s / 60);
@@ -162,7 +202,8 @@ function fmtSec(s) {
 
 function parseTimestampedLayers(rawPrompt) {
   _resetUnknown();
-  const blockRegex = /\[\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*[-–—]\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*\]/g;
+    // 🆕 Support fractional seconds
+  const blockRegex = /\[\s*(\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?)\s*[-–—]\s*(\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?)\s*\]/g;
 
   const blocks = [];
   let lastIndex = 0;
@@ -260,53 +301,91 @@ function parseTimestampBlock(block) {
 
 // ═══════════════════════════════════════════════════════════════
 //  TEXT BLOCK PARSER (with segments)
-// ═══════════════════════════════════════════════════════════════
 function parseTextBlock(block, content) {
-  const segRegex = /\[\s*(?:seg|segment|word)\s+["']([^"']+)["']\s*([^\]]*)\]/gi;
+  // ═══════════════════════════════════════════════════════════
+  //  🆕 MANUAL SEGMENT EXTRACTION
+  //  Handles apostrophes, quotes, and complex text safely.
+  //  Format: [seg "text" props] [seg 'text' props]
+  // ═══════════════════════════════════════════════════════════
   const segments = [];
+  const ranges = [];
+  const startRegex = /\[\s*(?:seg|segment|word)\s+/gi;
   let m;
-  let textWithoutSegs = content;
 
-  while ((m = segRegex.exec(content)) !== null) {
-    const segText = m[1];
-    const segPropsStr = m[2] || '';
+  while ((m = startRegex.exec(content)) !== null) {
+    const blockStart = m.index;
+
+    // Find the first quote after "seg "
+    let qi = m.index + m[0].length;
+    while (qi < content.length && content[qi] !== '"' && content[qi] !== "'") qi++;
+    if (qi >= content.length) continue;
+
+    const openQ = content[qi];
+
+    // Find the closing `]`
+    const endBracket = content.indexOf(']', qi + 1);
+    if (endBracket < 0) continue;
+
+    // Find the LAST occurrence of the SAME quote before `]`
+    // (props don't contain quotes, so this is the closing quote)
+    let closeQi = -1;
+    for (let j = endBracket - 1; j > qi; j--) {
+      if (content[j] === openQ) { closeQi = j; break; }
+    }
+    if (closeQi < 0) continue;
+
+    const segText = content.slice(qi + 1, closeQi);
+    const segPropsStr = content.slice(closeQi + 1, endBracket).trim();
+
     const parsedSeg = parseLayerProps(segPropsStr);
     const segProps = parsedSeg.props || parsedSeg;
     const segUnknown = parsedSeg.unknown || [];
     for (let k = 0; k < segUnknown.length; k++) {
       _addUnknown(segUnknown[k], 'seg "' + segText + '"');
     }
-    segments.push({
-      text: segText,
-      props: segProps
-    });
-  }
-  textWithoutSegs = content.replace(segRegex, '').replace(/\s+/g, ' ').trim();
 
+    segments.push({ text: segText, props: segProps });
+    ranges.push([blockStart, endBracket + 1]);
+
+    // Advance startRegex lastIndex so we don't re-match inside this block
+    startRegex.lastIndex = endBracket + 1;
+  }
+
+  // Remove all segment blocks from content (from end to start)
+  let textWithoutSegs = content;
+  for (let i = ranges.length - 1; i >= 0; i--) {
+    textWithoutSegs =
+      textWithoutSegs.slice(0, ranges[i][0]) + ' ' +
+      textWithoutSegs.slice(ranges[i][1]);
+  }
+  textWithoutSegs = textWithoutSegs.replace(/\s+/g, ' ').trim();
+
+  // ─── Extract main text (if any) ─────────────────────────────
   let mainText = '';
   let propsStr = '';
 
-  const qm = textWithoutSegs.match(/^text\s+["']([^"']+)["']\s*(.*)$/i);
-  if (qm) {
-    mainText = qm[1];
-    propsStr = qm[2] || '';
-  } else {
-    const qm2 = textWithoutSegs.match(/^["']([^"']+)["']\s*(.*)$/);
-    if (qm2) {
-      mainText = qm2[1];
-      propsStr = qm2[2] || '';
+  if (textWithoutSegs) {
+    const qm = textWithoutSegs.match(/^text\s+["']([\s\S]*?)["']\s*(.*)$/i);
+    if (qm) {
+      mainText = qm[1];
+      propsStr = qm[2] || '';
     } else {
-      propsStr = textWithoutSegs;
+      const qm2 = textWithoutSegs.match(/^["']([\s\S]*?)["']\s*(.*)$/);
+      if (qm2) {
+        mainText = qm2[1];
+        propsStr = qm2[2] || '';
+      } else {
+        propsStr = textWithoutSegs;
+      }
     }
   }
-
-  if (segments.length > 0 && !mainText) mainText = '';
 
   const parsedProps = parseLayerProps(propsStr);
   const props = parsedProps.props || parsedProps;
   const unknownProps = parsedProps.unknown || [];
   for (let k = 0; k < unknownProps.length; k++) {
-    _addUnknown(unknownProps[k], 'text @ ' + fmtSec(block.start) + 's');
+    // 🆕 Fixed double-s bug
+    _addUnknown(unknownProps[k], 'text @ ' + fmtSec(block.start));
   }
 
   return {
@@ -355,11 +434,13 @@ function parseAudioFxBlock(block, content) {
 // ═══════════════════════════════════════════════════════════════
 function parseLayerProps(str) {
   const unknown = [];
-  const props = {
+   const props = {
     animation: 'none',
     animationDuration: 0.6,
     positionX: 50,
     positionY: 50,
+    anchorX: 50,
+    anchorY: 50,
     color: '#ffffff',
     gradientEnabled: false,
     gradientColor1: '#ff0066',
@@ -412,7 +493,47 @@ function parseLayerProps(str) {
       continue;
     }
 
-    // position
+     // positionX N
+    m = part.match(/^position\s*x\s+(-?\d+(?:\.\d+)?)/i);
+    if (m) { props.positionX = parseFloat(m[1]); continue; }
+
+    // positionY N
+    m = part.match(/^position\s*y\s+(-?\d+(?:\.\d+)?)/i);
+    if (m) { props.positionY = parseFloat(m[1]); continue; }
+
+    // anchorX N
+    m = part.match(/^anchor\s*x\s+(-?\d+(?:\.\d+)?)/i);
+    if (m) { props.anchorX = parseFloat(m[1]); continue; }
+
+    // anchorY N
+    m = part.match(/^anchor\s*y\s+(-?\d+(?:\.\d+)?)/i);
+    if (m) { props.anchorY = parseFloat(m[1]); continue; }
+
+    // anchor X Y
+    m = part.match(/^anchor\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)/i);
+    if (m) {
+      props.anchorX = parseFloat(m[1]);
+      props.anchorY = parseFloat(m[2]);
+      continue;
+    }
+
+    // anchor top-left / center / etc.
+    m = part.match(/^anchor\s+(top-left|top-center|top-right|center-left|center-right|bottom-left|bottom-center|bottom-right|top|bottom|center|left|right)/i);
+    if (m) {
+      const a = m[1].toLowerCase();
+      if (a === 'top-left')          { props.anchorX = 0;   props.anchorY = 0; }
+      else if (a === 'top-center' || a === 'top')    { props.anchorX = 50;  props.anchorY = 0; }
+      else if (a === 'top-right')    { props.anchorX = 100; props.anchorY = 0; }
+      else if (a === 'center-left' || a === 'left')  { props.anchorX = 0;   props.anchorY = 50; }
+      else if (a === 'center')       { props.anchorX = 50;  props.anchorY = 50; }
+      else if (a === 'center-right' || a === 'right') { props.anchorX = 100; props.anchorY = 50; }
+      else if (a === 'bottom-left')  { props.anchorX = 0;   props.anchorY = 100; }
+      else if (a === 'bottom-center' || a === 'bottom') { props.anchorX = 50; props.anchorY = 100; }
+      else if (a === 'bottom-right') { props.anchorX = 100; props.anchorY = 100; }
+      continue;
+    }
+
+    // position top/bottom/center/left/right
     m = part.match(/^position\s+(top|bottom|center|middle|left|right)\b/i);
     if (m) {
       const p = m[1].toLowerCase();
@@ -423,13 +544,14 @@ function parseLayerProps(str) {
       else if (p === 'right') props.positionX = 80;
       continue;
     }
+
+    // position X Y
     m = part.match(/^position\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)/i);
     if (m) {
       props.positionX = parseFloat(m[1]);
       props.positionY = parseFloat(m[2]);
       continue;
     }
-
     // gradient
     m = part.match(/^(?:colou?r\s+ramp|gradient|ramp)\s+(#[0-9a-fA-F]{3,8})\s+(?:to|→|->)\s+(#[0-9a-fA-F]{3,8})/i);
     if (m) {
@@ -557,7 +679,9 @@ function buildTextClip(L, duration) {
         rotation: sp.rotation || 0,
         scale: sp.scale != null ? sp.scale : 100,
         opacity: sp.opacity != null ? sp.opacity : 100,
-        align: sp.alignment || 'center',
+            align: sp.alignment || 'center',
+        anchorX: sp.anchorX != null ? sp.anchorX : 50,
+        anchorY: sp.anchorY != null ? sp.anchorY : 50,
         newline: !!sp.newline
       };
     });
@@ -590,9 +714,11 @@ function buildTextClip(L, duration) {
       shadowBlur: 8,
       shadowOffsetX: 2,
       shadowOffsetY: 2,
-      alignment: p.alignment || 'center',
+            alignment: p.alignment || 'center',
       positionX: p.positionX != null ? p.positionX : 50,
       positionY: p.positionY != null ? p.positionY : 50,
+      anchorX: p.anchorX != null ? p.anchorX : 50,
+      anchorY: p.anchorY != null ? p.anchorY : 50,
       scale: p.scale != null ? p.scale : 100,
       rotation: p.rotation || 0,
       opacity: p.opacity != null ? p.opacity : 100,
@@ -990,15 +1116,15 @@ export function parsePrompt(rawPrompt) {
     }
   }
 
-  const state = {
+   const state = {
     adjustments: {}, filters: {}, effectPreset: null, speed: null,
     transition: null, texts: [], stickers: [], colorWheel: null,
     chroma: null, transforms: {}, keyframes: [], audioFx: [],
     trimOps: [],
+    textProps: null,
     ratio: ratio,
     target: 'selected'
   };
-
   let prompt = rawPrompt.toLowerCase().trim();
   prompt = prompt.replace(/^\s*ratio\s+\d+\s*:\s*\d+\s*$/im, '');
 
@@ -1091,9 +1217,10 @@ function parseSegment(seg, state) {
     state.audioFx.push(seg);
     return;
   }
-
-  let textMatch = seg.match(/text\s+["']([^"']+)["'](.*)/i);
-  if (!textMatch) textMatch = seg.match(/["']([^"']+)["'](.*)/);
+  // 🆕 Updated: allow apostrophes inside quoted text
+    // 🆕 Apostrophe-safe (DON'T, IT'S, CAN'T)
+  let textMatch = seg.match(/text\s+["']([\s\S]*?)["'](.*)$/i);
+  if (!textMatch) textMatch = seg.match(/["']([\s\S]*?)["'](.*)$/);
   if (textMatch && /text|likho|write/i.test(seg)) {
     const content = textMatch[1];
     const rest = (textMatch[2] || '').trim();
@@ -1188,6 +1315,150 @@ function parseSegment(seg, state) {
       return;
     }
     if (EFFECT_PRESETS.includes(w)) { state.effectPreset = w; return; }
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  //  🆕 STANDALONE TEXT PROPS
+  //  Apply to SELECTED text clip. Sets state.textProps.
+  // ═══════════════════════════════════════════════════════════
+  if (!state.textProps) state.textProps = {};
+  let matched = false;
+  let m2;
+
+  // align left|center|right
+  m2 = seg.match(/^align(?:ment)?\s+(left|center|right)$/i);
+  if (m2) {
+    state.textProps.alignment = m2[1].toLowerCase();
+    matched = true;
+  }
+
+  // anchor <preset>
+  if (!matched) {
+    m2 = seg.match(/^anchor\s+(top-left|top-center|top-right|center-left|center-right|bottom-left|bottom-center|bottom-right|top|bottom|center|middle|left|right)$/i);
+    if (m2) {
+      const a = m2[1].toLowerCase();
+      if (a === 'top-left')          { state.textProps.anchorX = 0;   state.textProps.anchorY = 0; }
+      else if (a === 'top-center' || a === 'top')    { state.textProps.anchorX = 50;  state.textProps.anchorY = 0; }
+      else if (a === 'top-right')    { state.textProps.anchorX = 100; state.textProps.anchorY = 0; }
+      else if (a === 'center-left' || a === 'left')  { state.textProps.anchorX = 0;   state.textProps.anchorY = 50; }
+      else if (a === 'center' || a === 'middle')     { state.textProps.anchorX = 50;  state.textProps.anchorY = 50; }
+      else if (a === 'center-right' || a === 'right') { state.textProps.anchorX = 100; state.textProps.anchorY = 50; }
+      else if (a === 'bottom-left')  { state.textProps.anchorX = 0;   state.textProps.anchorY = 100; }
+      else if (a === 'bottom-center' || a === 'bottom') { state.textProps.anchorX = 50; state.textProps.anchorY = 100; }
+      else if (a === 'bottom-right') { state.textProps.anchorX = 100; state.textProps.anchorY = 100; }
+      matched = true;
+    }
+  }
+
+  // anchor X Y
+  if (!matched) {
+    m2 = seg.match(/^anchor\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)$/i);
+    if (m2) {
+      state.textProps.anchorX = parseFloat(m2[1]);
+      state.textProps.anchorY = parseFloat(m2[2]);
+      matched = true;
+    }
+  }
+
+  // anchorX N
+  if (!matched) {
+    m2 = seg.match(/^anchor\s*x\s+(-?\d+(?:\.\d+)?)$/i);
+    if (m2) { state.textProps.anchorX = parseFloat(m2[1]); matched = true; }
+  }
+
+  // anchorY N
+  if (!matched) {
+    m2 = seg.match(/^anchor\s*y\s+(-?\d+(?:\.\d+)?)$/i);
+    if (m2) { state.textProps.anchorY = parseFloat(m2[1]); matched = true; }
+  }
+
+  // positionX N
+  if (!matched) {
+    m2 = seg.match(/^position\s*x\s+(-?\d+(?:\.\d+)?)$/i);
+    if (m2) { state.textProps.positionX = parseFloat(m2[1]); matched = true; }
+  }
+
+  // positionY N
+  if (!matched) {
+    m2 = seg.match(/^position\s*y\s+(-?\d+(?:\.\d+)?)$/i);
+    if (m2) { state.textProps.positionY = parseFloat(m2[1]); matched = true; }
+  }
+
+  // position X Y  (standalone for text selection)
+  if (!matched) {
+    m2 = seg.match(/^position\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)$/i);
+    if (m2) {
+      state.textProps.positionX = parseFloat(m2[1]);
+      state.textProps.positionY = parseFloat(m2[2]);
+      matched = true;
+    }
+  }
+
+  // position top|bottom|center|left|right  (standalone)
+  if (!matched) {
+    m2 = seg.match(/^position\s+(top|bottom|center|middle|left|right)$/i);
+    if (m2) {
+      const p = m2[1].toLowerCase();
+      if (p === 'top') state.textProps.positionY = 20;
+      else if (p === 'bottom') state.textProps.positionY = 80;
+      else if (p === 'center' || p === 'middle') { state.textProps.positionX = 50; state.textProps.positionY = 50; }
+      else if (p === 'left') state.textProps.positionX = 20;
+      else if (p === 'right') state.textProps.positionX = 80;
+      matched = true;
+    }
+  }
+
+  // font X  (standalone)
+  if (!matched) {
+    m2 = seg.match(/^font\s+([a-z][a-z0-9 _-]+)$/i);
+    if (m2) {
+      const requested = m2[1].trim();
+      const resolved = resolveFontFamily(requested);
+      state.textProps.fontFamily = resolved;
+      loadGoogleFont(resolved);
+      matched = true;
+    }
+  }
+
+  // size N  (standalone)
+  if (!matched) {
+    m2 = seg.match(/^(?:font\s*)?size\s+(\d+)$/i);
+    if (m2) { state.textProps.fontSize = parseInt(m2[1], 10); matched = true; }
+  }
+
+  // color #hex  (standalone)
+  if (!matched) {
+    m2 = seg.match(/^colou?r\s+(#[0-9a-fA-F]{3,8})$/i);
+    if (m2) { state.textProps.color = m2[1]; matched = true; }
+  }
+
+  // color name  (standalone)
+  if (!matched) {
+    m2 = seg.match(/^colou?r\s+([a-z]+)$/i);
+    if (m2) { state.textProps.color = colorNameToHex(m2[1]); matched = true; }
+  }
+
+  // shadow  (standalone)
+  if (!matched && /^shadow$/i.test(seg)) {
+    state.textProps.shadowEnabled = true;
+    matched = true;
+  }
+
+  // bold / italic  (standalone)
+  if (!matched && /^bold$/i.test(seg)) {
+    state.textProps.fontWeight = 'bold';
+    matched = true;
+  }
+  if (!matched && /^italic$/i.test(seg)) {
+    state.textProps.fontStyle = 'italic';
+    matched = true;
+  }
+
+  if (matched) return;
+
+  // If nothing matched, clear textProps (was empty object)
+  if (Object.keys(state.textProps).length === 0) {
+    state.textProps = null;
   }
 
   _addUnknown(seg);
@@ -1294,9 +1565,49 @@ export function executePrompt(state) {
     });
   }
 
-  let targetClip = getSelectedClip(appState);
+    let targetClip = getSelectedClip(appState);
   if (!targetClip && _lastCreatedClips.length > 0) {
     targetClip = _lastCreatedClips[_lastCreatedClips.length - 1];
+  }
+
+  // 🆕 FALLBACK: agar koi clip selected nahi, to last text clip dhundo
+  if (!targetClip && state.textProps) {
+    const vTracks = appState.timeline.visual || [];
+    let lastText = null;
+    for (let t = 0; t < vTracks.length; t++) {
+      const track = vTracks[t];
+      if (!Array.isArray(track)) continue;
+      for (let c = 0; c < track.length; c++) {
+        const clip = track[c];
+        if (clip && clip.__textId && clip.textState) lastText = clip;
+      }
+    }
+    if (lastText) targetClip = lastText;
+  }
+
+  // 🆕 APPLY STANDALONE TEXT PROPS
+  if (state.textProps && targetClip && targetClip.__textId && targetClip.textState) {
+    const tp = state.textProps;
+    const ts = targetClip.textState;
+
+    if (tp.alignment   != null) ts.alignment   = tp.alignment;
+    if (tp.fontFamily  != null) ts.fontFamily  = tp.fontFamily;
+    if (tp.fontSize    != null) ts.fontSize    = tp.fontSize;
+    if (tp.fontWeight  != null) ts.fontWeight  = tp.fontWeight;
+    if (tp.fontStyle   != null) ts.fontStyle   = tp.fontStyle;
+    if (tp.color       != null) ts.color       = tp.color;
+    if (tp.shadowEnabled != null) ts.shadowEnabled = tp.shadowEnabled;
+    if (tp.positionX   != null) ts.positionX   = tp.positionX;
+    if (tp.positionY   != null) ts.positionY   = tp.positionY;
+    if (tp.anchorX     != null) ts.anchorX     = tp.anchorX;
+    if (tp.anchorY     != null) ts.anchorY     = tp.anchorY;
+
+    results.push('text-props');
+    document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
+    document.dispatchEvent(new CustomEvent('transform:changed'));
+    document.dispatchEvent(new CustomEvent('keyframe:changed'));
+  } else if (state.textProps) {
+    warnings.push('Text properties need a text clip — pehle text banao ya select karo');
   }
 
   const tfKeys = Object.keys(state.transforms);

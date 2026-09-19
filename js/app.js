@@ -28,6 +28,27 @@ import { initRatioControl } from './workspace/ratioControl.js';
 import { initKeyframeUI, clearKeyframeSelection, getSelectedKeyframe } from './workspace/keyframeUI.js';
 import { initMagnetTool } from './workspace/magnetTool.js';
 import { initTransitionMarkers } from './workspace/transitionMarkers.js';
+import { initPreviewDrag } from './workspace/previewDrag.js';
+  // ─── Multi-select (forward/backward range selection) ───────
+  initMultiSelect();
+
+  const fwdBtn = document.querySelector('#select-forward-btn');
+  if (fwdBtn) {
+    fwdBtn.addEventListener('click', function (e) {
+      e.preventDefault();
+      selectForward();
+    });
+  }
+
+  const bwdBtn = document.querySelector('#select-backward-btn');
+  if (bwdBtn) {
+    bwdBtn.addEventListener('click', function (e) {
+      e.preventDefault();
+      selectBackward();
+    });
+  }
+import { initMultiSelect, selectForward, selectBackward } from './workspace/multiSelect.js';
+import { showError } from './workspace/errorNotifier.js';
 import * as keyframeStore from './workspace/keyframeStore.js';
 import * as featureModules from './features/index.js';
 import { initPromptUI } from './codebase/promptUI.js';
@@ -335,6 +356,8 @@ async function bootstrap() {
 
   // ─── Transition markers ────────────────────────────────────
   initTransitionMarkers();
+    // ─── Preview drag (double-click to move text/sticker) ──────
+  initPreviewDrag();
 
   // ─── Text renderer (multi-layer with keyframe sampling) ────
   initTextRenderer();
@@ -367,6 +390,27 @@ async function bootstrap() {
   // ─── Start on dashboard ────────────────────────────────────
   showPage('dashboard');
 }
+// ═══════════════════════════════════════════════════════════════
+//  🆕 GLOBAL ERROR HANDLERS — copyable notifications
+// ═══════════════════════════════════════════════════════════════
+window.addEventListener('error', function (e) {
+  // Ignore non-critical errors
+  if (!e || !e.error) return;
+  const msg = e.error.message || e.message || 'Unknown error';
+  const stack = e.error.stack || (e.filename + ':' + e.lineno + ':' + e.colno);
+  showError('Runtime Error', msg, stack);
+});
+
+window.addEventListener('unhandledrejection', function (e) {
+  if (!e || !e.reason) return;
+  const reason = e.reason;
+  const msg = (reason && reason.message) ? reason.message : String(reason);
+  const stack = (reason && reason.stack) ? reason.stack : '(no stack)';
+  showError('Async Error', msg, stack);
+});
+
+// Expose globally for other modules to use
+window.__showError = showError;
 
 bootstrap();
 export { appState, showPage, createProject };

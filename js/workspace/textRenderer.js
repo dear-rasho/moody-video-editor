@@ -1,13 +1,20 @@
 // ═══════════════════════════════════════════════════════════════
 //  js/workspace/textRenderer.js
-//  Text overlay renderer with per-segment styling + animation.
-//  🆕 Segments inline-block (side-by-side), element identity
-//     preserved so animations work on ALL words.
+//  Text renderer with:
+//   - Canvas-relative font sizing (auto-scales with ratio)
+//   - Anchor points (anchorX / anchorY)
+//   - Independent positionX / positionY
+//   - Bounds clamping (text never disappears)
+//   - Per-segment animation
 // ═══════════════════════════════════════════════════════════════
 
 import { applyAnimation } from '../features/animations.js';
 import { hasAnyKeyframes, sample } from './keyframeStore.js';
 import { loadGoogleFont } from '../codebase/fontLibrary.js';
+
+// Font size reference — a font-size of 36 on a 400px canvas = 36px.
+// On 1080px canvas = ~97px. Consistent across all ratios.
+const REFERENCE_DIM = 400;
 
 const overlays = new Map();
 let wrapEl = null;
@@ -23,10 +30,8 @@ function injectStyles() {
       pointer-events: none;
       user-select: none;
       -webkit-user-select: none;
-      transform-origin: 50% 50%;
-      max-width: 95%;
-      overflow-wrap: break-word;
-      word-wrap: break-word;
+      transform-origin: 0 0;
+      overflow: visible;
       z-index: 20;
     }
     .tx-mid {
@@ -64,7 +69,18 @@ function ensureWrap() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  SYNC SEGMENT ELEMENTS
+//  CANVAS SCALE — reference to smaller dimension
+// ═══════════════════════════════════════════════════════════════
+function getCanvasScale() {
+  if (!wrapEl) return 1;
+  const w = wrapEl.clientWidth || REFERENCE_DIM;
+  const h = wrapEl.clientHeight || REFERENCE_DIM;
+  const minDim = Math.min(w, h);
+  return minDim / REFERENCE_DIM;
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  SYNC / APPLY SEGMENT ELEMENTS
 // ═══════════════════════════════════════════════════════════════
 function syncSegmentElements(inner, segments) {
   const existing = inner.querySelectorAll('.tx-seg-line');
@@ -91,10 +107,7 @@ function syncSegmentElements(inner, segments) {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  APPLY SEGMENT STYLES
-// ═══════════════════════════════════════════════════════════════
-function applySegmentStyles(inner, segments) {
+function applySegmentStyles(inner, segments, cScale) {
   const lines = inner.querySelectorAll('.tx-seg-line');
 
   for (let i = 0; i < lines.length; i++) {
@@ -103,7 +116,7 @@ function applySegmentStyles(inner, segments) {
     if (!seg) continue;
 
     lineEl.style.fontFamily = '"' + (seg.fontFamily || 'Arial') + '", sans-serif';
-    lineEl.style.fontSize = (seg.fontSize || 36) + 'px';
+    lineEl.style.fontSize = ((seg.fontSize || 36) * cScale) + 'px';
     lineEl.style.fontWeight = seg.fontWeight || 'normal';
     lineEl.style.fontStyle = seg.fontStyle || 'normal';
 
@@ -130,7 +143,8 @@ function applySegmentStyles(inner, segments) {
     }
 
     if (seg.strokeWidth > 0) {
-      lineEl.style.webkitTextStroke = seg.strokeWidth + 'px ' + (seg.strokeColor || '#000');
+      lineEl.style.webkitTextStroke = (seg.strokeWidth * cScale) + 'px ' +
+        (seg.strokeColor || '#000');
     } else {
       lineEl.style.webkitTextStroke = '';
     }
@@ -164,7 +178,7 @@ function applySegmentStyles(inner, segments) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  APPLY TEXT STYLE
+//  APPLY TEXT STYLE (with canvas-relative sizing + anchor)
 // ═══════════════════════════════════════════════════════════════
 export function applyTextStyle(el, ts, skipContent) {
   if (!el || !ts) return;
@@ -178,14 +192,16 @@ export function applyTextStyle(el, ts, skipContent) {
     ts.__segments.forEach(s => { if (s.fontFamily) loadGoogleFont(s.fontFamily); });
   }
 
+  const cScale = getCanvasScale();
+
   if (!skipContent) {
     if (ts.__segments && ts.__segments.length > 0) {
       syncSegmentElements(inner, ts.__segments);
-      applySegmentStyles(inner, ts.__segments);
+      applySegmentStyles(inner, ts.__segments, cScale);
     } else {
       inner.textContent = ts.content || '';
       inner.style.fontFamily = '"' + (ts.fontFamily || 'Arial') + '", sans-serif';
-      inner.style.fontSize = (ts.fontSize || 36) + 'px';
+      inner.style.fontSize = ((ts.fontSize || 36) * cScale) + 'px';
       inner.style.fontWeight = ts.fontWeight || 'normal';
       inner.style.fontStyle = ts.fontStyle || 'normal';
       inner.style.textAlign = ts.alignment || 'center';
@@ -208,36 +224,145 @@ export function applyTextStyle(el, ts, skipContent) {
       }
 
       inner.style.webkitTextStroke = (ts.strokeWidth || 0) > 0
-        ? ts.strokeWidth + 'px ' + (ts.strokeColor || '#000000')
+        ? (ts.strokeWidth * cScale) + 'px ' + (ts.strokeColor || '#000000')
         : '';
 
       inner.style.textShadow = ts.shadowEnabled
-        ? (ts.shadowOffsetX || 0) + 'px ' + (ts.shadowOffsetY || 0) + 'px ' +
-          (ts.shadowBlur || 0) + 'px ' + (ts.shadowColor || '#000000')
+        ? (ts.shadowOffsetX || 0) * cScale + 'px ' +
+          (ts.shadowOffsetY || 0) * cScale + 'px ' +
+          (ts.shadowBlur || 0) * cScale + 'px ' +
+          (ts.shadowColor || '#000000')
         : '';
     }
   }
 
-  outer.style.left = (ts.positionX != null ? ts.positionX : 50) + '%';
-  outer.style.top  = (ts.positionY != null ? ts.positionY : 50) + '%';
+  // 🆕 POSITION + ANCHOR
+  const posX = ts.positionX != null ? ts.positionX : 50;
+  const posY = ts.positionY != null ? ts.positionY : 50;
+  const anchX = ts.anchorX != null ? ts.anchorX : 50;
+  const anchY = ts.anchorY != null ? ts.anchorY : 50;
 
-  let tx = '-50%';
-  let originX = '50%';
-  if (ts.alignment === 'left')   { tx = '0%';    originX = '0%';   }
-  if (ts.alignment === 'right')  { tx = '-100%'; originX = '100%'; }
+  outer.style.left = posX + '%';
+  outer.style.top = posY + '%';
 
-  outer.style.transformOrigin = originX + ' 50%';
-  outer.style.transform = 'translate(' + tx + ', -50%)';
+  // Anchor: 0=left/top edge, 50=center, 100=right/bottom edge
+  outer.style.transform =
+    'translate(' + (-anchX) + '%, ' + (-anchY) + '%)';
+
   outer.style.opacity = String(Math.max(0, Math.min(100, ts.opacity != null ? ts.opacity : 100)) / 100);
 
-  const scalePct = ts.scale != null ? ts.scale : 100;
+  // User scale + rotation on mid
+  const userScale = (ts.scale != null ? ts.scale : 100) / 100;
   const rot = ts.rotation || 0;
-  mid.style.transform = 'scale(' + (scalePct / 100) + ') rotate(' + rot + 'deg)';
+  mid.style.transform = 'scale(' + userScale + ') rotate(' + rot + 'deg)';
   mid.style.transformOrigin = '50% 50%';
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  HIERARCHY
+//  AUTO-FIT + CLAMP — text never disappears
+// ═══════════════════════════════════════════════════════════════
+function autoFitTextToCanvas(entry, ts) {
+  if (!wrapEl || !entry || !entry.mid || !entry.inner) return;
+
+  const canvasW = wrapEl.clientWidth;
+  const canvasH = wrapEl.clientHeight;
+  if (!canvasW || !canvasH) return;
+
+  const mid = entry.mid;
+  const inner = entry.inner;
+  const outer = entry.el;
+  const rot = ts.rotation || 0;
+  const userScale = (ts.scale != null ? ts.scale : 100) / 100;
+
+  const segCount = ts.__segments ? ts.__segments.length : 0;
+  const contentLen = (ts.content || '').length;
+  const sig = segCount + ':' + contentLen + ':' +
+              canvasW + 'x' + canvasH + ':' +
+              (ts.fontSize || 0) + ':' + rot + ':' + userScale;
+
+  let fitRatio = (typeof entry._fitRatio === 'number') ? entry._fitRatio : 1;
+
+  if (entry._fitSig !== sig) {
+    entry._fitSig = sig;
+
+    const prevMidTransform = mid.style.transform;
+    const prevInnerAnim = inner.style.animation;
+    const prevInnerPlayState = inner.style.animationPlayState;
+    const prevInnerTransform = inner.style.transform;
+
+    mid.style.transform = rot ? ('rotate(' + rot + 'deg)') : 'none';
+    inner.style.animation = 'none';
+    inner.style.animationPlayState = '';
+    inner.style.transform = 'none';
+    void inner.offsetWidth;
+
+    const rect = inner.getBoundingClientRect();
+    const naturalW = rect.width;
+    const naturalH = rect.height;
+
+    mid.style.transform = prevMidTransform;
+    inner.style.animation = prevInnerAnim;
+    inner.style.animationPlayState = prevInnerPlayState;
+    inner.style.transform = prevInnerTransform;
+
+    if (naturalW > 0 && naturalH > 0) {
+      const PADDING = 0.92;
+      const maxW = canvasW * PADDING;
+      const maxH = canvasH * PADDING;
+      const scaledW = naturalW * userScale;
+      const scaledH = naturalH * userScale;
+
+      let ratio = 1;
+      if (scaledW > maxW) ratio = Math.min(ratio, maxW / scaledW);
+      if (scaledH > maxH) ratio = Math.min(ratio, maxH / scaledH);
+
+      fitRatio = ratio;
+      entry._fitRatio = fitRatio;
+    }
+  }
+
+  const finalScale = userScale * fitRatio;
+  mid.style.transform = 'scale(' + finalScale + ') rotate(' + rot + 'deg)';
+  mid.style.transformOrigin = '50% 50%';
+
+  // 🆕 CLAMP — keep text fully inside canvas
+  void outer.offsetWidth;
+  const rect = outer.getBoundingClientRect();
+  const wrapRect = wrapEl.getBoundingClientRect();
+  const elW = rect.width;
+  const elH = rect.height;
+  if (elW <= 0 || elH <= 0) return;
+
+  // Current desired center (in canvas px) — using anchor
+  const posX = ts.positionX != null ? ts.positionX : 50;
+  const posY = ts.positionY != null ? ts.positionY : 50;
+  const anchX = ts.anchorX != null ? ts.anchorX : 50;
+  const anchY = ts.anchorY != null ? ts.anchorY : 50;
+
+  // Element's top-left in canvas px
+  const leftPx = canvasW * (posX / 100) - elW * (anchX / 100);
+  const topPx  = canvasH * (posY / 100) - elH * (anchY / 100);
+
+  // Adjust so full element stays inside
+  let adjLeft = leftPx;
+  let adjTop  = topPx;
+  const MARGIN = 2;
+
+  if (adjLeft < MARGIN) adjLeft = MARGIN;
+  if (adjTop  < MARGIN) adjTop  = MARGIN;
+  if (adjLeft + elW > canvasW - MARGIN) adjLeft = canvasW - MARGIN - elW;
+  if (adjTop  + elH > canvasH - MARGIN) adjTop  = canvasH - MARGIN - elH;
+
+  // Convert back to position % with same anchor
+  const newPosX = ((adjLeft + elW * (anchX / 100)) / canvasW) * 100;
+  const newPosY = ((adjTop  + elH * (anchY / 100)) / canvasH) * 100;
+
+  outer.style.left = newPosX + '%';
+  outer.style.top  = newPosY + '%';
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  HIERARCHY HELPERS
 // ═══════════════════════════════════════════════════════════════
 function getTopDisplayTrackIndexAt(time) {
   const appState = window.__appState;
@@ -333,7 +458,6 @@ function applySegmentAnimations(entry, ts, clipStart, animDur, time, isInside) {
 
     const segAnim = seg.animation || 'none';
     const segKey = k + ':' + segAnim;
-
     const prev = entry.segAnimState[k];
     const isNewElement = !prev || prev.el !== lineEl;
     const prevKey = prev ? prev.key : '';
@@ -381,6 +505,7 @@ export function renderAtTime(time) {
   injectStyles();
   const wrap = ensureWrap();
   if (!wrap) return;
+  wrapEl = wrap;
 
   const topDisplayTrack = getTopDisplayTrackIndexAt(time);
   const active = getActiveTextClipsAt(time);
@@ -411,7 +536,9 @@ export function renderAtTime(time) {
         el: outer, mid, inner,
         lastAnimKey: null,
         lastPlayheadTime: -9999,
-        segAnimState: {}
+        segAnimState: {},
+        _fitSig: null,
+        _fitRatio: 1
       };
       overlays.set(id, entry);
     }
@@ -467,6 +594,7 @@ export function renderAtTime(time) {
     entry.lastPlayheadTime = time;
 
     applyTextStyle(entry.el, ts, jsAnimActive);
+    autoFitTextToCanvas(entry, ts);
     applySegmentAnimations(entry, ts, clipStart, animDur, time, isInside);
 
     entry.el.style.zIndex = String(40 + trackIndex);
@@ -484,6 +612,8 @@ export function forceRerender() {
   overlays.forEach(function (entry) {
     entry.lastAnimKey = null;
     entry.segAnimState = {};
+    entry._fitSig = null;
+    entry._fitRatio = 1;
   });
   const eng = window.__playbackEngine;
   renderAtTime(eng ? eng.getTime() : 0);
@@ -511,6 +641,7 @@ export function initTextRenderer() {
   document.addEventListener('effects:refresh', function () { forceRerender(); });
   document.addEventListener('keyframe:changed', function () { forceRerender(); });
   document.addEventListener('transform:changed', function () { forceRerender(); });
+  document.addEventListener('ratio:changed', function () { forceRerender(); });
 
   const eng = window.__playbackEngine;
   renderAtTime(eng ? eng.getTime() : 0);
