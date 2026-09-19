@@ -1,62 +1,13 @@
 // ═══════════════════════════════════════════════════════════════
-//  🆕 IMAGE CACHE for export
+//  js/workspace/textRenderer.js
+//  Text overlay renderer with per-segment styling + animation.
+//  🆕 Segments inline-block (side-by-side), element identity
+//     preserved so animations work on ALL words.
 // ═══════════════════════════════════════════════════════════════
-const _imageCache = new Map();
 
-export function preloadImage(url) {
-  return new Promise(resolve => {
-    if (!url) { resolve(null); return; }
-    const cached = _imageCache.get(url);
-    if (cached && cached.complete && cached.naturalWidth > 0) {
-      resolve(cached);
-      return;
-    }
-    const img = new Image();
-    img.onload = () => {
-      _imageCache.set(url, img);
-      resolve(img);
-    };
-    img.onerror = () => {
-      console.warn('[export] image load failed:', String(url).slice(0, 60));
-      resolve(null);
-    };
-    _imageCache.set(url, img);
-    img.src = url;
-  });
-}
-
-export async function preloadAllImages() {
-  const appState = window.__appState;
-  if (!appState) return;
-  const urls = new Set();
-  const allTracks = []
-    .concat(appState.timeline.visual || [])
-    .concat(appState.timeline.audio || []);
-  for (let i = 0; i < allTracks.length; i++) {
-    const track = allTracks[i];
-    if (!Array.isArray(track)) continue;
-    for (let j = 0; j < track.length; j++) {
-      const clip = track[j];
-      if (clip && clip.type && clip.type.indexOf('image/') === 0 && clip.url) {
-        urls.add(clip.url);
-      }
-    }
-  }
-  if (urls.size === 0) return;
-  console.log('[export] preloading', urls.size, 'image(s)');
-  await Promise.all([...urls].map(u => preloadImage(u)));
-  console.log('[export] preload done');
-}
-
-function getImageSync(url) {
-  const img = _imageCache.get(url);
-  if (!img) return null;
-  if (!img.complete) return null;
-  if (img.naturalWidth === 0) return null;
-  return img;
-}
 import { applyAnimation } from '../features/animations.js';
 import { hasAnyKeyframes, sample } from './keyframeStore.js';
+import { loadGoogleFont } from '../codebase/fontLibrary.js';
 
 const overlays = new Map();
 let wrapEl = null;
@@ -73,6 +24,10 @@ function injectStyles() {
       user-select: none;
       -webkit-user-select: none;
       transform-origin: 50% 50%;
+      max-width: 95%;
+      overflow-wrap: break-word;
+      word-wrap: break-word;
+      z-index: 20;
     }
     .tx-mid {
       transform-origin: 50% 50%;
@@ -82,7 +37,21 @@ function injectStyles() {
     }
     .tx-inner {
       display: inline-block;
+      white-space: pre-wrap;
+    }
+    .tx-seg-line {
+      display: inline-block;
       white-space: pre;
+      line-height: 1.05;
+      vertical-align: baseline;
+      transform-origin: center center;
+      backface-visibility: hidden;
+      -webkit-backface-visibility: hidden;
+      margin: 0 0.08em;
+    }
+    .tx-seg-line.tx-seg-newline {
+      display: block;
+      margin: 0;
     }
   `;
   document.head.appendChild(s);
@@ -95,51 +64,160 @@ function ensureWrap() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  STYLE APPLIER — 3 layers
+//  SYNC SEGMENT ELEMENTS
 // ═══════════════════════════════════════════════════════════════
-export function applyTextStyle(el, ts) {
+function syncSegmentElements(inner, segments) {
+  const existing = inner.querySelectorAll('.tx-seg-line');
+  let needsRebuild = (existing.length !== segments.length);
+
+  if (!needsRebuild) {
+    for (let i = 0; i < segments.length; i++) {
+      if (!existing[i] || existing[i].textContent !== segments[i].text) {
+        needsRebuild = true;
+        break;
+      }
+    }
+  }
+
+  if (!needsRebuild) return;
+
+  inner.textContent = '';
+  for (let i = 0; i < segments.length; i++) {
+    const line = document.createElement('div');
+    line.className = 'tx-seg-line';
+    line.dataset.segIndex = String(i);
+    line.textContent = segments[i].text;
+    inner.appendChild(line);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  APPLY SEGMENT STYLES
+// ═══════════════════════════════════════════════════════════════
+function applySegmentStyles(inner, segments) {
+  const lines = inner.querySelectorAll('.tx-seg-line');
+
+  for (let i = 0; i < lines.length; i++) {
+    const lineEl = lines[i];
+    const seg = segments[i];
+    if (!seg) continue;
+
+    lineEl.style.fontFamily = '"' + (seg.fontFamily || 'Arial') + '", sans-serif';
+    lineEl.style.fontSize = (seg.fontSize || 36) + 'px';
+    lineEl.style.fontWeight = seg.fontWeight || 'normal';
+    lineEl.style.fontStyle = seg.fontStyle || 'normal';
+
+    if (seg.gradientEnabled) {
+      const ga = seg.gradientAngle || 90;
+      lineEl.style.backgroundImage = 'linear-gradient(' + ga + 'deg, ' +
+        (seg.gradientColor1 || '#ff0066') + ', ' + (seg.gradientColor2 || '#0066ff') + ')';
+      lineEl.style.webkitBackgroundClip = 'text';
+      lineEl.style.backgroundClip = 'text';
+      lineEl.style.color = 'transparent';
+      lineEl.style.webkitTextFillColor = 'transparent';
+    } else {
+      lineEl.style.backgroundImage = 'none';
+      lineEl.style.backgroundClip = '';
+      lineEl.style.webkitBackgroundClip = '';
+      lineEl.style.color = seg.color || '#ffffff';
+      lineEl.style.webkitTextFillColor = seg.color || '#ffffff';
+    }
+
+    if (seg.shadowEnabled) {
+      lineEl.style.textShadow = '2px 2px 8px rgba(0,0,0,0.85)';
+    } else {
+      lineEl.style.textShadow = '';
+    }
+
+    if (seg.strokeWidth > 0) {
+      lineEl.style.webkitTextStroke = seg.strokeWidth + 'px ' + (seg.strokeColor || '#000');
+    } else {
+      lineEl.style.webkitTextStroke = '';
+    }
+
+    const rot = seg.rotation || 0;
+    const sc = (seg.scale != null ? seg.scale : 100) / 100;
+    if (rot || sc !== 1) {
+      lineEl.style.transform = 'rotate(' + rot + 'deg) scale(' + sc + ')';
+    } else {
+      lineEl.style.transform = '';
+    }
+
+    if (seg.opacity != null && seg.opacity !== 100) {
+      lineEl.style.opacity = String(seg.opacity / 100);
+    } else {
+      lineEl.style.opacity = '';
+    }
+
+    if (seg.animation && seg.animation !== 'none') {
+      lineEl.dataset.anim = seg.animation;
+    } else {
+      delete lineEl.dataset.anim;
+    }
+
+    if (seg.newline) {
+      lineEl.classList.add('tx-seg-newline');
+    } else {
+      lineEl.classList.remove('tx-seg-newline');
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  APPLY TEXT STYLE
+// ═══════════════════════════════════════════════════════════════
+export function applyTextStyle(el, ts, skipContent) {
   if (!el || !ts) return;
   const outer = el;
   const mid = el.querySelector('.tx-mid');
   const inner = el.querySelector('.tx-inner');
   if (!mid || !inner) return;
 
-  // ─── INNER: text content + typography ───────────
-  inner.textContent = ts.content || '';
-  inner.style.fontFamily = '"' + (ts.fontFamily || 'Arial') + '", sans-serif';
-  inner.style.fontSize = (ts.fontSize || 36) + 'px';
-  inner.style.fontWeight = ts.fontWeight || 'normal';
-  inner.style.fontStyle = ts.fontStyle || 'normal';
-  inner.style.textAlign = ts.alignment || 'center';
-  inner.style.whiteSpace = 'pre';
-  inner.style.lineHeight = '1.15';
-
-  // Text color / gradient
-  if (ts.gradientEnabled) {
-    inner.style.background = 'linear-gradient(' + (ts.gradientAngle || 90) + 'deg, ' +
-      (ts.gradientColor1 || '#ff0066') + ', ' + (ts.gradientColor2 || '#0066ff') + ')';
-    inner.style.webkitBackgroundClip = 'text';
-    inner.style.backgroundClip = 'text';
-    inner.style.color = 'transparent';
-    inner.style.webkitTextFillColor = 'transparent';
-  } else {
-    inner.style.background = 'none';
-    inner.style.webkitBackgroundClip = '';
-    inner.style.backgroundClip = '';
-    inner.style.color = ts.color || '#ffffff';
-    inner.style.webkitTextFillColor = '';
+  if (ts.fontFamily) loadGoogleFont(ts.fontFamily);
+  if (ts.__segments) {
+    ts.__segments.forEach(s => { if (s.fontFamily) loadGoogleFont(s.fontFamily); });
   }
 
-  inner.style.webkitTextStroke = (ts.strokeWidth || 0) > 0
-    ? ts.strokeWidth + 'px ' + (ts.strokeColor || '#000000')
-    : '';
+  if (!skipContent) {
+    if (ts.__segments && ts.__segments.length > 0) {
+      syncSegmentElements(inner, ts.__segments);
+      applySegmentStyles(inner, ts.__segments);
+    } else {
+      inner.textContent = ts.content || '';
+      inner.style.fontFamily = '"' + (ts.fontFamily || 'Arial') + '", sans-serif';
+      inner.style.fontSize = (ts.fontSize || 36) + 'px';
+      inner.style.fontWeight = ts.fontWeight || 'normal';
+      inner.style.fontStyle = ts.fontStyle || 'normal';
+      inner.style.textAlign = ts.alignment || 'center';
+      inner.style.whiteSpace = 'pre';
+      inner.style.lineHeight = '1.15';
 
-  inner.style.textShadow = ts.shadowEnabled
-    ? (ts.shadowOffsetX || 0) + 'px ' + (ts.shadowOffsetY || 0) + 'px ' +
-      (ts.shadowBlur || 0) + 'px ' + (ts.shadowColor || '#000000')
-    : '';
+      if (ts.gradientEnabled) {
+        inner.style.background = 'linear-gradient(' + (ts.gradientAngle || 90) + 'deg, ' +
+          (ts.gradientColor1 || '#ff0066') + ', ' + (ts.gradientColor2 || '#0066ff') + ')';
+        inner.style.webkitBackgroundClip = 'text';
+        inner.style.backgroundClip = 'text';
+        inner.style.color = 'transparent';
+        inner.style.webkitTextFillColor = 'transparent';
+      } else {
+        inner.style.background = 'none';
+        inner.style.webkitBackgroundClip = '';
+        inner.style.backgroundClip = '';
+        inner.style.color = ts.color || '#ffffff';
+        inner.style.webkitTextFillColor = '';
+      }
 
-  // ─── OUTER: position + base centering ───────────
+      inner.style.webkitTextStroke = (ts.strokeWidth || 0) > 0
+        ? ts.strokeWidth + 'px ' + (ts.strokeColor || '#000000')
+        : '';
+
+      inner.style.textShadow = ts.shadowEnabled
+        ? (ts.shadowOffsetX || 0) + 'px ' + (ts.shadowOffsetY || 0) + 'px ' +
+          (ts.shadowBlur || 0) + 'px ' + (ts.shadowColor || '#000000')
+        : '';
+    }
+  }
+
   outer.style.left = (ts.positionX != null ? ts.positionX : 50) + '%';
   outer.style.top  = (ts.positionY != null ? ts.positionY : 50) + '%';
 
@@ -149,13 +227,9 @@ export function applyTextStyle(el, ts) {
   if (ts.alignment === 'right')  { tx = '-100%'; originX = '100%'; }
 
   outer.style.transformOrigin = originX + ' 50%';
-  // 🆕 IMPORTANT — animation is on INNER so outer transform always applies
-  outer.style.transform =
-    'translate(' + tx + ', -50%)';
-
+  outer.style.transform = 'translate(' + tx + ', -50%)';
   outer.style.opacity = String(Math.max(0, Math.min(100, ts.opacity != null ? ts.opacity : 100)) / 100);
 
-  // ─── MID: user scale + rotation ─────────────────
   const scalePct = ts.scale != null ? ts.scale : 100;
   const rot = ts.rotation || 0;
   mid.style.transform = 'scale(' + (scalePct / 100) + ') rotate(' + rot + 'deg)';
@@ -242,6 +316,65 @@ function clearCssAnimation(el) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+//  PER-SEGMENT ANIMATIONS
+// ═══════════════════════════════════════════════════════════════
+function applySegmentAnimations(entry, ts, clipStart, animDur, time, isInside) {
+  if (!ts.__segments || !ts.__segments.length) return;
+  if (!entry.inner) return;
+
+  if (!entry.segAnimState) entry.segAnimState = {};
+
+  const lines = entry.inner.querySelectorAll('.tx-seg-line');
+
+  for (let k = 0; k < lines.length; k++) {
+    const lineEl = lines[k];
+    const seg = ts.__segments[k];
+    if (!seg) continue;
+
+    const segAnim = seg.animation || 'none';
+    const segKey = k + ':' + segAnim;
+
+    const prev = entry.segAnimState[k];
+    const isNewElement = !prev || prev.el !== lineEl;
+    const prevKey = prev ? prev.key : '';
+
+    if (segAnim === 'none') {
+      if (!isNewElement && prevKey && prevKey !== 'none') {
+        lineEl.style.animation = 'none';
+      }
+      entry.segAnimState[k] = { el: lineEl, key: 'none' };
+      continue;
+    }
+
+    if (!isInside) {
+      lineEl.style.animation = 'none';
+      lineEl.style.animationPlayState = '';
+      lineEl.style.animationDelay = '';
+      entry.segAnimState[k] = { el: lineEl, key: '' };
+      continue;
+    }
+
+    const isJsAnim = (segAnim === 'typewriter' || segAnim === 'decoder');
+
+    if (isNewElement || prevKey !== segKey) {
+      try { lineEl.style.animation = 'none'; } catch (_) {}
+      void lineEl.offsetWidth;
+      applyAnimation(lineEl, segAnim, animDur);
+      entry.segAnimState[k] = { el: lineEl, key: segKey };
+    }
+
+    if (!isJsAnim) {
+      const relTime = Math.max(0, Math.min(animDur, time - clipStart));
+      lineEl.style.animationPlayState = 'paused';
+      lineEl.style.animationDelay = '-' + relTime + 's';
+    } else {
+      lineEl.style.animationPlayState = '';
+      lineEl.style.animationDelay = '';
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  MAIN RENDER
 // ═══════════════════════════════════════════════════════════════
 export function renderAtTime(time) {
@@ -274,7 +407,12 @@ export function renderAtTime(time) {
       outer.appendChild(mid);
       wrap.appendChild(outer);
 
-      entry = { el: outer, mid, inner, lastAnimKey: null, lastPlayheadTime: -9999 };
+      entry = {
+        el: outer, mid, inner,
+        lastAnimKey: null,
+        lastPlayheadTime: -9999,
+        segAnimState: {}
+      };
       overlays.set(id, entry);
     }
 
@@ -286,7 +424,6 @@ export function renderAtTime(time) {
     entry.el.style.display = '';
 
     const ts = sampleTextState(clip, time);
-
     const animKey = ts.animation || 'none';
     const animDur = (ts.animationDuration != null) ? ts.animationDuration : 0.6;
     const clipStart = Number.isFinite(clip.startTime) ? clip.startTime : 0;
@@ -306,14 +443,15 @@ export function renderAtTime(time) {
       clearCssAnimation(entry.mid);
     }
 
-    // 🆕 Animation goes on INNER element only
+    const jsAnimActive = isJsAnim && isInside;
+
     if (hasCssAnim && isInside) {
       if (isNew || changed || justEntered) {
         applyAnimation(entry.inner, animKey, animDur);
       }
       const relTime = Math.max(0, Math.min(animDur, time - clipStart));
       seekCssAnimation(entry.inner, animDur, relTime);
-    } else if (isJsAnim && isInside) {
+    } else if (jsAnimActive) {
       if (isNew || changed || justEntered) {
         applyAnimation(entry.inner, animKey, animDur);
       }
@@ -328,8 +466,9 @@ export function renderAtTime(time) {
     entry.lastAnimKey = animKey;
     entry.lastPlayheadTime = time;
 
-    // 🆕 Apply styles AFTER animation state
-    applyTextStyle(entry.el, ts);
+    applyTextStyle(entry.el, ts, jsAnimActive);
+    applySegmentAnimations(entry, ts, clipStart, animDur, time, isInside);
+
     entry.el.style.zIndex = String(40 + trackIndex);
   }
 
@@ -344,6 +483,7 @@ export function renderAtTime(time) {
 export function forceRerender() {
   overlays.forEach(function (entry) {
     entry.lastAnimKey = null;
+    entry.segAnimState = {};
   });
   const eng = window.__playbackEngine;
   renderAtTime(eng ? eng.getTime() : 0);

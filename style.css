@@ -1227,3 +1227,14 @@ h2 {
 .ai-prompt-copy-btn.copied {
   background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
 }
+/* ═══════════════════════════════════════════════════════════════
+   PROMPT FEEDBACK — WARN style
+   ═══════════════════════════════════════════════════════════════ */
+.prompt-feedback.warn {
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid #f59e0b;
+  font-size: 10.5px;
+  max-height: 140px;
+  overflow-y: auto;
+}

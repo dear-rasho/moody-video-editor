@@ -4,17 +4,12 @@
 //
 //  🆕 NEW MAPPING (logarithmic):
 //     Slider UI:  10 → 100   (compact, familiar)
-//     Zoom value: 0.10x → 700x  (0.10x se 700x = 70,000%)
-//
-//  Isse:
-//    • Slider user-friendly rehta hai (10-100 range)
-//    • Poori 700x tak ka zoom milta hai
-//    • Low zoom pe fine control, high zoom pe still reachable
+//     Zoom value: 0.10x → 3000x  (0.10x se 3000x)
 // ================================================================
 
 export const LABEL_WIDTH   = 80;
 export const MIN_ZOOM      = 0.10;    // 10% (absolute min)
-export const MAX_ZOOM      = 700.00;  // 70,000% (absolute max)
+export const MAX_ZOOM      = 3000.00; // 🆕 300,000% (absolute max)
 export const DEFAULT_ZOOM  = 1.00;    // 100% (1x)
 
 // Slider UI range (compact)

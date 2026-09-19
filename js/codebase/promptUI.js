@@ -1,9 +1,6 @@
 // ================================================================
 //  js/codebase/promptUI.js
 //  Prompt panel UI — categorized chips + apply.
-//  Categories: Adjust, Color, Wheel, Filters, Effects, Transform,
-//              Anim, Transition, Chroma, Speed, Trim, Text,
-//              Sticker, Audio
 // ================================================================
 
 import { parsePrompt, executePrompt } from './codebaseEngine.js';
@@ -12,6 +9,41 @@ import { parsePrompt, executePrompt } from './codebaseEngine.js';
 //  CATEGORIES + EXAMPLES
 // ═══════════════════════════════════════════════════════════════
 const CATEGORIES = [
+    {
+    key: 'fonts',
+    label: 'Fonts',
+    icon: '🔤',
+    examples: [
+      'font handwriting size 24',
+      'font music size 48',
+      'font titles size 60',
+      'font cinematic size 32',
+      'font elegant size 40',
+      'font bold size 72',
+      'font playful size 36',
+      'font minimal size 28',
+      'font retro size 44',
+      'font mono size 24',
+      'font educational size 32',
+      'font modern size 40',
+      'font "Dancing Script" size 36',
+      'font "Playfair Display" size 48',
+      'font "Bebas Neue" size 60'
+    ]
+  },
+  {
+    key: 'timeline',
+    label: 'Timeline',
+    icon: '🎬',
+    examples: [
+      '[00:00 - 00:05] "Welcome" animation typewriter, position center',
+      '[00:05 - 00:08] "Second line" animation bounce, position bottom',
+      '[00:08 - 00:15] "Third line" color ramp #00FF87 to #60EFFF',
+      '[00:15 - 00:20] "Fourth" color white, shadow',
+      '[00:00 - 00:03] "Hi" font Impact size 48',
+      '[00:03 - 00:06] "Bye" font handwriting size 20'
+    ]
+  },
   {
     key: 'adjust',
     label: 'Adjust',
@@ -237,7 +269,7 @@ const CATEGORIES = [
 // ═══════════════════════════════════════════════════════════════
 //  STATE
 // ═══════════════════════════════════════════════════════════════
-let currentCat = 'adjust';
+let currentCat = 'timeline';
 let inputEl = null;
 let applyBtn = null;
 let clearBtn = null;
@@ -260,7 +292,6 @@ export function initPromptUI() {
     return;
   }
 
-  // Build category shelf
   if (catShelfEl) {
     catShelfEl.replaceChildren();
     CATEGORIES.forEach(cat => {
@@ -282,13 +313,10 @@ export function initPromptUI() {
 
       btn.addEventListener('click', () => {
         currentCat = cat.key;
-        // Update active state
         catShelfEl.querySelectorAll('.prompt-cat-btn').forEach(b => {
           b.classList.toggle('active', b.dataset.cat === cat.key);
         });
-        // Render chips for this category
         renderChips();
-        // Scroll active category into center
         try {
           btn.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
         } catch (_) {}
@@ -297,7 +325,6 @@ export function initPromptUI() {
       catShelfEl.appendChild(btn);
     });
 
-    // Scroll first active into view on load
     requestAnimationFrame(() => {
       const active = catShelfEl.querySelector('.prompt-cat-btn.active');
       if (active) {
@@ -308,10 +335,8 @@ export function initPromptUI() {
     });
   }
 
-  // Render initial chips
   renderChips();
 
-  // Clear button
   if (clearBtn) {
     clearBtn.addEventListener('click', () => {
       inputEl.value = '';
@@ -320,10 +345,8 @@ export function initPromptUI() {
     });
   }
 
-  // Apply button
   applyBtn.addEventListener('click', onApply);
 
-  // Ctrl+Enter
   inputEl.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
       e.preventDefault();
@@ -333,7 +356,7 @@ export function initPromptUI() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  RENDER CHIPS for selected category
+//  RENDER CHIPS
 // ═══════════════════════════════════════════════════════════════
 function renderChips() {
   if (!examplesEl) return;
@@ -348,19 +371,25 @@ function renderChips() {
     chip.className = 'prompt-chip';
     chip.textContent = text;
     chip.addEventListener('click', () => {
-      const cur = inputEl.value.trim();
-      inputEl.value = cur ? cur + ', ' + text : text;
+      const cur = inputEl.value;
+      // For timestamped examples, add on new line
+      if (text.startsWith('[')) {
+        inputEl.value = cur ? cur.replace(/\s+$/, '') + '\n' + text : text;
+      } else {
+        const trimmed = cur.trim();
+        inputEl.value = trimmed ? trimmed + ', ' + text : text;
+      }
       inputEl.focus();
     });
     examplesEl.appendChild(chip);
   });
 
-  // Reset horizontal scroll to start
   try { examplesEl.scrollLeft = 0; } catch (_) {}
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  APPLY
+//  🆕 APPLY — SAFE VERSION
+//  Handles both timestamped layers AND regular commands
 // ═══════════════════════════════════════════════════════════════
 function onApply() {
   if (!inputEl) return;
@@ -377,59 +406,88 @@ function onApply() {
     return;
   }
 
-  const state = parseResult.state;
-  const hasSomething =
-    Object.keys(state.adjustments).length > 0 ||
-    Object.keys(state.filters).length > 0 ||
-    state.effectPreset ||
-    state.speed != null ||
-    state.transition ||
-    state.texts.length > 0 ||
-    state.stickers.length > 0 ||
-    state.colorWheel ||
-    state.chroma ||
-    Object.keys(state.transforms).length > 0 ||
-    state.keyframes.length > 0 ||
-    state.audioFx.length > 0 ||
-    (state.trimOps && state.trimOps.length > 0);
+  const state = parseResult.state || {};
+
+  // 🆕 Check if this is a timestamped-layer prompt
+  const isTimestamped = !!state.timestampedLayers;
+
+  let hasSomething = false;
+
+  if (isTimestamped) {
+    hasSomething = true;
+  } else {
+    // Safe checks — har field guard karo
+    const hasAdjust = state.adjustments && Object.keys(state.adjustments).length > 0;
+    const hasFilters = state.filters && Object.keys(state.filters).length > 0;
+    const hasEffect = !!state.effectPreset;
+    const hasSpeed = state.speed != null;
+    const hasTransition = !!state.transition;
+    const hasTexts = state.texts && state.texts.length > 0;
+    const hasStickers = state.stickers && state.stickers.length > 0;
+    const hasWheel = !!state.colorWheel;
+    const hasChroma = !!state.chroma;
+    const hasTransforms = state.transforms && Object.keys(state.transforms).length > 0;
+    const hasKeyframes = state.keyframes && state.keyframes.length > 0;
+    const hasAudioFx = state.audioFx && state.audioFx.length > 0;
+    const hasTrim = state.trimOps && state.trimOps.length > 0;
+
+    hasSomething = hasAdjust || hasFilters || hasEffect || hasSpeed ||
+                   hasTransition || hasTexts || hasStickers || hasWheel ||
+                   hasChroma || hasTransforms || hasKeyframes ||
+                   hasAudioFx || hasTrim;
+  }
 
   if (!hasSomething) {
     showFeedback('❌ Kuch samajh nahi aaya — category chips try karein', 'err');
     return;
   }
 
-  const result = executePrompt(state);
+   const result = executePrompt(state);
   if (!result.ok) {
     showFeedback('❌ ' + (result.error || 'Execute fail'), 'err');
     return;
   }
 
-  showFeedback('✅ Applied: ' + result.results.join(' • '), 'ok');
+  const summary = (result.results || []).join(' • ');
+  const unknownList = result.unknown || [];
+
+  if (unknownList.length > 0) {
+    // 🆕 Show what wasn't understood — user can fix
+    const unknownText = unknownList.slice(0, 6).join('  •  ');
+    const more = unknownList.length > 6 ? ' (+' + (unknownList.length - 6) + ' more)' : '';
+    showFeedback(
+      '⚠️ Applied with issues: ' + summary + '\n' +
+      '❓ Could not understand: ' + unknownText + more,
+      'warn',
+      6000
+    );
+  } else {
+    showFeedback('✅ Applied: ' + summary, 'ok');
+  }
+
   inputEl.value = '';
   inputEl.blur();
 }
-
-// ═══════════════════════════════════════════════════════════════
 //  FEEDBACK
-// ═══════════════════════════════════════════════════════════════
-function showFeedback(msg, type) {
+function showFeedback(msg, type, durationMs) {
   clearFeedback();
   feedbackEl = document.createElement('div');
   feedbackEl.className = 'prompt-feedback ' + (type || 'ok');
+  feedbackEl.style.whiteSpace = 'pre-wrap';
   feedbackEl.textContent = msg;
 
-  // Insert before action row
   const actionRow = applyBtn && applyBtn.parentElement;
   if (actionRow && actionRow.parentNode) {
     actionRow.parentNode.insertBefore(feedbackEl, actionRow);
   }
 
+  const ms = durationMs || 3500;
   setTimeout(() => {
     if (feedbackEl) {
       feedbackEl.remove();
       feedbackEl = null;
     }
-  }, 3500);
+  }, ms);
 }
 
 function clearFeedback() {

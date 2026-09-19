@@ -1,13 +1,13 @@
 // ================================================================
 //  js/codebase/codebaseEngine.js
 //  Prompt → commands → layers
-//  🆕 FIX: TEXT/STICKER pehle create hote hain, phir un par
-//     keyframes/transform/speed apply hote hain.
+//  🆕 Timestamped multi-layer + segments + ratio + unknown tracking
 // ================================================================
 
 import { createEffectLayer } from '../workspace/effectLayer.js';
 import { createAudioFxLayer } from '../workspace/audioEffectLayer.js';
 import { placeClipAtTime } from '../layers/layersManager.js';
+import { resolveFontFamily, loadGoogleFont } from './fontLibrary.js';
 
 const ADJUSTMENT_KEYS = [
   'brightness', 'contrast', 'exposure', 'whites', 'blacks',
@@ -70,24 +70,938 @@ const SYNONYMS = {
   hara: 'greens', neela: 'blues', jamuni: 'purples', gulabi: 'magentas'
 };
 
-// 🆕 Track newly-created clips so later commands can find them
-let _lastCreatedClips = [];   // array (text/sticker creates multiple)
+let _lastCreatedClips = [];
+let _unknownParts = [];
+
+function _resetUnknown() { _unknownParts = []; }
+function _addUnknown(part, context) {
+  if (!part) return;
+  const trimmed = String(part).trim();
+  if (!trimmed) return;
+  const entry = context ? (context + ': "' + trimmed + '"') : '"' + trimmed + '"';
+  if (_unknownParts.indexOf(entry) < 0) _unknownParts.push(entry);
+}
 
 // ═══════════════════════════════════════════════════════════════
-//  PARSER
+//  🆕 SPLIT PROPERTY STRING
+//  "font Anton size 180 color black" → 3 parts
+// ═══════════════════════════════════════════════════════════════
+const PROP_KEYWORDS_RE = /\b(font|size|color|colour|position|animation|shadow|align|alignment|scale|rotation|opacity|stroke)\b/g;
+
+function splitPropString(str) {
+  if (!str) return [];
+  const commaParts = str.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+  const result = [];
+
+  for (let ci = 0; ci < commaParts.length; ci++) {
+    const part = commaParts[ci];
+    PROP_KEYWORDS_RE.lastIndex = 0;
+    const indices = [];
+    let m;
+    while ((m = PROP_KEYWORDS_RE.exec(part)) !== null) {
+      indices.push(m.index);
+    }
+    if (indices.length === 0) {
+      result.push(part);
+      continue;
+    }
+    if (indices[0] > 0) indices.unshift(0);
+    for (let i = 0; i < indices.length; i++) {
+      const s = indices[i];
+      const e = (i + 1 < indices.length) ? indices[i + 1] : part.length;
+      const chunk = part.slice(s, e).trim();
+      if (chunk) result.push(chunk);
+    }
+  }
+  return result;
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  RATIO
+// ═══════════════════════════════════════════════════════════════
+function detectRatio(prompt) {
+  const m = prompt.match(/^\s*ratio\s+(\d+\s*:\s*\d+)/im);
+  if (!m) return null;
+  return m[1].replace(/\s+/g, '');
+}
+
+function applyRatio(ratioStr) {
+  if (!ratioStr) return false;
+  const sel = document.querySelector('#ratio-select');
+  if (!sel) return false;
+  const opts = Array.from(sel.options);
+  const opt = opts.find(o => o.value === ratioStr);
+  if (!opt) return false;
+  sel.value = ratioStr;
+  sel.dispatchEvent(new Event('change', { bubbles: true }));
+  return true;
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  TIMESTAMPED LAYERS
+// ═══════════════════════════════════════════════════════════════
+function hasTimestampedLayers(rawPrompt) {
+  if (!rawPrompt || typeof rawPrompt !== 'string') return false;
+  return /\[\s*\d{1,2}:\d{2}(?::\d{2})?\s*[-–—]\s*\d{1,2}:\d{2}(?::\d{2})?\s*\]/.test(rawPrompt);
+}
+
+function parseTimeStr(str) {
+  const parts = String(str).split(':').map(function (n) { return parseInt(n, 10) || 0; });
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  return parts[0] || 0;
+}
+
+function fmtSec(s) {
+  if (!Number.isFinite(s)) s = 0;
+  const m = Math.floor(s / 60);
+  const sec = s - m * 60;
+  if (m > 0) return m + ':' + (sec < 10 ? '0' : '') + sec.toFixed(1);
+  return sec.toFixed(1) + 's';
+}
+
+function parseTimestampedLayers(rawPrompt) {
+  _resetUnknown();
+  const blockRegex = /\[\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*[-–—]\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*\]/g;
+
+  const blocks = [];
+  let lastIndex = 0;
+  let lastTime = null;
+  let match;
+
+  while ((match = blockRegex.exec(rawPrompt)) !== null) {
+    if (lastTime !== null) {
+      const content = rawPrompt.slice(lastIndex, match.index).trim();
+      blocks.push({ start: lastTime.start, end: lastTime.end, content });
+    }
+    lastTime = {
+      start: parseTimeStr(match[1]),
+      end: parseTimeStr(match[2])
+    };
+    lastIndex = blockRegex.lastIndex;
+  }
+
+  if (lastTime !== null) {
+    const content = rawPrompt.slice(lastIndex).trim();
+    blocks.push({ start: lastTime.start, end: lastTime.end, content });
+  }
+
+  const layers = [];
+  const trailingCommands = [];
+
+  for (let i = 0; i < blocks.length; i++) {
+    const parsed = parseTimestampBlock(blocks[i]);
+    if (!parsed) continue;
+    if (parsed.type === 'trailing') {
+      if (parsed.commands) trailingCommands.push.apply(trailingCommands, parsed.commands);
+    } else {
+      layers.push(parsed);
+    }
+  }
+
+  return { layers, trailingCommands };
+}
+
+function detectBlockType(content) {
+  const c = (content || '').trim();
+  if (!c) return null;
+
+  if (/^(?:sticker|emoji)\s+/i.test(c)) return 'sticker';
+  if (/^(?:audio|sound|awaaz)\s+/i.test(c)) return 'audiofx';
+  if (/^["']/.test(c)) return 'text';
+  if (/^text\s+["']/i.test(c)) return 'text';
+  if (/\[seg/i.test(c)) return 'text';
+  if (/\b(shadows?|midtones?|highlights?|hdr)\b\s+\w+/i.test(c)) return 'colorwheel';
+  if (/\b(chroma|green\s*screen|blue\s*screen)\b/i.test(c)) return 'chroma';
+
+  const onlyWord = c.toLowerCase().trim();
+  if (EFFECT_PRESETS.indexOf(onlyWord) >= 0) return 'effect';
+
+  const parts = c.split(/[,\n]+/).map(function (s) { return s.trim(); });
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    const m = part.toLowerCase().match(/^([a-z][a-z\s]*?)\s+(-?\d+(?:\.\d+)?)/);
+    if (m) {
+      const key = m[1].replace(/\s+/g, '');
+      const mapped = SYNONYMS[key] || key;
+      if (ADJUSTMENT_KEYS.indexOf(mapped) >= 0) return 'adjustment';
+      if (FILTER_KEYS.indexOf(mapped) >= 0) return 'filter';
+    }
+    if (FILTER_KEYS.indexOf(part.toLowerCase()) >= 0) return 'filter';
+  }
+
+  return 'trailing';
+}
+
+function parseTimestampBlock(block) {
+  const content = (block.content || '').trim();
+  if (!content) return null;
+
+  const type = detectBlockType(content);
+  if (!type) {
+    _addUnknown(content, '[' + fmtSec(block.start) + ' - ' + fmtSec(block.end) + ']');
+    return null;
+  }
+
+  if (type === 'trailing') {
+    return { type: 'trailing', commands: [content], start: block.start, end: block.end };
+  }
+
+  if (type === 'text') return parseTextBlock(block, content);
+  if (type === 'sticker') return parseStickerBlock(block, content);
+  if (type === 'audiofx') return parseAudioFxBlock(block, content);
+  if (type === 'adjustment' || type === 'filter' || type === 'effect' ||
+      type === 'colorwheel' || type === 'chroma') {
+    return { type: type, start: block.start, end: block.end, raw: content };
+  }
+
+  return null;
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  TEXT BLOCK PARSER (with segments)
+// ═══════════════════════════════════════════════════════════════
+function parseTextBlock(block, content) {
+  const segRegex = /\[\s*(?:seg|segment|word)\s+["']([^"']+)["']\s*([^\]]*)\]/gi;
+  const segments = [];
+  let m;
+  let textWithoutSegs = content;
+
+  while ((m = segRegex.exec(content)) !== null) {
+    const segText = m[1];
+    const segPropsStr = m[2] || '';
+    const parsedSeg = parseLayerProps(segPropsStr);
+    const segProps = parsedSeg.props || parsedSeg;
+    const segUnknown = parsedSeg.unknown || [];
+    for (let k = 0; k < segUnknown.length; k++) {
+      _addUnknown(segUnknown[k], 'seg "' + segText + '"');
+    }
+    segments.push({
+      text: segText,
+      props: segProps
+    });
+  }
+  textWithoutSegs = content.replace(segRegex, '').replace(/\s+/g, ' ').trim();
+
+  let mainText = '';
+  let propsStr = '';
+
+  const qm = textWithoutSegs.match(/^text\s+["']([^"']+)["']\s*(.*)$/i);
+  if (qm) {
+    mainText = qm[1];
+    propsStr = qm[2] || '';
+  } else {
+    const qm2 = textWithoutSegs.match(/^["']([^"']+)["']\s*(.*)$/);
+    if (qm2) {
+      mainText = qm2[1];
+      propsStr = qm2[2] || '';
+    } else {
+      propsStr = textWithoutSegs;
+    }
+  }
+
+  if (segments.length > 0 && !mainText) mainText = '';
+
+  const parsedProps = parseLayerProps(propsStr);
+  const props = parsedProps.props || parsedProps;
+  const unknownProps = parsedProps.unknown || [];
+  for (let k = 0; k < unknownProps.length; k++) {
+    _addUnknown(unknownProps[k], 'text @ ' + fmtSec(block.start) + 's');
+  }
+
+  return {
+    type: 'text',
+    start: block.start,
+    end: block.end,
+    text: mainText.replace(/\|\s*/g, '\n').replace(/\\n/g, '\n'),
+    props: props,
+    segments: segments
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  STICKER / AUDIO FX BLOCKS
+// ═══════════════════════════════════════════════════════════════
+function parseStickerBlock(block, content) {
+  const emojiM = content.match(/^(?:sticker|emoji)\s+(.)/u);
+  if (!emojiM) return null;
+  const emoji = emojiM[1];
+  const rest = content.slice(emojiM[0].length);
+  const props = {};
+  const atM = rest.match(/\bat\s+(\d+)\s+(\d+)/i);
+  if (atM) { props.x = parseFloat(atM[1]); props.y = parseFloat(atM[2]); }
+  const sizeM = rest.match(/\bsize\s+(\d+)/i);
+  if (sizeM) props.scale = parseInt(sizeM[1], 10);
+  return {
+    type: 'sticker',
+    start: block.start,
+    end: block.end,
+    emoji: emoji,
+    props: props
+  };
+}
+
+function parseAudioFxBlock(block, content) {
+  const m = content.match(/^(?:audio|sound|awaaz)\s+([a-z][a-z\s]*)/i);
+  if (!m) return null;
+  const words = m[1].trim().split(/\s+/).filter(Boolean);
+  const keys = words.filter(function (w) { return AUDIO_FX_KEYS.indexOf(w) >= 0; });
+  if (!keys.length) return null;
+  return { type: 'audiofx', start: block.start, end: block.end, keys: keys };
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  LAYER PROPERTIES PARSER
+// ═══════════════════════════════════════════════════════════════
+function parseLayerProps(str) {
+  const unknown = [];
+  const props = {
+    animation: 'none',
+    animationDuration: 0.6,
+    positionX: 50,
+    positionY: 50,
+    color: '#ffffff',
+    gradientEnabled: false,
+    gradientColor1: '#ff0066',
+    gradientColor2: '#0066ff',
+    gradientAngle: 90,
+    shadowEnabled: false,
+    fontFamily: 'Arial',
+    fontSize: 36,
+    fontWeight: 'normal',
+    fontStyle: 'normal',
+    strokeWidth: 0,
+    strokeColor: '#000000',
+    alignment: 'center',
+    scale: 100,
+    rotation: 0,
+    opacity: 100,
+    newline: false
+  };
+
+  if (!str) return { props: props, unknown: unknown };
+
+  const parts = splitPropString(str);
+
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    let m;
+
+    // animation
+    m = part.match(/^animation\s+([A-Za-z][A-Za-z0-9]*)/i);
+    if (m) {
+      const raw = m[1].toLowerCase();
+      const ALIAS = {
+        bounce: 'bounceIn', fade: 'fadeIn', fadein: 'fadeIn',
+        fadeup: 'fadeUp', fadedown: 'fadeDown',
+        pop: 'popIn', popin: 'popIn',
+        slide: 'slideUp', slideup: 'slideUp', slidedown: 'slideDown',
+        slideleft: 'slideLeft', slideright: 'slideRight',
+        zoom: 'zoomIn', zoomin: 'zoomIn', zoomout: 'zoomOut',
+        flip: 'flip3DX', flipx: 'flip3DX', flipy: 'flip3DY',
+        rotate: 'rotate3D', rotate3d: 'rotate3D',
+        type: 'typewriter', typewriter: 'typewriter',
+        decode: 'decoder', decoder: 'decoder', scramble: 'decoder',
+        wobbly: 'wave', wave: 'wave', bouncewave: 'bounceWave',
+        cinematic: 'cinematicBlur', blur: 'cinematicBlur',
+        flicker: 'flicker', glow: 'flicker',
+        scribble: 'scribble', hand: 'scribble', handdrawn: 'scribble',
+        glitch: 'glitch', shake: 'shake', pulse: 'pulse'
+      };
+      props.animation = ALIAS[raw] || m[1];
+      continue;
+    }
+
+    // position
+    m = part.match(/^position\s+(top|bottom|center|middle|left|right)\b/i);
+    if (m) {
+      const p = m[1].toLowerCase();
+      if (p === 'top') props.positionY = 20;
+      else if (p === 'bottom') props.positionY = 80;
+      else if (p === 'center' || p === 'middle') { props.positionX = 50; props.positionY = 50; }
+      else if (p === 'left') props.positionX = 20;
+      else if (p === 'right') props.positionX = 80;
+      continue;
+    }
+    m = part.match(/^position\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)/i);
+    if (m) {
+      props.positionX = parseFloat(m[1]);
+      props.positionY = parseFloat(m[2]);
+      continue;
+    }
+
+    // gradient
+    m = part.match(/^(?:colou?r\s+ramp|gradient|ramp)\s+(#[0-9a-fA-F]{3,8})\s+(?:to|→|->)\s+(#[0-9a-fA-F]{3,8})/i);
+    if (m) {
+      props.gradientEnabled = true;
+      props.gradientColor1 = m[1];
+      props.gradientColor2 = m[2];
+      continue;
+    }
+    m = part.match(/^(?:colou?r\s+ramp|gradient|ramp)\s+(#[0-9a-fA-F]{3,8})\s+(#[0-9a-fA-F]{3,8})/i);
+    if (m) {
+      props.gradientEnabled = true;
+      props.gradientColor1 = m[1];
+      props.gradientColor2 = m[2];
+      continue;
+    }
+
+    // color
+    m = part.match(/^colou?r\s+(#[0-9a-fA-F]{3,8})/i);
+    if (m) { props.color = m[1]; continue; }
+    m = part.match(/^colou?r\s+([a-zA-Z]+)/i);
+    if (m) { props.color = colorNameToHex(m[1]); continue; }
+
+    // shadow
+    if (/^shadow\b/i.test(part)) { props.shadowEnabled = true; continue; }
+
+    // newline
+    if (/^newline$/i.test(part) || /^linebreak$/i.test(part)) {
+      props.newline = true;
+      continue;
+    }
+
+    // bold / italic
+    if (/^font\s+bold$/i.test(part)) { props.fontWeight = 'bold'; continue; }
+    if (/^font\s+italic$/i.test(part)) { props.fontStyle = 'italic'; continue; }
+    if (/^bold$/i.test(part)) { props.fontWeight = 'bold'; continue; }
+    if (/^italic$/i.test(part)) { props.fontStyle = 'italic'; continue; }
+
+    // font X
+    m = part.match(/^font\s+(.+)$/i);
+    if (m) {
+      const requested = m[1].trim();
+      const resolved = resolveFontFamily(requested);
+      props.fontFamily = resolved;
+      loadGoogleFont(resolved);
+      continue;
+    }
+
+    // font size N
+    m = part.match(/^font\s*[-]?size\s+(\d+)/i);
+    if (m) { props.fontSize = parseInt(m[1], 10); continue; }
+
+    // size N
+    m = part.match(/^size\s+(\d+)/i);
+    if (m) { props.fontSize = parseInt(m[1], 10); continue; }
+
+    // align
+    m = part.match(/^align(?:ment)?\s+(left|center|right)/i);
+    if (m) { props.alignment = m[1].toLowerCase(); continue; }
+
+    // scale
+    m = part.match(/^scale\s+(-?\d+)/i);
+    if (m) { props.scale = parseInt(m[1], 10); continue; }
+
+    // rotation
+    m = part.match(/^rot(?:ation)?\s+(-?\d+)/i);
+    if (m) { props.rotation = parseInt(m[1], 10); continue; }
+
+    // opacity
+    m = part.match(/^opacity\s+(\d+)/i);
+    if (m) { props.opacity = parseInt(m[1], 10); continue; }
+
+    // stroke
+    m = part.match(/^stroke\s*[- ]?(?:width\s+)?(\d+)(?:\s+(#[0-9a-fA-F]{3,8}))?/i);
+    if (m) {
+      props.strokeWidth = parseInt(m[1], 10);
+      if (m[2]) props.strokeColor = m[2];
+      continue;
+    }
+
+    unknown.push(part);
+  }
+
+  return { props: props, unknown: unknown };
+}
+
+function colorNameToHex(name) {
+  const map = {
+    white: '#ffffff', black: '#000000', red: '#ff0000', green: '#00ff00',
+    blue: '#0000ff', yellow: '#ffff00', cyan: '#00ffff', magenta: '#ff00ff',
+    pink: '#ff88aa', orange: '#ff8800', purple: '#8800ff', gray: '#888888',
+    grey: '#888888', lime: '#00ff00', gold: '#ffcc00', silver: '#cccccc',
+    brown: '#8b4513', navy: '#000080', teal: '#008080', olive: '#808000',
+    maroon: '#800000', aqua: '#00ffff', whitish: '#f5f5f5'
+  };
+  const k = String(name || '').toLowerCase();
+  return map[k] || '#ffffff';
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  BUILD TEXT CLIP
+// ═══════════════════════════════════════════════════════════════
+function buildTextClip(L, duration) {
+  const id = 'tx-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+  const p = L.props || {};
+
+  let segments = null;
+  if (L.segments && L.segments.length > 0) {
+    segments = L.segments.map(function (s) {
+      const sp = s.props || {};
+      return {
+        text: s.text,
+        fontFamily: sp.fontFamily || p.fontFamily || 'Arial',
+        fontSize: sp.fontSize || p.fontSize || 36,
+        fontWeight: sp.fontWeight || p.fontWeight || 'normal',
+        fontStyle: sp.fontStyle || p.fontStyle || 'normal',
+        color: sp.color || p.color || '#ffffff',
+        gradientEnabled: !!sp.gradientEnabled,
+        gradientColor1: sp.gradientColor1 || '#ff0066',
+        gradientColor2: sp.gradientColor2 || '#0066ff',
+        gradientAngle: sp.gradientAngle || 90,
+        shadowEnabled: !!sp.shadowEnabled,
+        strokeWidth: sp.strokeWidth || 0,
+        strokeColor: sp.strokeColor || '#000000',
+        animation: sp.animation || 'none',
+        rotation: sp.rotation || 0,
+        scale: sp.scale != null ? sp.scale : 100,
+        opacity: sp.opacity != null ? sp.opacity : 100,
+        align: sp.alignment || 'center',
+        newline: !!sp.newline
+      };
+    });
+  }
+
+  const mainText = L.text || '';
+  if (!mainText && !segments) return null;
+
+  return {
+    name: (mainText || (segments ? segments.map(function (s) { return s.text; }).join(' ') : '')).slice(0, 30),
+    url: 'text://' + id,
+    type: 'text/plain',
+    __textId: id,
+    textState: {
+      content: mainText,
+      __segments: segments,
+      fontFamily: p.fontFamily || 'Arial',
+      fontSize: p.fontSize || 36,
+      fontWeight: p.fontWeight || 'normal',
+      fontStyle: p.fontStyle || 'normal',
+      color: p.color || '#ffffff',
+      strokeWidth: p.strokeWidth || 0,
+      strokeColor: p.strokeColor || '#000000',
+      gradientEnabled: !!p.gradientEnabled,
+      gradientColor1: p.gradientColor1 || '#ff0066',
+      gradientColor2: p.gradientColor2 || '#0066ff',
+      gradientAngle: p.gradientAngle || 90,
+      shadowEnabled: !!p.shadowEnabled,
+      shadowColor: '#000000',
+      shadowBlur: 8,
+      shadowOffsetX: 2,
+      shadowOffsetY: 2,
+      alignment: p.alignment || 'center',
+      positionX: p.positionX != null ? p.positionX : 50,
+      positionY: p.positionY != null ? p.positionY : 50,
+      scale: p.scale != null ? p.scale : 100,
+      rotation: p.rotation || 0,
+      opacity: p.opacity != null ? p.opacity : 100,
+      animation: p.animation || 'none',
+      animationDuration: p.animationDuration || 0.6
+    },
+    startTime: L.start,
+    duration: duration
+  };
+}
+
+function buildStickerClip(L, duration) {
+  const id = 'sk-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+  const p = L.props || {};
+  return {
+    name: L.emoji,
+    url: 'sticker://' + id,
+    type: 'sticker/plain',
+    __stickerId: id,
+    stickerState: {
+      emoji: L.emoji,
+      x: p.x != null ? p.x : 50,
+      y: p.y != null ? p.y : 50,
+      scale: p.scale != null ? p.scale : 100,
+      rotation: 0
+    },
+    startTime: L.start,
+    duration: duration
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  BUILD EFFECT LAYER
+// ═══════════════════════════════════════════════════════════════
+function buildEffectLayer(L) {
+  const appState = window.__appState;
+  if (!appState) return null;
+
+  const duration = L.end - L.start;
+  if (duration <= 0) return null;
+
+  const raw = L.raw || '';
+  const id = 'fx-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
+
+  let effectState = null;
+  let label = '';
+
+  if (L.type === 'adjustment') {
+    const adj = extractAdjustments(raw);
+    if (!Object.keys(adj).length) return null;
+    effectState = { kind: 'adjustment', adjustments: adj };
+    label = 'Adj';
+  } else if (L.type === 'filter') {
+    const fil = extractFilters(raw);
+    if (!Object.keys(fil).length) return null;
+    effectState = { kind: 'filter', filters: fil };
+    label = 'Filter';
+  } else if (L.type === 'effect') {
+    const preset = raw.trim().toLowerCase();
+    if (EFFECT_PRESETS.indexOf(preset) < 0) return null;
+    effectState = {
+      kind: 'effect',
+      presetKey: preset,
+      filters: {
+        brightness: 100, contrast: 100, saturation: 100, hue: 0,
+        grayscale: 0, sepia: 0, invert: 0, blur: 0, opacity: 100
+      },
+      motion: null
+    };
+    label = preset;
+  } else if (L.type === 'colorwheel') {
+    const cw = extractColorWheel(raw);
+    if (!cw) return null;
+    effectState = { kind: 'colorWheel', colorWheel: cw };
+    label = 'Color Wheel';
+  } else if (L.type === 'chroma') {
+    const ch = extractChroma(raw);
+    if (!ch) return null;
+    effectState = { kind: 'chroma', chroma: ch };
+    label = 'Chroma';
+  }
+
+  if (!effectState) return null;
+
+  const clipData = {
+    name: label,
+    url: 'effect://' + id,
+    type: 'effect/plain',
+    __effectId: id,
+    effectState: effectState,
+    startTime: L.start,
+    duration: duration,
+    sourceIn: 0,
+    __trimmed: true
+  };
+
+  placeClipAtTime(appState.timeline.visual, clipData, L.start);
+  return L.type + '@' + fmtSec(L.start) + ' (' + fmtSec(duration) + 's)';
+}
+
+function extractAdjustments(str) {
+  const adj = {};
+  const parts = str.split(/[,\n]+/).map(function (s) { return s.trim(); }).filter(Boolean);
+  for (let i = 0; i < parts.length; i++) {
+    const m = parts[i].toLowerCase().match(/^([a-z][a-z\s]*?)\s+(-?\d+(?:\.\d+)?)/);
+    if (!m) continue;
+    const key = m[1].replace(/\s+/g, '');
+    const mapped = SYNONYMS[key] || key;
+    if (ADJUSTMENT_KEYS.indexOf(mapped) >= 0) {
+      let v = parseFloat(m[2]);
+      // If value > 100, treat as filter scale (100=normal)
+      if (v > 100) v = (v - 100) * 1.5;
+      adj[mapped] = Math.max(-100, Math.min(100, v));
+    }
+  }
+  return adj;
+}
+
+function extractFilters(str) {
+  const base = {
+    brightness: 100, contrast: 100, saturation: 100, hue: 0,
+    grayscale: 0, sepia: 0, invert: 0, blur: 0, opacity: 100
+  };
+  const parts = str.split(/[,\n]+/).map(function (s) { return s.trim(); }).filter(Boolean);
+  for (let i = 0; i < parts.length; i++) {
+    const low = parts[i].toLowerCase();
+    if (FILTER_KEYS.indexOf(low) >= 0) {
+      const r = FILTER_RANGES[low] || [0, 100];
+      base[low] = r[1];
+      continue;
+    }
+    const m = low.match(/^([a-z]+)\s+(-?\d+(?:\.\d+)?)/);
+    if (!m) continue;
+    const key = m[1];
+    if (FILTER_KEYS.indexOf(key) >= 0) {
+      const r = FILTER_RANGES[key] || [0, 100];
+      base[key] = Math.max(r[0], Math.min(r[1], parseFloat(m[2])));
+    }
+  }
+  return base;
+}
+
+function extractColorWheel(str) {
+  const cw = { tones: {}, hdrWhite: 100 };
+  let found = false;
+  const parts = str.split(/[,\n]+/).map(function (s) { return s.trim(); }).filter(Boolean);
+  for (let i = 0; i < parts.length; i++) {
+    const m = parts[i].toLowerCase().match(/^(shadows?|midtones?|mid|highlights?|highs?)\s+(\w+)(?:\s+(\d+))?(?:\s+(\d+))?/);
+    if (m) {
+      const tone = m[1].startsWith('sh') ? 'shadows'
+                 : m[1].startsWith('mi') || m[1] === 'mid' ? 'midtones'
+                 : 'highlights';
+      const hue = COLOR_HUES[m[2]];
+      if (hue != null) {
+        cw.tones[tone] = {
+          h: hue,
+          s: m[3] ? Math.max(0, Math.min(100, parseInt(m[3], 10))) : 50,
+          intensity: m[4] ? Math.max(0, Math.min(100, parseInt(m[4], 10))) : 50
+        };
+        found = true;
+        continue;
+      }
+    }
+    const hm = parts[i].match(/^hdr\s+(\d+)/i);
+    if (hm) { cw.hdrWhite = Math.max(0, Math.min(200, parseInt(hm[1], 10))); found = true; }
+  }
+  return found ? cw : null;
+}
+
+function extractChroma(str) {
+  const m = str.match(/(?:chroma(?:\s*key)?|green\s*screen|blue\s*screen)\s*(#[0-9a-fA-F]{3,6})?/i);
+  if (!m) return null;
+  let hex = m[1];
+  if (!hex) {
+    if (/green/i.test(str)) hex = '#00ff00';
+    else if (/blue/i.test(str)) hex = '#0000ff';
+    else hex = '#00ff00';
+  }
+  const rgb = hexToRgb(hex);
+  if (!rgb) return null;
+  const sim = str.match(/similarity\s+(\d+)/i);
+  const smooth = str.match(/smooth(?:ness)?\s+(\d+)/i);
+  const spill = str.match(/spill\s+(\d+)/i);
+  const intensity = str.match(/intensity\s+(\d+)/i);
+  return {
+    keyColor: rgb,
+    similarity: sim ? Math.max(0, Math.min(100, parseInt(sim[1], 10))) : 30,
+    smoothness: smooth ? Math.max(0, Math.min(100, parseInt(smooth[1], 10))) : 20,
+    spill: spill ? Math.max(0, Math.min(100, parseInt(spill[1], 10))) : 50,
+    intensity: intensity ? Math.max(0, Math.min(100, parseInt(intensity[1], 10))) : 100
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  AUDIO FX
+// ═══════════════════════════════════════════════════════════════
+function createAudioFxLayerWithRange(key, label, startTime, duration) {
+  const appState = window.__appState;
+  if (!appState) return null;
+  if (!Array.isArray(appState.timeline.audio)) appState.timeline.audio = [];
+
+  const id = 'afx-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
+  const clip = {
+    name: label,
+    url: 'audiofx://' + id,
+    type: 'audio/effect',
+    duration: duration,
+    startTime: startTime,
+    sourceIn: 0,
+    __audioFxId: id,
+    __audioFxKey: key,
+    __trimmed: true
+  };
+  placeClipAtTime(appState.timeline.audio, clip, startTime);
+  return id;
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  EXECUTE TIMESTAMPED
+// ═══════════════════════════════════════════════════════════════
+function executeTimestampedLayers(parsed) {
+  const appState = window.__appState;
+  if (!appState) return { ok: false, error: 'App state missing' };
+
+  if (!Array.isArray(appState.timeline.visual)) appState.timeline.visual = [];
+  if (!Array.isArray(appState.timeline.audio)) appState.timeline.audio = [];
+
+  const results = [];
+  const warnings = [];
+  const layers = parsed.layers || [];
+
+  let firstDuration = 0;
+  for (let i = 0; i < layers.length; i++) {
+    const d = layers[i].end - layers[i].start;
+    if (d > 0) { firstDuration = d; break; }
+  }
+
+  for (let i = 0; i < layers.length; i++) {
+    const L = layers[i];
+    const duration = L.end - L.start;
+    if (duration <= 0) continue;
+
+    try {
+      if (L.type === 'text') {
+        const clipData = buildTextClip(L, duration);
+        if (clipData) {
+          placeClipAtTime(appState.timeline.visual, clipData, L.start);
+          results.push('text@' + fmtSec(L.start) + ' (' + fmtSec(duration) + 's)');
+        }
+      } else if (L.type === 'sticker') {
+        const clipData = buildStickerClip(L, duration);
+        if (clipData) {
+          placeClipAtTime(appState.timeline.visual, clipData, L.start);
+          results.push('sticker ' + L.emoji + '@' + fmtSec(L.start));
+        }
+      } else if (L.type === 'audiofx') {
+        for (let k = 0; k < L.keys.length; k++) {
+          try {
+            createAudioFxLayerWithRange(L.keys[k], L.keys[k], L.start, duration);
+            results.push('audio:' + L.keys[k] + '@' + fmtSec(L.start));
+          } catch (e) { warnings.push('audio ' + L.keys[k] + ': fail'); }
+        }
+      } else if (L.type === 'adjustment' || L.type === 'filter' || L.type === 'effect' ||
+                 L.type === 'colorwheel' || L.type === 'chroma') {
+        const r = buildEffectLayer(L);
+        if (r) results.push(r);
+      }
+    } catch (e) {
+      warnings.push(L.type + ' @' + fmtSec(L.start) + ': ' + (e.message || 'fail'));
+    }
+  }
+
+  if (parsed.trailingCommands && parsed.trailingCommands.length > 0) {
+    const fallbackDur = firstDuration > 0 ? firstDuration : 3;
+    for (let i = 0; i < parsed.trailingCommands.length; i++) {
+      const cmd = parsed.trailingCommands[i];
+      try {
+        const r = executeTrailingCommand(cmd, fallbackDur);
+        if (r) results.push(r);
+      } catch (e) { warnings.push(cmd); }
+    }
+  }
+
+  document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
+  document.dispatchEvent(new CustomEvent('effects:refresh'));
+  document.dispatchEvent(new CustomEvent('keyframe:changed'));
+  document.dispatchEvent(new CustomEvent('transform:changed'));
+
+  let maxEnd = 0;
+  for (let i = 0; i < layers.length; i++) {
+    const e = layers[i].end;
+    if (Number.isFinite(e) && e > maxEnd) maxEnd = e;
+  }
+  if (maxEnd > 0 && typeof window.__autofitTimelineToDuration === 'function') {
+    setTimeout(function () {
+      window.__autofitTimelineToDuration(maxEnd);
+    }, 50);
+  }
+
+  resetPlayhead();
+
+  return {
+    ok: results.length > 0,
+    results,
+    warnings,
+    unknown: _unknownParts.slice(),
+    error: results.length === 0 ? (warnings[0] || 'No layers created') : undefined
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  TRAILING COMMANDS
+// ═══════════════════════════════════════════════════════════════
+function executeTrailingCommand(cmd, fallbackDuration) {
+  const appState = window.__appState;
+  if (!appState) return null;
+
+  const low = String(cmd).toLowerCase().trim();
+
+  const adj = extractAdjustments(low);
+  if (Object.keys(adj).length > 0) {
+    createEffectWithDuration('adjustment', { adjustments: adj }, 'Adj', 0, fallbackDuration);
+    return 'adjustment (' + fallbackDuration + 's)';
+  }
+
+  const fil = extractFilters(low);
+  const hasFilter = Object.keys(fil).some(function (k) {
+    return k !== 'brightness' && k !== 'contrast' && k !== 'saturation' &&
+           k !== 'hue' && k !== 'opacity' && fil[k] !== 0;
+  });
+  if (hasFilter) {
+    createEffectWithDuration('filter', { filters: fil }, 'Filter', 0, fallbackDuration);
+    return 'filter (' + fallbackDuration + 's)';
+  }
+
+  const single = low.split(/\s+/).filter(Boolean);
+  if (single.length === 1 && EFFECT_PRESETS.indexOf(single[0]) >= 0) {
+    createEffectWithDuration('effect', {
+      presetKey: single[0],
+      filters: {
+        brightness: 100, contrast: 100, saturation: 100, hue: 0,
+        grayscale: 0, sepia: 0, invert: 0, blur: 0, opacity: 100
+      },
+      motion: null
+    }, single[0], 0, fallbackDuration);
+    return 'effect:' + single[0];
+  }
+
+  return null;
+}
+
+function createEffectWithDuration(kind, state, name, startTime, duration) {
+  const appState = window.__appState;
+  if (!appState) return null;
+  if (!Array.isArray(appState.timeline.visual)) appState.timeline.visual = [];
+
+  const id = 'fx-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
+  const clipData = {
+    name: name || kind,
+    url: 'effect://' + id,
+    type: 'effect/plain',
+    __effectId: id,
+    effectState: Object.assign({ kind: kind }, state),
+    startTime: startTime || 0,
+    duration: duration > 0 ? duration : 3,
+    sourceIn: 0,
+    __trimmed: true
+  };
+  placeClipAtTime(appState.timeline.visual, clipData, startTime || 0);
+  return id;
+}
+
+function resetPlayhead() {
+  const eng = window.__playbackEngine;
+  if (!eng) return;
+  try { if (typeof eng.pause === 'function') eng.pause(); } catch (_) {}
+  try { if (typeof eng.seek === 'function') eng.seek(0); } catch (_) {}
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  PARSE PROMPT
 // ═══════════════════════════════════════════════════════════════
 export function parsePrompt(rawPrompt) {
   if (!rawPrompt || typeof rawPrompt !== 'string') {
     return { ok: false, error: 'Empty prompt' };
   }
+
+  _resetUnknown();
+  const ratio = detectRatio(rawPrompt);
+
+  if (hasTimestampedLayers(rawPrompt)) {
+    const parsed = parseTimestampedLayers(rawPrompt);
+    if (parsed.layers && parsed.layers.length > 0) {
+      return { ok: true, state: { timestampedLayers: parsed, ratio: ratio } };
+    }
+  }
+
   const state = {
     adjustments: {}, filters: {}, effectPreset: null, speed: null,
     transition: null, texts: [], stickers: [], colorWheel: null,
     chroma: null, transforms: {}, keyframes: [], audioFx: [],
     trimOps: [],
+    ratio: ratio,
     target: 'selected'
   };
+
   let prompt = rawPrompt.toLowerCase().trim();
+  prompt = prompt.replace(/^\s*ratio\s+\d+\s*:\s*\d+\s*$/im, '');
+
   if (/\ball\s+clips?\b|\bevery\s+clip\b|\bsab\s+clips?\b|\bhar\s+clip\b/.test(prompt)) {
     state.target = 'all';
     prompt = prompt.replace(/\ball\s+clips?\b|\bevery\s+clip\b|\bsab\s+clips?\b|\bhar\s+clip\b/g, '');
@@ -275,6 +1189,8 @@ function parseSegment(seg, state) {
     }
     if (EFFECT_PRESETS.includes(w)) { state.effectPreset = w; return; }
   }
+
+  _addUnknown(seg);
 }
 
 function mapKeyframeProp(raw) {
@@ -300,12 +1216,18 @@ function hexToRgb(hex) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  EXECUTOR  🆕 TEXT/STICKER pehle
+//  EXECUTE PROMPT
 // ═══════════════════════════════════════════════════════════════
 export function executePrompt(state) {
   if (!state) return { ok: false, error: 'No state' };
   const appState = window.__appState;
   if (!appState) return { ok: false, error: 'App state missing' };
+
+  if (state.ratio) applyRatio(state.ratio);
+
+  if (state.timestampedLayers) {
+    return executeTimestampedLayers(state.timestampedLayers);
+  }
 
   _lastCreatedClips = [];
 
@@ -313,9 +1235,6 @@ export function executePrompt(state) {
   const results = [];
   const warnings = [];
 
-  // ═══════════════════════════════════════════════════════════
-  //  1) 🆕 TEXT — PEHLE (so keyframes can attach to new clip)
-  // ═══════════════════════════════════════════════════════════
   if (state.texts.length > 0) {
     if (!Array.isArray(appState.timeline.visual)) appState.timeline.visual = [];
     const eng = window.__playbackEngine;
@@ -338,7 +1257,6 @@ export function executePrompt(state) {
       };
       placeClipAtTime(appState.timeline.visual, clipData, atTime);
 
-      // Track created clip
       const created = findClipByUrl(appState.timeline.visual, clipData.url);
       if (created) _lastCreatedClips.push(created);
 
@@ -346,9 +1264,6 @@ export function executePrompt(state) {
     });
   }
 
-  // ═══════════════════════════════════════════════════════════
-  //  2) 🆕 STICKER
-  // ═══════════════════════════════════════════════════════════
   if (state.stickers.length > 0) {
     if (!Array.isArray(appState.timeline.visual)) appState.timeline.visual = [];
     const eng = window.__playbackEngine;
@@ -370,9 +1285,6 @@ export function executePrompt(state) {
     });
   }
 
-  // ═══════════════════════════════════════════════════════════
-  //  3) AUDIO FX
-  // ═══════════════════════════════════════════════════════════
   if (state.audioFx.length > 0) {
     state.audioFx.forEach(key => {
       try {
@@ -382,211 +1294,73 @@ export function executePrompt(state) {
     });
   }
 
-  // ═══════════════════════════════════════════════════════════
-  //  4) 🆕 Now resolve "target clip" for transform/trim/kf/speed
-  //     Priority: selected clip → last created clip
-  // ═══════════════════════════════════════════════════════════
   let targetClip = getSelectedClip(appState);
   if (!targetClip && _lastCreatedClips.length > 0) {
     targetClip = _lastCreatedClips[_lastCreatedClips.length - 1];
   }
 
-  // TRANSFORM
   const tfKeys = Object.keys(state.transforms);
-  if (tfKeys.length > 0) {
-    if (targetClip) {
-      if (!targetClip.__transform) targetClip.__transform = {};
-      Object.assign(targetClip.__transform, state.transforms);
-      if (targetClip.__textId && targetClip.textState) {
-        if (state.transforms.x != null) targetClip.textState.positionX = state.transforms.x;
-        if (state.transforms.y != null) targetClip.textState.positionY = state.transforms.y;
-        if (state.transforms.scale != null) targetClip.textState.scale = state.transforms.scale;
-        if (state.transforms.rotation != null) targetClip.textState.rotation = state.transforms.rotation;
-      }
-      if (targetClip.__stickerId && targetClip.stickerState) {
-        if (state.transforms.x != null) targetClip.stickerState.x = state.transforms.x;
-        if (state.transforms.y != null) targetClip.stickerState.y = state.transforms.y;
-        if (state.transforms.scale != null) targetClip.stickerState.scale = state.transforms.scale;
-        if (state.transforms.rotation != null) targetClip.stickerState.rotation = state.transforms.rotation;
-      }
-      results.push('transform');
-    } else {
-      warnings.push('transform: clip select karein');
+  if (tfKeys.length > 0 && targetClip) {
+    if (!targetClip.__transform) targetClip.__transform = {};
+    Object.assign(targetClip.__transform, state.transforms);
+    if (targetClip.__textId && targetClip.textState) {
+      if (state.transforms.x != null) targetClip.textState.positionX = state.transforms.x;
+      if (state.transforms.y != null) targetClip.textState.positionY = state.transforms.y;
+      if (state.transforms.scale != null) targetClip.textState.scale = state.transforms.scale;
+      if (state.transforms.rotation != null) targetClip.textState.rotation = state.transforms.rotation;
     }
+    results.push('transform');
   }
 
-  // TRIM
-  if (state.trimOps.length > 0) {
-    if (!targetClip) {
-      warnings.push('trim: clip select karein');
-    } else {
-      const eng = window.__playbackEngine;
-      const playhead = eng && typeof eng.getTime === 'function' ? eng.getTime() : 0;
-      for (const op of state.trimOps) {
-        const curStart = Number.isFinite(targetClip.startTime) ? targetClip.startTime : 0;
-        const curDur   = Number.isFinite(targetClip.duration)  ? targetClip.duration  : 3;
-        const curEnd   = curStart + curDur;
-        const inside = playhead > curStart + 0.01 && playhead < curEnd - 0.01;
-        if (!inside) {
-          warnings.push(op + ': playhead clip ke andar rakho');
-          continue;
-        }
-        if (op === 'left') {
-          const cutAmount = playhead - curStart;
-          targetClip.startTime = playhead;
-          targetClip.duration  = curEnd - playhead;
-          targetClip.sourceIn  = (Number.isFinite(targetClip.sourceIn) ? targetClip.sourceIn : 0) + cutAmount;
-          targetClip.__trimmed = true;
-          syncLinkedTrim(appState, targetClip, targetClip.startTime, targetClip.duration, targetClip.sourceIn);
-          results.push('trimLeft:' + cutAmount.toFixed(2) + 's');
-        } else if (op === 'right') {
-          const cutAmount = curEnd - playhead;
-          targetClip.startTime = curStart;
-          targetClip.duration  = playhead - curStart;
-          targetClip.__trimmed = true;
-          syncLinkedTrim(appState, targetClip, targetClip.startTime, targetClip.duration, targetClip.sourceIn);
-          results.push('trimRight:' + cutAmount.toFixed(2) + 's');
-        } else if (op === 'split') {
-          const firstDur  = playhead - curStart;
-          const secondDur = curEnd - playhead;
-          const srcIn     = Number.isFinite(targetClip.sourceIn) ? targetClip.sourceIn : 0;
-          targetClip.startTime = curStart;
-          targetClip.duration  = firstDur;
-          targetClip.sourceIn  = srcIn;
-          targetClip.__trimmed = true;
-          const secondClip = Object.assign({}, targetClip);
-          secondClip.startTime = playhead;
-          secondClip.duration  = secondDur;
-          secondClip.sourceIn  = srcIn + firstDur;
-          secondClip.name = (targetClip.name || 'Clip') + ' (2)';
-          secondClip.__trimmed = true;
-          delete secondClip.__linkedId;
-          if (targetClip.__keyframes) {
-            secondClip.__keyframes = JSON.parse(JSON.stringify(targetClip.__keyframes));
-            for (const prop of Object.keys(secondClip.__keyframes)) {
-              secondClip.__keyframes[prop] = (secondClip.__keyframes[prop] || []).filter(k => k.time >= playhead);
-            }
-            for (const prop of Object.keys(targetClip.__keyframes)) {
-              targetClip.__keyframes[prop] = (targetClip.__keyframes[prop] || []).filter(k => k.time < playhead);
-            }
-          }
-          let inserted = false;
-          const tracks = appState.timeline.visual || [];
-          for (let t = 0; t < tracks.length; t++) {
-            const track = tracks[t];
-            if (!Array.isArray(track)) continue;
-            const idx = track.indexOf(targetClip);
-            if (idx >= 0) { track.splice(idx + 1, 0, secondClip); inserted = true; break; }
-          }
-          if (!inserted) {
-            const aTracks = appState.timeline.audio || [];
-            for (let t = 0; t < aTracks.length; t++) {
-              const track = aTracks[t];
-              if (!Array.isArray(track)) continue;
-              const idx = track.indexOf(targetClip);
-              if (idx >= 0) { track.splice(idx + 1, 0, secondClip); break; }
-            }
-          }
-          results.push('split@' + playhead.toFixed(2) + 's');
-        }
+  if (state.keyframes.length > 0 && targetClip) {
+    const eng = window.__playbackEngine;
+    const now = eng && typeof eng.getTime === 'function' ? eng.getTime() : 0;
+    const base = Number.isFinite(targetClip.startTime) ? targetClip.startTime : 0;
+    let currentTime = Math.max(base, now);
+    if (!targetClip.__keyframes) targetClip.__keyframes = {};
+    for (const kf of state.keyframes) {
+      if (kf.isPosition) {
+        if (!targetClip.__keyframes.x) targetClip.__keyframes.x = [];
+        if (!targetClip.__keyframes.y) targetClip.__keyframes.y = [];
+        targetClip.__keyframes.x.push({ time: currentTime, value: kf.from.x, ease: 'easeInOut' });
+        targetClip.__keyframes.x.push({ time: currentTime + kf.duration, value: kf.to.x, ease: 'easeInOut' });
+        targetClip.__keyframes.y.push({ time: currentTime, value: kf.from.y, ease: 'easeInOut' });
+        targetClip.__keyframes.y.push({ time: currentTime + kf.duration, value: kf.to.y, ease: 'easeInOut' });
+      } else {
+        const prop = kf.prop;
+        if (!targetClip.__keyframes[prop]) targetClip.__keyframes[prop] = [];
+        targetClip.__keyframes[prop].push({ time: currentTime, value: kf.from.value, ease: 'easeInOut' });
+        targetClip.__keyframes[prop].push({ time: currentTime + kf.duration, value: kf.to.value, ease: 'easeInOut' });
       }
+      currentTime += kf.duration;
     }
+    results.push('keyframes');
   }
 
-  // ═══════════════════════════════════════════════════════════
-  //  KEYFRAMES  🆕 ab naye text clip par bhi apply honge
-  // ═══════════════════════════════════════════════════════════
-  if (state.keyframes.length > 0) {
-    if (!targetClip) {
-      warnings.push('keyframes: clip select karein');
-    } else {
-      const eng = window.__playbackEngine;
-      const now = eng && typeof eng.getTime === 'function' ? eng.getTime() : 0;
-      const base = Number.isFinite(targetClip.startTime) ? targetClip.startTime : 0;
-      let currentTime = Math.max(base, now);
-
-      if (!targetClip.__keyframes) targetClip.__keyframes = {};
-
-      for (const kf of state.keyframes) {
-        if (kf.isPosition) {
-          if (!targetClip.__keyframes.x) targetClip.__keyframes.x = [];
-          if (!targetClip.__keyframes.y) targetClip.__keyframes.y = [];
-          targetClip.__keyframes.x.push({ time: currentTime, value: kf.from.x, ease: 'easeInOut' });
-          targetClip.__keyframes.x.push({ time: currentTime + kf.duration, value: kf.to.x, ease: 'easeInOut' });
-          targetClip.__keyframes.y.push({ time: currentTime, value: kf.from.y, ease: 'easeInOut' });
-          targetClip.__keyframes.y.push({ time: currentTime + kf.duration, value: kf.to.y, ease: 'easeInOut' });
-        } else {
-          const prop = kf.prop;
-          if (!targetClip.__keyframes[prop]) targetClip.__keyframes[prop] = [];
-          targetClip.__keyframes[prop].push({ time: currentTime, value: kf.from.value, ease: 'easeInOut' });
-          targetClip.__keyframes[prop].push({ time: currentTime + kf.duration, value: kf.to.value, ease: 'easeInOut' });
-        }
-        currentTime += kf.duration;
-      }
-
-      // Sort + dedupe
-      for (const prop of Object.keys(targetClip.__keyframes)) {
-        const arr = targetClip.__keyframes[prop];
-        if (!Array.isArray(arr)) continue;
-        arr.sort((a, b) => a.time - b.time);
-        const deduped = [];
-        for (let i = 0; i < arr.length; i++) {
-          if (i > 0 && Math.abs(arr[i].time - arr[i - 1].time) < 0.001) {
-            deduped[deduped.length - 1] = arr[i];
-          } else {
-            deduped.push(arr[i]);
-          }
-        }
-        targetClip.__keyframes[prop] = deduped;
-      }
-
-      results.push('keyframes:' + state.keyframes.length);
-    }
+  if (state.speed != null && targetClip) {
+    applySpeedToClip(targetClip, state.speed);
+    results.push('speed:' + state.speed + 'x');
   }
 
-  // SPEED
-  if (state.speed != null) {
-    if (targetClip) {
-      applySpeedToClip(targetClip, state.speed);
-      syncLinkedSpeed(appState, targetClip, state.speed);
-      results.push('speed:' + state.speed + 'x');
-    } else {
-      warnings.push('speed: clip select karein');
-    }
+  if (state.transition && targetClip) {
+    targetClip.__transitionIn = {
+      key: state.transition.type,
+      duration: state.transition.duration
+    };
+    results.push('transition');
   }
 
-  // TRANSITION
-  if (state.transition) {
-    if (targetClip) {
-      targetClip.__transitionIn = {
-        key: state.transition.type,
-        duration: state.transition.duration
-      };
-      results.push('transition:' + state.transition.type);
-    } else {
-      warnings.push('transition: clip select karein');
-    }
-  }
-
-  // ADJUSTMENTS (needs clip)
-  const adjKeys = Object.keys(state.adjustments);
-  if (adjKeys.length > 0) {
-    if (!hasClips && _lastCreatedClips.length === 0) {
-      warnings.push('adjustments: clip daalein');
-    } else {
+  if (Object.keys(state.adjustments).length > 0) {
+    if (hasClips || _lastCreatedClips.length > 0) {
       try {
         const id = createEffectLayer('adjustment', { adjustments: state.adjustments }, 'Adjustments');
         if (id) results.push('adjustments');
       } catch (e) { console.warn(e); }
-    }
+    } else warnings.push('adjustments: clip daalein');
   }
 
-  // FILTER
-  const filterKeys = Object.keys(state.filters);
-  if (filterKeys.length > 0) {
-    if (!hasClips && _lastCreatedClips.length === 0) {
-      warnings.push('filter: clip daalein');
-    } else {
+  if (Object.keys(state.filters).length > 0) {
+    if (hasClips || _lastCreatedClips.length > 0) {
       const filters = {
         brightness: 100, contrast: 100, saturation: 100, hue: 0,
         grayscale: 0, sepia: 0, invert: 0, blur: 0, opacity: 100
@@ -596,14 +1370,11 @@ export function executePrompt(state) {
         const id = createEffectLayer('filter', { filters }, 'Filter');
         if (id) results.push('filter');
       } catch (e) { console.warn(e); }
-    }
+    } else warnings.push('filter: clip daalein');
   }
 
-  // EFFECT PRESET
   if (state.effectPreset) {
-    if (!hasClips && _lastCreatedClips.length === 0) {
-      warnings.push('effect: clip daalein');
-    } else {
+    if (hasClips || _lastCreatedClips.length > 0) {
       const baseFilters = {
         brightness: 100, contrast: 100, saturation: 100, hue: 0,
         grayscale: 0, sepia: 0, invert: 0, blur: 0, opacity: 100
@@ -614,45 +1385,40 @@ export function executePrompt(state) {
           capitalize(state.effectPreset));
         if (id) results.push('effect:' + state.effectPreset);
       } catch (e) { console.warn(e); }
-    }
+    } else warnings.push('effect: clip daalein');
   }
 
-  // COLOR WHEEL
   if (state.colorWheel) {
-    if (!hasClips && _lastCreatedClips.length === 0) {
-      warnings.push('colorWheel: clip daalein');
-    } else {
+    if (hasClips || _lastCreatedClips.length > 0) {
       try {
         const id = createEffectLayer('colorWheel', { colorWheel: state.colorWheel }, 'Color Wheel');
         if (id) results.push('colorWheel');
       } catch (e) { console.warn(e); }
-    }
+    } else warnings.push('colorWheel: clip daalein');
   }
 
-  // CHROMA
   if (state.chroma) {
-    if (!hasClips && _lastCreatedClips.length === 0) {
-      warnings.push('chroma: clip daalein');
-    } else {
+    if (hasClips || _lastCreatedClips.length > 0) {
       try {
         const id = createEffectLayer('chroma', { chroma: state.chroma }, 'Chroma Key');
         if (id) results.push('chroma');
       } catch (e) { console.warn(e); }
-    }
+    } else warnings.push('chroma: clip daalein');
   }
 
-  // Fire events
   document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
   document.dispatchEvent(new CustomEvent('effects:refresh'));
   document.dispatchEvent(new CustomEvent('keyframe:changed'));
   document.dispatchEvent(new CustomEvent('transform:changed'));
 
+  resetPlayhead();
+
   if (results.length === 0) {
     const errMsg = warnings.length ? warnings.join(' • ') : 'Koi command execute nahi hui';
-    return { ok: false, error: errMsg };
+    return { ok: false, error: errMsg, unknown: _unknownParts.slice() };
   }
   if (warnings.length > 0) results.push('⚠️ ' + warnings.join(', '));
-  return { ok: true, results };
+  return { ok: true, results, unknown: _unknownParts.slice() };
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -705,45 +1471,4 @@ function applySpeedToClip(clip, speed) {
   clip.__speed = speed;
   clip.duration = clip.__speedBase / speed;
   clip.__trimmed = true;
-}
-
-function syncLinkedSpeed(appState, primaryClip, speed) {
-  if (!primaryClip || !primaryClip.__linkedId) return;
-  const linkedId = primaryClip.__linkedId;
-  const allTracks = [].concat(
-    appState.timeline.visual || [],
-    appState.timeline.audio || []
-  );
-  for (let t = 0; t < allTracks.length; t++) {
-    const track = allTracks[t];
-    if (!Array.isArray(track)) continue;
-    for (let c = 0; c < track.length; c++) {
-      const other = track[c];
-      if (other === primaryClip) continue;
-      if (!other || other.__linkedId !== linkedId) continue;
-      applySpeedToClip(other, speed);
-      other.startTime = primaryClip.startTime;
-    }
-  }
-}
-
-function syncLinkedTrim(appState, clip, startTime, duration, sourceIn) {
-  if (!clip || !clip.__linkedId) return;
-  const allTracks = [].concat(
-    appState.timeline.visual || [],
-    appState.timeline.audio || []
-  );
-  for (let t = 0; t < allTracks.length; t++) {
-    const track = allTracks[t];
-    if (!Array.isArray(track)) continue;
-    for (let c = 0; c < track.length; c++) {
-      const other = track[c];
-      if (other === clip) continue;
-      if (!other || other.__linkedId !== clip.__linkedId) continue;
-      if (Number.isFinite(startTime)) other.startTime = startTime;
-      if (Number.isFinite(duration))  other.duration  = duration;
-      if (Number.isFinite(sourceIn))  other.sourceIn  = sourceIn;
-      other.__trimmed = true;
-    }
-  }
 }

@@ -17,6 +17,8 @@ import {
 import {
   initTimelineScaler,
   setDuration as setTimelineDuration,
+  getDuration as getScalerDuration,   // 🆕 auto-fit ke liye
+  setZoom     as setTimelineZoom,     // 🆕 auto-fit ke liye
   getMetrics   as getScaleMetrics,
   computeClipRect,
   getRulerStep,
@@ -106,17 +108,16 @@ export function initTimelineEngine(config) {
         document.querySelectorAll('.clip.linked-selected').forEach(function (el) {
           el.classList.remove('linked-selected');
         });
-              document.dispatchEvent(new CustomEvent('editor:clip-deselected'));
+        document.dispatchEvent(new CustomEvent('editor:clip-deselected'));
       }
     });
   }
 
-  // 🆕 Deselect ke baad bhi markers redraw karo
   document.addEventListener('editor:clip-deselected', function () {
     document.dispatchEvent(new CustomEvent('editor:clip-selected'));
   });
 
-   // ═══════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════
   //  🆕 FIX: Timeline minimum 40 minutes
   //
   //  Pehle: Ruler sirf content tak extend hota tha → drag-drop
@@ -154,6 +155,7 @@ export function initTimelineEngine(config) {
 
     return furthestEnd;
   }
+
   function rangesOverlap(aS, aE, bS, bE) {
     return aS < bE && bS < aE;
   }
@@ -381,7 +383,7 @@ export function initTimelineEngine(config) {
               });
             });
           }
-           document.dispatchEvent(new CustomEvent('editor:clip-selected'));
+          document.dispatchEvent(new CustomEvent('editor:clip-selected'));
           e.preventDefault();
         });
       })(ci);
@@ -461,6 +463,61 @@ export function initTimelineEngine(config) {
     }
   }
 
+  // ═══════════════════════════════════════════════════════════
+  //  🆕 AUTO-FIT IMPORTED CONTENT
+  //
+  //  Import ke baad zoom aisi set karo ke naya clip poori
+  //  visible timeline area mein fit ho jaye.
+  //
+  //  Formula: viewportWidth / timelineDuration × zoom = viewportWidth / clipDuration
+  //        ⇒  zoom = timelineDuration / clipDuration
+  // ═══════════════════════════════════════════════════════════
+  function autoFitImportedContent(items) {
+    if (!items || !items.length) return;
+
+    // Longest imported item dhundo (visual ko priority)
+    let maxVisualDur = 0;
+    let maxAnyDur = 0;
+
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      if (!it) continue;
+
+      const d = (Number.isFinite(it.duration) && it.duration > 0)
+        ? it.duration
+        : DEFAULT_CLIP_SEC;
+
+      const t = it.type || '';
+      const isAudio = t.indexOf('audio/') === 0;
+
+      if (!isAudio && d > maxVisualDur) maxVisualDur = d;
+      if (d > maxAnyDur) maxAnyDur = d;
+    }
+
+    const fitDur = maxVisualDur > 0 ? maxVisualDur : maxAnyDur;
+    if (fitDur <= 0) return;
+
+    const timelineDur = getScalerDuration();
+    if (timelineDur <= 0) return;
+
+    // Desired zoom so imported clip fills the viewport
+    const desiredZoom = timelineDur / fitDur;
+    setTimelineZoom(desiredZoom);
+  }
+    // ═══════════════════════════════════════════════════════════
+  //  🆕 Auto-fit to any duration (used by codebase prompt)
+  // ═══════════════════════════════════════════════════════════
+  function autoFitToDuration(durSec) {
+    const d = Number(durSec);
+    if (!Number.isFinite(d) || d <= 0) return;
+    const timelineDur = getScalerDuration();
+    if (timelineDur <= 0) return;
+    setTimelineZoom(timelineDur / d);
+  }
+
+  // 🆕 Expose globally so codebaseEngine can trigger it
+  window.__autofitTimelineToDuration = autoFitToDuration;
+
   // ─── Add media ────────────────────────────────────────────
   function addMedia(items) {
     const atTime = Number(getPlayheadTime()) || 0;
@@ -519,7 +576,7 @@ export function initTimelineEngine(config) {
         }
       }
 
-          const end = atTime + realDur;
+      const end = atTime + realDur;
       const freeIdx = findFreeTrackIndex(list, atTime, end, null);
       while (list.length <= freeIdx) list.push([]);
 
@@ -545,7 +602,9 @@ export function initTimelineEngine(config) {
 
       list[freeIdx].push(clipEntry);
     }
+
     render();
+    autoFitImportedContent(items);   // 🆕 auto-fit after import
     notifyChanged();
   }
 

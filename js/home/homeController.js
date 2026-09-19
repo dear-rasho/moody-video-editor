@@ -74,77 +74,172 @@ export function initAiPromptHelper() {
   const copyBtn = document.querySelector('#ai-prompt-copy-btn');
   if (!textEl || !copyBtn) return;
 
-  const PROMPT_TEXT =
+   const PROMPT_TEXT =
 `You are helping me write commands for a video editor's prompt panel.
 
-The editor supports these commands (comma-separated):
+The editor supports TWO formats:
 
-ADJUSTMENTS (value: -100 to 100):
-brightness, contrast, exposure, whites, blacks, shadows,
-highlights, clarity, saturation, vibrance, temperature,
-tint, noise, sharpen, vignette
+═══════════════════════════════════════════════
+FORMAT 1 — TIMESTAMPED LAYERS (recommended)
+═══════════════════════════════════════════════
 
-COLOR CHANNELS (value: -100 to 100):
-reds, oranges, yellows, greens, cyans, blues, purples,
-magentas, skintones
+Optional first line:
+  ratio 9:16        (or 16:9, 1:1, 4:5, 3:4, 21:9)
 
-FILTERS:
-grayscale, sepia, invert, blur (0-20), hue (0-360), opacity (0-100)
+Then ONE block per layer, using [MM:SS - MM:SS]:
 
-EFFECT PRESETS (single word):
-vintage, cinematic, warm, cool, vivid, dramatic, faded,
-dreamy, noir, negative, shake, pulse, glitch, bounce, wobble
+  [00:00 - 00:05] "Your text" animation typewriter, position center, color white
+  [00:05 - 00:08] "Second" animation bounce, position bottom, color yellow
+  [00:08 - 00:15] brightness 130, saturation 140
+  [00:15 - 00:18] sticker 🔥 at 50 30
+  [00:18 - 00:22] audio echo
+  [00:22 - 00:28] vintage
+  [00:28 - 00:35] "Next" font handwriting size 40 color ramp #ff0066 to #0066ff
+
+═══════════════════════════════════════════════
+TEXT LAYER PROPERTIES (after quoted text)
+═══════════════════════════════════════════════
+
+  animation <name>     typewriter, bounceIn, fadeIn, fadeUp, fadeDown,
+                       slideLeft, slideRight, slideUp, slideDown, popIn,
+                       zoomIn, zoomOut, glitch, pulse, wave, flip3DX,
+                       flip3DY, rotate3D, flicker, shake, cinematicBlur,
+                       scribble, decoder
+                       (aliases: bounce→bounceIn, fade→fadeIn,
+                        slide→slideUp, zoom→zoomIn, pop→popIn)
+
+  position <name>      top, bottom, center, left, right
+  position <X> <Y>     coords 0-100, e.g. 50 30
+
+  color <name|#hex>    white, black, red, gold, #ff0066
+  color ramp #A to #B  gradient
+
+  font <name|category> specific font OR category
+  size <number>        font size px (default 36)
+  bold | italic        style flags
+  shadow               drop shadow on
+  stroke <w> <#hex>    text outline
+  align left|center|right
+  scale <number>       text scale %
+  rotation <number>    degrees
+  opacity <number>     0-100
+
+FONT CATEGORIES:
+  music, educational, titles, handwriting, modern, bold,
+  retro, elegant, playful, mono, cinematic, minimal
+
+═══════════════════════════════════════════════
+MULTI-STYLE TEXT (per-word styling)
+═══════════════════════════════════════════════
+
+Use [seg "word" props] for each styled segment:
+
+  [00:00 - 00:05] [seg "i am" font handwriting size 20 color whitish] [seg "fine" font music size 60 color ramp #00FF87 to #60EFFF] position center
+
+Each segment can have its own font, size, color, gradient.
+Segments stack on separate lines.
+
+═══════════════════════════════════════════════
+OTHER LAYER TYPES
+═══════════════════════════════════════════════
+
+STICKER:
+  [MM:SS - MM:SS] sticker 🔥
+  [MM:SS - MM:SS] sticker 🔥 at 50 30
+  [MM:SS - MM:SS] sticker 😀 at 20 80 size 150
+
+ADJUSTMENT (values 100-300 = filter scale; -100 to 100 = adjustment scale):
+  [MM:SS - MM:SS] brightness 130, saturation 140
+
+  Keys: brightness, contrast, exposure, whites, blacks, shadows,
+        highlights, clarity, saturation, vibrance, temperature,
+        tint, noise, sharpen, vignette
+  Color channels: reds, oranges, yellows, greens, cyans, blues,
+                  purples, magentas, skintones
+
+FILTER:
+  [MM:SS - MM:SS] blur 5
+  [MM:SS - MM:SS] grayscale 80
+  [MM:SS - MM:SS] sepia 50, invert 100
+
+EFFECT PRESET (single word):
+  [MM:SS - MM:SS] vintage
+  [MM:SS - MM:SS] cinematic
+  Presets: shake, bounce, pulse, zoomPulse, glitch, wobble,
+           warm, cool, vintage, cinematic, bw, dreamy, vivid,
+           faded, dramatic, negative, softGlow, noir
 
 COLOR WHEEL:
-shadows [color] [sat 0-100] [intensity 0-100]
-midtones [color] [sat] [intensity]
-highlights [color] [sat] [intensity]
-hdr [0-200]
-Colors: red, orange, yellow, green, cyan, blue, purple, magenta, pink
+  [MM:SS - MM:SS] shadows red 50 40
+  [MM:SS - MM:SS] midtones blue 40 50
+  [MM:SS - MM:SS] hdr 120
 
 CHROMA KEY:
-green screen
-chroma #hexcolor similarity [0-100] smoothness [0-100]
-
-TRANSFORM:
-scale [10-500]
-rotation [-360 to 360]
-position [x 0-100] [y 0-100]
-
-KEYFRAMES:
-zoom [from] to [to] over [seconds]s
-rotate [from] to [to] over [seconds]s
-position [x1] [y1] to [x2] [y2] over [seconds]s
-
-TRANSITIONS:
-fade in [duration], fade out [duration], slide left, zoom in
-
-SPEED:
-speed [0.1-16]x
-
-TEXT:
-text "content" size [number] color [color] at [top/bottom/center]
-
-STICKERS:
-sticker [emoji]
+  [MM:SS - MM:SS] green screen
+  [MM:SS - MM:SS] chroma #00ff00 similarity 30
 
 AUDIO FX:
-audio [studio/warm/bright/vocal/podcast/deep/monster/
-chipmunk/baby/robot/echo/reverb/cave/stadium/telephone/
-underwater/whisper/radio]
+  [MM:SS - MM:SS] audio echo
+  Keys: studio, warm, bright, vocal, podcast, deep, monster,
+        chipmunk, baby, robot, echo, reverb, cave, stadium,
+        telephone, underwater, whisper, radio
 
-MULTI-CLIP:
-"all clips" or "every clip" prefix applies to all.
+═══════════════════════════════════════════════
+FORMAT 2 — SIMPLE (no timestamps, at playhead)
+═══════════════════════════════════════════════
 
-EXAMPLES:
-"brightness 120, contrast 110, fade in 0.5"
-"reds 50, blues -30, temperature 20"
-"vintage, shake, text \\"Hello\\" size 48"
-"zoom 100 to 200 over 3s, rotate 0 to 360 over 5s"
+  brightness 120, contrast 110
+  vintage, shake
+  text "Hello" size 48 color #ff0066
+  zoom 100 to 200 over 3s
+  speed 2x
+  fade in 0.5
+  audio echo
+  sticker 😀
+  trim left
+  split
+
+═══════════════════════════════════════════════
+EXAMPLES
+═══════════════════════════════════════════════
+
+Intro:
+  ratio 9:16
+  [00:00 - 00:05] "Welcome" animation typewriter, position center, color white
+  [00:05 - 00:08] "Bounce" animation bounce, position bottom, color yellow
+  [00:08 - 00:15] brightness 130, saturation 140
+
+Typography:
+  ratio 9:16
+  [00:00 - 00:05] [seg "i am" font handwriting size 20 color whitish] [seg "fine" font music size 60 color ramp #00FF87 to #60EFFF] position center
+
+Full mix:
+  ratio 9:16
+  [00:00 - 00:05] "Intro" font music size 60 position center, animation typewriter
+  [00:00 - 00:05] brightness 110, saturation 130
+  [00:05 - 00:08] sticker 🔥 at 50 30
+  [00:08 - 00:15] "Main content" font handwriting size 36 color ramp #ff0066 to #0066ff, position center, animation bounce
+  [00:15 - 00:18] audio echo
+  [00:18 - 00:25] "Thanks" font cinematic size 42 color gold, position bottom, animation fadeUp
+
+Music video:
+  ratio 9:16
+  [00:00 - 00:04] [seg "WE" font music size 72 color #ff0066] [seg "ARE" font music size 72 color #00FF87] [seg "LIVE" font music size 72 color #60EFFF] position center, animation bounce
+
+═══════════════════════════════════════════════
+RULES
+═══════════════════════════════════════════════
+
+1. Start with "ratio X:Y" if user specifies aspect ratio.
+2. Timestamps: MM:SS or HH:MM:SS.
+3. Each [MM:SS - MM:SS] block is a separate timeline layer.
+4. Text MUST be in "double quotes".
+5. Non-timestamped commands use the first text layer's duration.
+6. Properties are comma-separated.
 
 MY REQUEST: [yahan apna request likho]
 
-Return ONLY the comma-separated editor commands. No explanation.`;
+Return ONLY the editor commands. No explanation.`;
 
   textEl.textContent = PROMPT_TEXT;
 
