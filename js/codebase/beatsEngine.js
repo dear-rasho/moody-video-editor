@@ -1,15 +1,19 @@
 // ================================================================
 //  js/codebase/beatsEngine.js
 //  Beat detection + beats-driven editing + timeline markers.
+//  Supports strength-aware patterns (hard/med/soft/rest).
 // ================================================================
 
-const MIN_GAP_SEC = 0.45;      // 🆕 pehle 0.25 — ab chhoti beats skip
-const FRAME_SIZE  = 1024;
-const HOP_SIZE    = 512;
-const PEAK_WINDOW = 20;
-const PEAK_K      = 2.5;       // 🆕 pehle 1.5 — ab sirf strong peaks
-const REL_STRENGTH = 0.35;     // 🆕 keep only beats >= 35% of max
-const LOOKBACK_BEATS = 5;      // 🆕 adaptive: ignore weak in local window
+const MIN_GAP_SEC   = 0.22;
+const FRAME_SIZE    = 1024;
+const HOP_SIZE      = 512;
+const NOVELTY_WIN   = 6;
+const PEAK_PROM     = 0.12;
+const SILENCE_RATIO = 0.10;
+const LOCAL_PROM    = 1.20;
+const NEIGHBOR_LOOK = 5;
+const NEIGHBOR_SIM  = 0.35;
+const NEIGHBOR_MIN  = 2;
 
 // ═══════════════════════════════════════════════════════════════
 //  AUDIO ANALYSIS
@@ -51,47 +55,92 @@ function computeEnergyFrames(mono) {
 }
 
 function computeOnsetFlux(energy) {
-  const flux = new Float32Array(energy.length);
-  for (let f = 1; f < energy.length; f++) {
-    const d = energy[f] - energy[f - 1];
-    flux[f] = d > 0 ? d : 0;
+  const n = energy.length;
+  const flux = new Float32Array(n);
+  for (let i = 1; i < n; i++) {
+    const d = energy[i] - energy[i - 1];
+    flux[i] = d > 0 ? d : 0;
   }
   return flux;
 }
 
-function pickPeaks(flux, sampleRate) {
-  const peaks = [];
+function pickPeaks(flux, energy, sampleRate) {
   const n = flux.length;
-  if (n < PEAK_WINDOW * 2 + 1) return peaks;
-  for (let f = PEAK_WINDOW; f < n - PEAK_WINDOW; f++) {
-    let sum = 0, sum2 = 0;
-    for (let w = f - PEAK_WINDOW; w <= f + PEAK_WINDOW; w++) {
-      sum += flux[w];
-      sum2 += flux[w] * flux[w];
-    }
-    const cnt = 2 * PEAK_WINDOW + 1;
-    const mean = sum / cnt;
-    const variance = sum2 / cnt - mean * mean;
-    const std = Math.sqrt(Math.max(0, variance));
-    const threshold = mean + PEAK_K * std;
-    let isPeak = true;
-    for (let k = -2; k <= 2; k++) {
-      if (flux[f + k] > flux[f]) { isPeak = false; break; }
-    }
-    if (isPeak && flux[f] > threshold && flux[f] > 1e-4) {
-      peaks.push({ time: (f * HOP_SIZE) / sampleRate, strength: flux[f] });
-    }
+  if (n < 20) return [];
+
+  let maxNovelty = 0;
+  let maxEnergy = 0;
+  for (let i = 0; i < n; i++) {
+    if (flux[i] > maxNovelty) maxNovelty = flux[i];
+    if (energy[i] > maxEnergy) maxEnergy = energy[i];
   }
+  if (maxNovelty <= 0 || maxEnergy <= 0) return [];
+
+  const noveltyThr = maxNovelty * PEAK_PROM;
+  const silenceThr = maxEnergy * SILENCE_RATIO;
+
+  const peaks = [];
+
+  for (let i = 2; i < n - 2; i++) {
+    if (energy[i] < silenceThr) continue;
+    if (flux[i] < noveltyThr) continue;
+
+    let isLocalMax = true;
+    for (let k = -2; k <= 2; k++) {
+      if (k === 0) continue;
+      if (flux[i + k] > flux[i]) { isLocalMax = false; break; }
+    }
+    if (!isLocalMax) continue;
+
+    const lStart = Math.max(0, i - 12);
+    const lEnd = Math.min(n - 1, i + 12);
+    let eSum = 0, eCnt = 0;
+    for (let w = lStart; w <= lEnd; w++) { eSum += energy[w]; eCnt++; }
+    const localAvg = eCnt > 0 ? eSum / eCnt : 0;
+    if (localAvg > 0 && energy[i] < localAvg * LOCAL_PROM) continue;
+
+    peaks.push({
+      time: (i * HOP_SIZE) / sampleRate,
+      strength: energy[i]
+    });
+  }
+
   return peaks;
+}
+
+function filterByNeighborSimilarity(peaks) {
+  if (peaks.length < 4) return peaks;
+
+  const result = [];
+  const n = peaks.length;
+
+  for (let i = 0; i < n; i++) {
+    const p = peaks[i];
+    let similarCount = 0;
+
+    const lo = Math.max(0, i - NEIGHBOR_LOOK);
+    const hi = Math.min(n - 1, i + NEIGHBOR_LOOK);
+
+    for (let k = lo; k <= hi; k++) {
+      if (k === i) continue;
+      const o = peaks[k];
+      const ratio = o.strength / p.strength;
+      if (ratio >= NEIGHBOR_SIM && ratio <= 1 / NEIGHBOR_SIM) {
+        similarCount++;
+      }
+    }
+
+    if (similarCount >= NEIGHBOR_MIN) result.push(p);
+  }
+
+  return result;
 }
 
 function applyMinSpacing(peaks) {
   if (!peaks.length) return peaks;
 
-  // ═══════════════════════════════════════════════════════════
-  //  STEP 1 — Sort by time, drop weak in overlapping window
-  // ═══════════════════════════════════════════════════════════
   peaks.sort((a, b) => a.time - b.time);
+
   const filtered = [];
   for (const p of peaks) {
     if (!filtered.length) { filtered.push(p); continue; }
@@ -99,48 +148,23 @@ function applyMinSpacing(peaks) {
     if (p.time - last.time >= MIN_GAP_SEC) {
       filtered.push(p);
     } else if (p.strength > last.strength) {
-      // Replace weaker earlier peak
       filtered[filtered.length - 1] = p;
     }
   }
 
-  if (filtered.length <= 3) return filtered;
+  const regular = filterByNeighborSimilarity(filtered);
 
-  // ═══════════════════════════════════════════════════════════
-  //  STEP 2 — Global max + absolute cutoff
-  // ═══════════════════════════════════════════════════════════
-  let maxStrength = 0;
-  for (const p of filtered) {
-    if (p.strength > maxStrength) maxStrength = p.strength;
-  }
-  const absCutoff = maxStrength * REL_STRENGTH;
+  if (regular.length >= filtered.length * 0.25) return regular;
 
-  // ═══════════════════════════════════════════════════════════
-  //  STEP 3 — Local adaptive filter
-  //  For each peak, compare against average of PREVIOUS N peaks.
-  //  If it's less than 60% of the local average → drop.
-  // ═══════════════════════════════════════════════════════════
-  const final = [];
-  for (let i = 0; i < filtered.length; i++) {
-    const p = filtered[i];
-
-    // Absolute cutoff
-    if (p.strength < absCutoff) continue;
-
-    // Local adaptive check
-    if (i >= LOOKBACK_BEATS) {
-      let localSum = 0;
-      for (let k = i - LOOKBACK_BEATS; k < i; k++) {
-        localSum += filtered[k].strength;
-      }
-      const localAvg = localSum / LOOKBACK_BEATS;
-      if (p.strength < localAvg * 0.6) continue;
-    }
-
-    final.push(p);
+  if (filtered.length > 0) {
+    const sorted = filtered.slice().sort((a, b) => b.strength - a.strength);
+    const keepCount = Math.max(3, Math.ceil(sorted.length * 0.6));
+    const keepSet = new Set(sorted.slice(0, keepCount));
+    const fallback = filtered.filter(p => keepSet.has(p));
+    return fallback;
   }
 
-  return final.length ? final : filtered;
+  return regular;
 }
 
 export async function detectBeatsFromUrl(url) {
@@ -149,8 +173,14 @@ export async function detectBeatsFromUrl(url) {
   const mono = downmixToMono(buffer);
   const energy = computeEnergyFrames(mono);
   const flux = computeOnsetFlux(energy);
-  const peaks = pickPeaks(flux, buffer.sampleRate);
-  return applyMinSpacing(peaks);
+
+  const raw = pickPeaks(flux, energy, buffer.sampleRate);
+  console.log('[beatsEngine] after pickPeaks:', raw.length);
+
+  const spaced = applyMinSpacing(raw);
+  console.log('[beatsEngine] after neighbor filter:', spaced.length);
+
+  return spaced;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -205,6 +235,14 @@ function deepCloneClip(clip) {
   return copy;
 }
 
+function capitalize(s) {
+  if (!s) return '';
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  EFFECT MAPS
+// ═══════════════════════════════════════════════════════════════
 const MOTION_MAP = {
   shake:     { type: 'shake',     intensity: 90,  speed: 1.2 },
   bounce:    { type: 'bounce',    intensity: 100, speed: 1.4 },
@@ -228,7 +266,12 @@ const COLOR_MAP = {
   cinematic: { brightness: 98, contrast: 118, saturation: 90 },
   flash:     { brightness: 180, contrast: 115, saturation: 100 },
   fade:      { brightness: 100, contrast: 85, saturation: 90 },
-  dreamy:    { brightness: 105, contrast: 92, saturation: 105, blur: 0.6 }
+  dreamy:    { brightness: 105, contrast: 92, saturation: 105, blur: 0.6 },
+  // Glow / lighting family
+  glow:      { brightness: 125, contrast: 105, saturation: 120, blur: 0.5 },
+  lighting:  { brightness: 140, contrast: 110, saturation: 115 },
+  sparkle:   { brightness: 130, contrast: 108, saturation: 140 },
+  neon:      { brightness: 105, contrast: 125, saturation: 160 }
 };
 
 function buildEffectStateForKey(key) {
@@ -246,9 +289,178 @@ function buildEffectStateForKey(key) {
   return { kind: 'effect', presetKey: k, filters: base, motion: MOTION_MAP.shake };
 }
 
-function capitalize(s) {
-  if (!s) return '';
-  return s.charAt(0).toUpperCase() + s.slice(1);
+// ═══════════════════════════════════════════════════════════════
+//  BEATS REPORT GENERATOR
+// ═══════════════════════════════════════════════════════════════
+function generateBeatsReport(clip, beats) {
+  const clipStart = Number.isFinite(clip.startTime) ? clip.startTime : 0;
+  const clipSourceIn = Number.isFinite(clip.sourceIn) ? clip.sourceIn : 0;
+
+  const times = beats
+    .map(b => ({
+      time: clipStart + (b.time - clipSourceIn),
+      strength: Number.isFinite(b.strength) ? b.strength : 0
+    }))
+    .sort((a, b) => a.time - b.time);
+
+  if (!times.length) return 'No beats.';
+
+  const first = times[0].time;
+  const last = times[times.length - 1].time;
+  const duration = Math.max(0, last - first);
+
+  const gaps = [];
+  for (let i = 1; i < times.length; i++) {
+    gaps.push(times[i].time - times[i - 1].time);
+  }
+
+  const avgGap = gaps.length
+    ? gaps.reduce((a, b) => a + b, 0) / gaps.length
+    : 0;
+
+  let minGap = Infinity, maxGap = 0;
+  let minIdx = -1, maxIdx = -1;
+  for (let i = 0; i < gaps.length; i++) {
+    if (gaps[i] < minGap) { minGap = gaps[i]; minIdx = i; }
+    if (gaps[i] > maxGap) { maxGap = gaps[i]; maxIdx = i; }
+  }
+  if (!gaps.length) { minGap = 0; maxGap = 0; }
+
+  const bpm = avgGap > 0 ? (60 / avgGap) : 0;
+
+  const strengths = times.map(t => t.strength);
+  const maxStrength = Math.max(...strengths, 0);
+  const minStrength = Math.min(...strengths.filter(s => s > 0), 0);
+  const avgStrength = strengths.length
+    ? strengths.reduce((a, b) => a + b, 0) / strengths.length
+    : 0;
+
+  const HARD_THR = maxStrength * 0.66;
+  const SOFT_THR = maxStrength * 0.33;
+
+  let hardCount = 0, mediumCount = 0, softCount = 0;
+  for (const t of times) {
+    if (t.strength >= HARD_THR) hardCount++;
+    else if (t.strength >= SOFT_THR) mediumCount++;
+    else softCount++;
+  }
+
+  const lines = [];
+  lines.push('═══════════════════════════════════════════════');
+  lines.push('🥁 BEATS REPORT');
+  lines.push('═══════════════════════════════════════════════');
+  lines.push('Audio:           "' + (clip.name || 'Untitled').slice(0, 42) + '"');
+  lines.push('');
+  lines.push('Total beats:     ' + times.length);
+  lines.push('First beat:      ' + first.toFixed(2) + 's');
+  lines.push('Last beat:       ' + last.toFixed(2) + 's');
+  lines.push('Total duration:  ' + duration.toFixed(2) + 's');
+  lines.push('Average gap:     ' + avgGap.toFixed(3) + 's');
+  lines.push('BPM:             ' + bpm.toFixed(1));
+  lines.push('Min gap:         ' + minGap.toFixed(3) + 's' +
+             (minIdx >= 0 ? '  (between #' + (minIdx + 1) + ' & #' + (minIdx + 2) + ')' : ''));
+  lines.push('Max gap:         ' + maxGap.toFixed(3) + 's' +
+             (maxIdx >= 0 ? '  (between #' + (maxIdx + 1) + ' & #' + (maxIdx + 2) + ')' : ''));
+  lines.push('');
+  lines.push('═══════════════════════════════════════════════');
+  lines.push('🔊 BEAT STRENGTH');
+  lines.push('═══════════════════════════════════════════════');
+  lines.push('Max strength:    ' + maxStrength.toFixed(4));
+  lines.push('Avg strength:    ' + avgStrength.toFixed(4));
+  lines.push('Min strength:    ' + minStrength.toFixed(4));
+  lines.push('');
+  lines.push('🔴 HARD  (≥66%): ' + hardCount + ' beats   → use strong effects (shake, glitch, flash)');
+  lines.push('🟡 MED   (33-66%): ' + mediumCount + ' beats → use medium effects (zoom, pulse, bounce)');
+  lines.push('🟢 SOFT  (<33%):  ' + softCount + ' beats   → use soft effects (fade, dreamy, warm)');
+  lines.push('');
+  lines.push('═══════════════════════════════════════════════');
+  lines.push('BEAT TIMELINE   ( # | time | gap | level | str )');
+  lines.push('═══════════════════════════════════════════════');
+
+  for (let i = 0; i < times.length; i++) {
+    const t = times[i];
+    const num = String(i + 1).padStart(3, ' ');
+    const timeStr = t.time.toFixed(3).padStart(8, ' ');
+
+    const gapStr = i === 0
+      ? '      —'
+      : ('+' + (times[i].time - times[i - 1].time).toFixed(3)).padStart(7, ' ');
+
+    let level, icon;
+    if (t.strength >= HARD_THR) { level = 'HARD'; icon = '🔴'; }
+    else if (t.strength >= SOFT_THR) { level = 'MED '; icon = '🟡'; }
+    else { level = 'SOFT'; icon = '🟢'; }
+
+    const strVal = t.strength.toFixed(3).padStart(6, ' ');
+
+    lines.push(
+      '  #' + num + '  |  ' + timeStr + 's  |  ' + gapStr + 's  |  ' +
+      icon + ' ' + level + '  |  ' + strVal
+    );
+  }
+
+  lines.push('');
+  lines.push('═══════════════════════════════════════════════');
+  lines.push('HOW TO USE THIS REPORT');
+  lines.push('═══════════════════════════════════════════════');
+  lines.push('1. Count clips you have. If clips < beats, they will loop.');
+  lines.push('2. Average gap = typical effect duration.');
+  lines.push('3. 🔴 HARD beats → punchy effects (shake, glitch, flash).');
+  lines.push('4. 🟡 MED beats → standard effects (zoom, pulse, bounce).');
+  lines.push('5. 🟢 SOFT beats → gentle effects (fade, dreamy, warm).');
+  lines.push('6. Small min-gap beats need snappy effects.');
+  lines.push('7. Large max-gap beats can hold longer effects.');
+  lines.push('');
+  lines.push('Then run:');
+  lines.push('  beats edit <effect1>, <effect2>, <effect3>, ...');
+  lines.push('');
+  lines.push('Strength-aware syntax:');
+  lines.push('  beats edit hard: shake+glow ; rest: zoom, pulse, bounce');
+  lines.push('');
+  lines.push('Example for ' + times.length + ' beats:');
+  lines.push('  beats edit shake, zoom, pulse, glitch');
+  lines.push('═══════════════════════════════════════════════');
+
+  return lines.join('\n');
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  STRENGTH-AWARE PARSER
+// ═══════════════════════════════════════════════════════════════
+function parseBeatsEditString(raw) {
+  const result = { hard: null, med: null, soft: null, rest: null };
+
+  const sections = String(raw).split(';').map(s => s.trim()).filter(Boolean);
+
+  for (const sec of sections) {
+    let key = 'rest';
+    let body = sec;
+
+    const qm = sec.match(/^(hard|med|medium|soft|rest|default|normal|other)\s*[:\-]\s*(.+)$/i);
+    if (qm) {
+      const q = qm[1].toLowerCase();
+      if (q === 'medium') key = 'med';
+      else if (q === 'default' || q === 'normal' || q === 'other') key = 'rest';
+      else key = q;
+      body = qm[2];
+    }
+
+    const patterns = body
+      .split(',')
+      .map(p => p.trim())
+      .filter(Boolean)
+      .map(p => p.split('+').map(e => e.trim().toLowerCase()).filter(Boolean))
+      .filter(arr => arr.length > 0);
+
+    if (patterns.length > 0) {
+      if (key === 'hard') result.hard = patterns;
+      else if (key === 'med') result.med = patterns;
+      else if (key === 'soft') result.soft = patterns;
+      else result.rest = patterns;
+    }
+  }
+
+  return result;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -269,7 +481,12 @@ export async function runDetectBeats() {
     return { ok: false, error: 'Beat detection failed: ' + (e.message || 'unknown') };
   }
 
-  if (!beats.length) return { ok: false, error: 'No beats detected in audio' };
+  if (!beats.length) {
+    return {
+      ok: false,
+      error: 'No clear beats detected — audio seems to be speech/ambient sound'
+    };
+  }
 
   audioClip.__beats = beats.map(b => ({ time: b.time, strength: b.strength }));
   audioClip.__beatsDetectedAt = Date.now();
@@ -278,19 +495,39 @@ export async function runDetectBeats() {
   document.dispatchEvent(new CustomEvent('beats:changed'));
   scheduleBeatMarkers();
 
+  const report = generateBeatsReport(audioClip, beats);
+
   return {
     ok: true,
     beatsCount: beats.length,
-    clipName: audioClip.name || 'Audio'
+    clipName: audioClip.name || 'Audio',
+    report: report
   };
 }
 
 // ═══════════════════════════════════════════════════════════════
 //  PUBLIC — Run beats editing
 // ═══════════════════════════════════════════════════════════════
-export async function runBeatsEditing(patternKeys) {
+export async function runBeatsEditing(input) {
   const appState = window.__appState;
   if (!appState) return { ok: false, error: 'App state missing' };
+
+  let groups;
+  if (typeof input === 'string') {
+    groups = parseBeatsEditString(input);
+  } else if (Array.isArray(input)) {
+    groups = {
+      hard: null, med: null, soft: null,
+      rest: input.map(k => [String(k).toLowerCase()])
+    };
+  } else {
+    groups = { hard: null, med: null, soft: null, rest: [['shake']] };
+  }
+
+  const hasAny = groups.hard || groups.med || groups.soft || groups.rest;
+  if (!hasAny) {
+    return { ok: false, error: 'No valid beats edit pattern found' };
+  }
 
   const audioClip = findAudioClipWithBeats();
   if (!audioClip) {
@@ -333,15 +570,24 @@ export async function runBeatsEditing(patternKeys) {
   const timelineBeats = [];
   for (const b of audioClip.__beats) {
     const t = audioStart + (b.time - audioSourceIn);
-    if (t >= audioStart - 0.001 && t < audioEnd) timelineBeats.push(t);
+    if (t >= audioStart - 0.001 && t < audioEnd) {
+      timelineBeats.push({
+        time: t,
+        strength: Number.isFinite(b.strength) ? b.strength : 0
+      });
+    }
   }
-  timelineBeats.sort((a, b) => a - b);
+  timelineBeats.sort((a, b) => a.time - b.time);
 
   if (!timelineBeats.length) {
     return { ok: false, error: 'No beats fall inside the audio clip range' };
   }
 
-  // Remove selected visual clips from ALL visual tracks
+  let maxStrength = 0;
+  for (const b of timelineBeats) if (b.strength > maxStrength) maxStrength = b.strength;
+  const HARD_THR = maxStrength * 0.66;
+  const SOFT_THR = maxStrength * 0.33;
+
   const selSet = new Set(visualClips);
   for (let t = 0; t < vTracks.length; t++) {
     const track = vTracks[t];
@@ -354,11 +600,13 @@ export async function runBeatsEditing(patternKeys) {
   const baseClips = visualClips.slice();
   const placed = [];
 
-  // Each clip duration = EXACT gap to next beat
+  const cycleIdx = { hard: 0, med: 0, soft: 0, rest: 0 };
+
   for (let i = 0; i < timelineBeats.length; i++) {
-    const beatTime = timelineBeats[i];
+    const beat = timelineBeats[i];
+    const beatTime = beat.time;
     const nextBeatTime = (i + 1 < timelineBeats.length)
-      ? timelineBeats[i + 1]
+      ? timelineBeats[i + 1].time
       : audioEnd;
 
     let dur = nextBeatTime - beatTime;
@@ -374,13 +622,40 @@ export async function runBeatsEditing(patternKeys) {
     clipToPlace.duration = dur;
     clipToPlace.__trimmed = true;
 
-    placed.push({ clip: clipToPlace, beatTime, duration: dur, beatIndex: i });
+    let level;
+    if (beat.strength >= HARD_THR) level = 'hard';
+    else if (beat.strength >= SOFT_THR) level = 'med';
+    else level = 'soft';
+
+    let group = groups[level];
+    let groupKey = level;
+    if (!group || !group.length) {
+      group = groups.rest;
+      groupKey = 'rest';
+    }
+    if (!group || !group.length) {
+      group = [['shake']];
+      groupKey = 'fallback';
+    }
+
+    if (cycleIdx[groupKey] === undefined) cycleIdx[groupKey] = 0;
+    const patternArr = group[cycleIdx[groupKey] % group.length];
+    cycleIdx[groupKey]++;
+
+    placed.push({
+      clip: clipToPlace,
+      beatTime,
+      duration: dur,
+      beatIndex: i,
+      level,
+      effects: patternArr
+    });
+
     srcTrack.push(clipToPlace);
   }
 
   srcTrack.sort((a, b) => (a.startTime || 0) - (b.startTime || 0));
 
-  // Find/create empty effect track ABOVE source
   let effectTrackIdx = -1;
   for (let t = srcTrackIdx + 1; t < vTracks.length; t++) {
     if (Array.isArray(vTracks[t]) && vTracks[t].length === 0) {
@@ -394,30 +669,32 @@ export async function runBeatsEditing(patternKeys) {
   }
   const effectTrack = vTracks[effectTrackIdx];
 
-  const pattern = (Array.isArray(patternKeys) && patternKeys.length > 0)
-    ? patternKeys : ['shake'];
-
   const stamp = Date.now();
+  let effectCount = 0;
 
-  // Effect layer duration = SAME as clip's beat duration
   for (let i = 0; i < placed.length; i++) {
     const p = placed[i];
-    const key = pattern[i % pattern.length];
+    if (!p.effects || !p.effects.length) continue;
 
-    const fxId = 'fx-' + stamp + '-' + i + '-' + Math.random().toString(36).slice(2, 6);
-    const fxState = buildEffectStateForKey(key);
+    for (let k = 0; k < p.effects.length; k++) {
+      const key = p.effects[k];
+      const fxId = 'fx-' + stamp + '-' + i + '-' + k + '-' + Math.random().toString(36).slice(2, 5);
+      const fxState = buildEffectStateForKey(key);
 
-    effectTrack.push({
-      name: capitalize(key),
-      url: 'effect://' + fxId,
-      type: 'effect/plain',
-      __effectId: fxId,
-      effectState: fxState,
-      startTime: p.beatTime,
-      duration: p.duration,
-      sourceIn: 0,
-      __trimmed: true
-    });
+      effectTrack.push({
+        name: capitalize(key),
+        url: 'effect://' + fxId,
+        type: 'effect/plain',
+        __effectId: fxId,
+        effectState: fxState,
+        startTime: p.beatTime,
+        duration: p.duration,
+        sourceIn: 0,
+        __trimmed: true,
+        __beatLevel: p.level
+      });
+      effectCount++;
+    }
   }
 
   document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
@@ -428,7 +705,7 @@ export async function runBeatsEditing(patternKeys) {
     ok: true,
     beatsCount: timelineBeats.length,
     clipsPlaced: placed.length,
-    effectsApplied: placed.length,
+    effectsApplied: effectCount,
     effectTrack: 'V' + (effectTrackIdx + 1)
   };
 }

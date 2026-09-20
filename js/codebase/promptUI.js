@@ -538,6 +538,14 @@ async function onApply() {
     showFeedback('❌ Execute failed: ' + (e.message || 'unknown'), 'err');
     return;
   }
+    // ═══════════════════════════════════════════════════════════
+  //  🆕 BEATS REPORT — show full copyable report
+  // ═══════════════════════════════════════════════════════════
+  if (result.ok && result.beatsReport) {
+    showFeedback(result.beatsReport, 'ok', 60000);
+    inputEl.value = '';
+    return;
+  }
 
   if (!result.ok) {
     let msg = '❌ ' + (result.error || 'Execute fail');
@@ -599,12 +607,27 @@ function showFeedback(msg, type, durationMs) {
   feedbackEl.style.alignItems = 'flex-start';
   feedbackEl.style.gap = '8px';
   feedbackEl.style.justifyContent = 'space-between';
+  feedbackEl.style.transition = 'opacity 0.25s ease, transform 0.25s ease';
+  feedbackEl.style.opacity = '1';
 
   const textEl = document.createElement('div');
   textEl.style.flex = '1';
   textEl.style.minWidth = '0';
   textEl.style.wordBreak = 'break-word';
   textEl.textContent = msg;
+
+  // 🆕 Long messages (like beats report) → monospace + scrollable
+  if (msg && msg.length > 300) {
+    textEl.style.fontFamily = "'Courier New', monospace";
+    textEl.style.fontSize = '10.5px';
+    textEl.style.lineHeight = '1.45';
+    textEl.style.whiteSpace = 'pre';
+    textEl.style.overflowX = 'auto';
+    textEl.style.maxHeight = '50vh';
+    textEl.style.overflowY = 'auto';
+    feedbackEl.style.maxHeight = '60vh';
+    feedbackEl.style.overflowY = 'hidden';
+  }
 
   const copyBtn = document.createElement('button');
   copyBtn.type = 'button';
@@ -640,6 +663,28 @@ function showFeedback(msg, type, durationMs) {
       copyBtn.style.background = 'rgba(0,255,135,0.25)';
       copyBtn.style.borderColor = '#00FF87';
       copyBtn.style.color = '#00FF87';
+
+      // ═══════════════════════════════════════════════════════
+      //  🆕 BEATS REPORT → auto-dismiss after copy
+      //  User ko 700ms ke liye green ✅ dikhega, phir
+      //  poora feedback fade-out hoke remove ho jayega.
+      // ═══════════════════════════════════════════════════════
+      if (msg && msg.indexOf('BEATS REPORT') >= 0) {
+        setTimeout(function () {
+          if (feedbackEl) {
+            feedbackEl.style.opacity = '0';
+            feedbackEl.style.transform = 'translateY(-6px)';
+            const ref = feedbackEl;
+            feedbackEl = null;
+            setTimeout(function () {
+              try { ref.remove(); } catch (_) {}
+            }, 260);
+          }
+        }, 700);
+        return;
+      }
+
+      // Normal feedback → reset button
       setTimeout(function () {
         copyBtn.textContent = '📋';
         copyBtn.style.background = 'rgba(255,255,255,0.08)';
@@ -682,8 +727,12 @@ function clearFeedback() {
 
 // ═══════════════════════════════════════════════════════════════
 //  COPY HELPERS
-// ═══════════════════════════════════════════════════════════════
 function buildPromptFeedbackCopy(msg, type) {
+  // 🆕 Beats report → copy clean (just the report, no header/env)
+  if (msg && msg.indexOf('BEATS REPORT') >= 0) {
+    return msg;
+  }
+
   const lines = [];
   lines.push('=== MOODY EDITOR — PROMPT FEEDBACK ===');
   lines.push('Type:  ' + (type || 'info'));

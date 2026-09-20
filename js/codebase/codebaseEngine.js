@@ -1477,17 +1477,15 @@ export function parsePrompt(rawPrompt) {
       beatsPart = beatsPart.replace(/^[\s,:;\-]+/, '').trim();
 
       console.log('[parsePrompt] beatsPart:', JSON.stringify(beatsPart));
-
       if (beatsPart) {
-        const pattern = beatsPart
-          .split(/[\s,]+/)
-          .map(s => s.trim().toLowerCase())
-          .filter(s => s && /^[a-z][a-z0-9_]*$/.test(s));
+        // 🆕 Support new syntax: ';', ':', '+', ','
+        // Keep the raw string; parse in beatsEngine
+        const rawPattern = beatsPart.trim();
 
-        console.log('[parsePrompt] beats pattern:', pattern);
+        console.log('[parsePrompt] beats raw:', JSON.stringify(rawPattern));
 
-        if (pattern.length) {
-          state.beatsEdit = { pattern };
+        if (rawPattern) {
+          state.beatsEdit = { raw: rawPattern };
 
           const before = prompt.slice(0, markerIdx).replace(/[\s,]+$/, '');
           prompt = (before + (rest ? '\n' + rest.trim() : '')).trim();
@@ -1833,16 +1831,22 @@ export async function executePrompt(state) {
   if (state.autoGraph === true)  _autoOpenGraph = true;
   if (state.autoGraph === false) _autoOpenGraph = false;
 
-  // ═══ 🆕 BEATS — terminal (short-circuit) ═══════════════════
+   // ═══ 🆕 BEATS — terminal (short-circuit) ═══════════════════
   if (state.detectBeats) {
     const r = await runDetectBeats();
     if (!r.ok) return { ok: false, error: r.error };
     _showToast('🥁 ' + r.beatsCount + ' beats detected');
-    return { ok: true, results: ['detectBeats:' + r.beatsCount] };
+    return {
+      ok: true,
+      results: ['detectBeats:' + r.beatsCount],
+      beatsReport: r.report || ''
+    };
   }
 
   if (state.beatsEdit) {
-    const r = await runBeatsEditing(state.beatsEdit.pattern);
+    // 🆕 Pass raw string (new syntax) OR pattern array (old)
+    const input = state.beatsEdit.raw || state.beatsEdit.pattern;
+    const r = await runBeatsEditing(input);
     if (!r.ok) return { ok: false, error: r.error };
     _showToast('🥁 ' + r.effectsApplied + ' effects on ' + r.beatsCount + ' beats');
     return {

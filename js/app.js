@@ -29,6 +29,7 @@ import { initKeyframeUI, clearKeyframeSelection, getSelectedKeyframe } from './w
 import { initMagnetTool } from './workspace/magnetTool.js';
 import { initTransitionMarkers } from './workspace/transitionMarkers.js';
 import { initPreviewDrag } from './workspace/previewDrag.js';
+import { initWaveformRenderer } from './workspace/waveformRenderer.js';
   // ─── Multi-select (forward/backward range selection) ───────
   initMultiSelect();
 
@@ -367,6 +368,8 @@ async function bootstrap() {
 
   // ─── Text renderer (multi-layer with keyframe sampling) ────
   initTextRenderer();
+    // ─── Waveform renderer (audio clip visualization) ─────────
+  initWaveformRenderer();
 
   // ─── Register feature modules ──────────────────────────────
   registerFeatures();
