@@ -1,21 +1,18 @@
 // ================================================================
 //  js/codebase/beatsEngine.js
-//  Beat detection + beats-driven layer editing + beat markers.
-//
-//  Commands:
-//    detect beats        → analyze selected audio clip, save beat times
-//    beats edit <fx...>  → place selected visual clips on beats +
-//                          apply effect pattern cyclically
+//  Beat detection + beats-driven editing + timeline markers.
 // ================================================================
 
-const MIN_GAP_SEC = 0.25;
+const MIN_GAP_SEC = 0.45;      // 🆕 pehle 0.25 — ab chhoti beats skip
 const FRAME_SIZE  = 1024;
 const HOP_SIZE    = 512;
 const PEAK_WINDOW = 20;
-const PEAK_K      = 1.5;
+const PEAK_K      = 2.5;       // 🆕 pehle 1.5 — ab sirf strong peaks
+const REL_STRENGTH = 0.35;     // 🆕 keep only beats >= 35% of max
+const LOOKBACK_BEATS = 5;      // 🆕 adaptive: ignore weak in local window
 
 // ═══════════════════════════════════════════════════════════════
-//  AUDIO DECODE + BEAT ANALYSIS
+//  AUDIO ANALYSIS
 // ═══════════════════════════════════════════════════════════════
 async function decodeAudioFromUrl(url) {
   const resp = await fetch(url);
@@ -24,11 +21,8 @@ async function decodeAudioFromUrl(url) {
   if (!AC) throw new Error('AudioContext not available');
   const ac = new AC();
   let buffer;
-  try {
-    buffer = await ac.decodeAudioData(ab);
-  } finally {
-    try { ac.close(); } catch (_) {}
-  }
+  try { buffer = await ac.decodeAudioData(ab); }
+  finally { try { ac.close(); } catch (_) {} }
   return buffer;
 }
 
@@ -69,7 +63,6 @@ function pickPeaks(flux, sampleRate) {
   const peaks = [];
   const n = flux.length;
   if (n < PEAK_WINDOW * 2 + 1) return peaks;
-
   for (let f = PEAK_WINDOW; f < n - PEAK_WINDOW; f++) {
     let sum = 0, sum2 = 0;
     for (let w = f - PEAK_WINDOW; w <= f + PEAK_WINDOW; w++) {
@@ -81,12 +74,10 @@ function pickPeaks(flux, sampleRate) {
     const variance = sum2 / cnt - mean * mean;
     const std = Math.sqrt(Math.max(0, variance));
     const threshold = mean + PEAK_K * std;
-
     let isPeak = true;
     for (let k = -2; k <= 2; k++) {
       if (flux[f + k] > flux[f]) { isPeak = false; break; }
     }
-
     if (isPeak && flux[f] > threshold && flux[f] > 1e-4) {
       peaks.push({ time: (f * HOP_SIZE) / sampleRate, strength: flux[f] });
     }
@@ -95,15 +86,61 @@ function pickPeaks(flux, sampleRate) {
 }
 
 function applyMinSpacing(peaks) {
+  if (!peaks.length) return peaks;
+
+  // ═══════════════════════════════════════════════════════════
+  //  STEP 1 — Sort by time, drop weak in overlapping window
+  // ═══════════════════════════════════════════════════════════
   peaks.sort((a, b) => a.time - b.time);
   const filtered = [];
   for (const p of peaks) {
     if (!filtered.length) { filtered.push(p); continue; }
     const last = filtered[filtered.length - 1];
-    if (p.time - last.time >= MIN_GAP_SEC) filtered.push(p);
-    else if (p.strength > last.strength) filtered[filtered.length - 1] = p;
+    if (p.time - last.time >= MIN_GAP_SEC) {
+      filtered.push(p);
+    } else if (p.strength > last.strength) {
+      // Replace weaker earlier peak
+      filtered[filtered.length - 1] = p;
+    }
   }
-  return filtered;
+
+  if (filtered.length <= 3) return filtered;
+
+  // ═══════════════════════════════════════════════════════════
+  //  STEP 2 — Global max + absolute cutoff
+  // ═══════════════════════════════════════════════════════════
+  let maxStrength = 0;
+  for (const p of filtered) {
+    if (p.strength > maxStrength) maxStrength = p.strength;
+  }
+  const absCutoff = maxStrength * REL_STRENGTH;
+
+  // ═══════════════════════════════════════════════════════════
+  //  STEP 3 — Local adaptive filter
+  //  For each peak, compare against average of PREVIOUS N peaks.
+  //  If it's less than 60% of the local average → drop.
+  // ═══════════════════════════════════════════════════════════
+  const final = [];
+  for (let i = 0; i < filtered.length; i++) {
+    const p = filtered[i];
+
+    // Absolute cutoff
+    if (p.strength < absCutoff) continue;
+
+    // Local adaptive check
+    if (i >= LOOKBACK_BEATS) {
+      let localSum = 0;
+      for (let k = i - LOOKBACK_BEATS; k < i; k++) {
+        localSum += filtered[k].strength;
+      }
+      const localAvg = localSum / LOOKBACK_BEATS;
+      if (p.strength < localAvg * 0.6) continue;
+    }
+
+    final.push(p);
+  }
+
+  return final.length ? final : filtered;
 }
 
 export async function detectBeatsFromUrl(url) {
@@ -117,7 +154,7 @@ export async function detectBeatsFromUrl(url) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  SELECTION HELPERS
+//  HELPERS
 // ═══════════════════════════════════════════════════════════════
 function findSelectedAudioClip() {
   const el = document.querySelector('.clip.selected');
@@ -151,69 +188,23 @@ function findAudioClipWithBeats() {
   return null;
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  PUBLIC — Run detect beats
-// ═══════════════════════════════════════════════════════════════
-export async function runDetectBeats() {
-  const appState = window.__appState;
-  if (!appState) return { ok: false, error: 'App state missing' };
-
-  const audioClip = findSelectedAudioClip();
-  if (!audioClip) return { ok: false, error: 'Select an audio clip first' };
-  if (!audioClip.url) return { ok: false, error: 'Audio clip has no URL' };
-
-  let beats;
-  try {
-    beats = await detectBeatsFromUrl(audioClip.url);
-  } catch (e) {
-    return { ok: false, error: 'Beat detection failed: ' + (e.message || 'unknown') };
-  }
-
-  if (!beats.length) return { ok: false, error: 'No beats detected in audio' };
-
-  audioClip.__beats = beats.map(b => ({ time: b.time, strength: b.strength }));
-  audioClip.__beatsDetectedAt = Date.now();
-
-  document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
-  document.dispatchEvent(new CustomEvent('beats:changed'));
-
-  // Force marker re-render
-  scheduleBeatMarkers();
-
-  return {
-    ok: true,
-    beatsCount: beats.length,
-    clipName: audioClip.name || 'Audio'
-  };
-}
-
-// ═══════════════════════════════════════════════════════════════
-//  DEEP CLONE
-// ═══════════════════════════════════════════════════════════════
 function deepCloneClip(clip) {
   let copy;
   try { copy = JSON.parse(JSON.stringify(clip)); }
   catch (_) { copy = Object.assign({}, clip); }
-
   const now = Date.now();
   const rnd = Math.random().toString(36).slice(2, 7);
-
   delete copy.__linkedId;
   delete copy.__beats;
   delete copy.__beatsDetectedAt;
-
   if (copy.__effectId) { copy.__effectId = 'fx-' + now + '-' + rnd; copy.url = 'effect://' + copy.__effectId; }
   if (copy.__textId)   { copy.__textId   = 'tx-' + now + '-' + rnd; copy.url = 'text://'   + copy.__textId;   }
   if (copy.__stickerId){ copy.__stickerId= 'sk-' + now + '-' + rnd; copy.url = 'sticker://'+ copy.__stickerId;}
   if (copy.__audioFxId){ copy.__audioFxId= 'afx-' + now + '-' + rnd; copy.url = 'audiofx://'+ copy.__audioFxId;}
   if (copy.__soundId)  { copy.__soundId  = 'se-' + now + '-' + rnd; }
-
   return copy;
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  EFFECT STATE BUILDER
-// ═══════════════════════════════════════════════════════════════
 const MOTION_MAP = {
   shake:     { type: 'shake',     intensity: 90,  speed: 1.2 },
   bounce:    { type: 'bounce',    intensity: 100, speed: 1.4 },
@@ -246,7 +237,6 @@ function buildEffectStateForKey(key) {
     brightness: 100, contrast: 100, saturation: 100, hue: 0,
     grayscale: 0, sepia: 0, invert: 0, blur: 0, opacity: 100
   };
-
   if (MOTION_MAP[k]) {
     return { kind: 'effect', presetKey: k, filters: base, motion: MOTION_MAP[k] };
   }
@@ -254,6 +244,45 @@ function buildEffectStateForKey(key) {
     return { kind: 'effect', presetKey: k, filters: Object.assign({}, base, COLOR_MAP[k]), motion: null };
   }
   return { kind: 'effect', presetKey: k, filters: base, motion: MOTION_MAP.shake };
+}
+
+function capitalize(s) {
+  if (!s) return '';
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  PUBLIC — Run detect beats
+// ═══════════════════════════════════════════════════════════════
+export async function runDetectBeats() {
+  const appState = window.__appState;
+  if (!appState) return { ok: false, error: 'App state missing' };
+
+  const audioClip = findSelectedAudioClip();
+  if (!audioClip) return { ok: false, error: 'Select an audio clip first' };
+  if (!audioClip.url) return { ok: false, error: 'Audio clip has no URL' };
+
+  let beats;
+  try {
+    beats = await detectBeatsFromUrl(audioClip.url);
+  } catch (e) {
+    return { ok: false, error: 'Beat detection failed: ' + (e.message || 'unknown') };
+  }
+
+  if (!beats.length) return { ok: false, error: 'No beats detected in audio' };
+
+  audioClip.__beats = beats.map(b => ({ time: b.time, strength: b.strength }));
+  audioClip.__beatsDetectedAt = Date.now();
+
+  document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
+  document.dispatchEvent(new CustomEvent('beats:changed'));
+  scheduleBeatMarkers();
+
+  return {
+    ok: true,
+    beatsCount: beats.length,
+    clipName: audioClip.name || 'Audio'
+  };
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -265,7 +294,7 @@ export async function runBeatsEditing(patternKeys) {
 
   const audioClip = findAudioClipWithBeats();
   if (!audioClip) {
-    return { ok: false, error: 'No audio with beats. Run "detect beats" on an audio clip first.' };
+    return { ok: false, error: 'No audio with beats. Run "detect beats" first.' };
   }
 
   const selected = [];
@@ -280,9 +309,7 @@ export async function runBeatsEditing(patternKeys) {
     if (!c || !c.type) return false;
     return c.type.indexOf('video/') === 0 || c.type.indexOf('image/') === 0;
   });
-  if (!visualClips.length) {
-    return { ok: false, error: 'No video/image clips selected' };
-  }
+  if (!visualClips.length) return { ok: false, error: 'No video/image clips selected' };
 
   visualClips.sort((a, b) => (a.startTime || 0) - (b.startTime || 0));
 
@@ -314,16 +341,6 @@ export async function runBeatsEditing(patternKeys) {
     return { ok: false, error: 'No beats fall inside the audio clip range' };
   }
 
-  let avgGap;
-  if (timelineBeats.length > 1) {
-    let sum = 0;
-    for (let i = 1; i < timelineBeats.length; i++) sum += timelineBeats[i] - timelineBeats[i - 1];
-    avgGap = sum / (timelineBeats.length - 1);
-  } else {
-    avgGap = audioDur || 3;
-  }
-  const clipDur = Math.max(0.15, avgGap);
-
   // Remove selected visual clips from ALL visual tracks
   const selSet = new Set(visualClips);
   for (let t = 0; t < vTracks.length; t++) {
@@ -336,25 +353,34 @@ export async function runBeatsEditing(patternKeys) {
 
   const baseClips = visualClips.slice();
   const placed = [];
+
+  // Each clip duration = EXACT gap to next beat
   for (let i = 0; i < timelineBeats.length; i++) {
     const beatTime = timelineBeats[i];
-    const srcClip = baseClips[i % baseClips.length];
+    const nextBeatTime = (i + 1 < timelineBeats.length)
+      ? timelineBeats[i + 1]
+      : audioEnd;
 
+    let dur = nextBeatTime - beatTime;
+    if (!Number.isFinite(dur) || dur <= 0.01) dur = 0.5;
+    if (beatTime + dur > audioEnd) dur = Math.max(0.15, audioEnd - beatTime);
+
+    const srcClip = baseClips[i % baseClips.length];
     let clipToPlace;
     if (i < baseClips.length) clipToPlace = srcClip;
     else clipToPlace = deepCloneClip(srcClip);
 
     clipToPlace.startTime = beatTime;
-    let dur = clipDur;
-    if (beatTime + dur > audioEnd) dur = Math.max(0.15, audioEnd - beatTime);
     clipToPlace.duration = dur;
     clipToPlace.__trimmed = true;
 
-    placed.push({ clip: clipToPlace, beatTime: beatTime, beatIndex: i });
+    placed.push({ clip: clipToPlace, beatTime, duration: dur, beatIndex: i });
     srcTrack.push(clipToPlace);
   }
+
   srcTrack.sort((a, b) => (a.startTime || 0) - (b.startTime || 0));
 
+  // Find/create empty effect track ABOVE source
   let effectTrackIdx = -1;
   for (let t = srcTrackIdx + 1; t < vTracks.length; t++) {
     if (Array.isArray(vTracks[t]) && vTracks[t].length === 0) {
@@ -369,10 +395,11 @@ export async function runBeatsEditing(patternKeys) {
   const effectTrack = vTracks[effectTrackIdx];
 
   const pattern = (Array.isArray(patternKeys) && patternKeys.length > 0)
-    ? patternKeys
-    : ['shake'];
+    ? patternKeys : ['shake'];
 
   const stamp = Date.now();
+
+  // Effect layer duration = SAME as clip's beat duration
   for (let i = 0; i < placed.length; i++) {
     const p = placed[i];
     const key = pattern[i % pattern.length];
@@ -387,7 +414,7 @@ export async function runBeatsEditing(patternKeys) {
       __effectId: fxId,
       effectState: fxState,
       startTime: p.beatTime,
-      duration: p.clip.duration,
+      duration: p.duration,
       sourceIn: 0,
       __trimmed: true
     });
@@ -406,13 +433,8 @@ export async function runBeatsEditing(patternKeys) {
   };
 }
 
-function capitalize(s) {
-  if (!s) return '';
-  return s.charAt(0).toUpperCase() + s.slice(1);
-}
-
 // ═══════════════════════════════════════════════════════════════
-//  🆕 BEAT MARKERS (on audio clip in timeline)
+//  BEAT MARKERS
 // ═══════════════════════════════════════════════════════════════
 const BEAT_CSS_ID = 'beat-marker-styles';
 function injectBeatMarkerStyles() {
@@ -435,7 +457,7 @@ function injectBeatMarkerStyles() {
       border: 1.5px solid #fff;
       border-radius: 50%;
       transform: translateX(-50%);
-      box-shadow: 0 0 5px rgba(255, 0, 102, 0.9), 0 0 2px rgba(255,0,102,1);
+      box-shadow: 0 0 5px rgba(255, 0, 102, 0.9);
       pointer-events: none;
       box-sizing: border-box;
     }
@@ -473,8 +495,6 @@ function scheduleBeatMarkers() {
 
 function renderBeatMarkers() {
   injectBeatMarkerStyles();
-
-  // Remove old
   document.querySelectorAll('.beat-marker-layer').forEach(n => n.remove());
   document.querySelectorAll('.beat-marker-count').forEach(n => n.remove());
 
@@ -500,7 +520,6 @@ function renderBeatMarkers() {
       const clipSourceIn = Number.isFinite(clip.sourceIn) ? clip.sourceIn : 0;
       if (clipDur <= 0) continue;
 
-      // Find max strength for normalization
       let maxStrength = 0;
       for (const b of clip.__beats) {
         if (Number.isFinite(b.strength) && b.strength > maxStrength) maxStrength = b.strength;
@@ -527,7 +546,6 @@ function renderBeatMarkers() {
 
       clipEl.appendChild(layer);
 
-      // Count badge
       const badge = document.createElement('span');
       badge.className = 'beat-marker-count';
       badge.textContent = '🥁 ' + clip.__beats.length;
@@ -536,21 +554,15 @@ function renderBeatMarkers() {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  🆕 AUTO-INSTALL BEAT MARKER LISTENERS
-//  Runs on module import — no app.js change needed.
-// ═══════════════════════════════════════════════════════════════
+// Auto-install listeners
 (function autoInstallBeatMarkers() {
   if (typeof document === 'undefined') return;
-
   const install = () => {
     document.addEventListener('editor:timeline-changed', scheduleBeatMarkers);
     document.addEventListener('timeline:scale-changed', scheduleBeatMarkers);
     document.addEventListener('beats:changed', scheduleBeatMarkers);
-    // Initial render
     requestAnimationFrame(() => scheduleBeatMarkers());
   };
-
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', install);
   } else {

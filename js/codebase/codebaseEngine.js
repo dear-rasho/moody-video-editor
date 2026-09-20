@@ -1243,10 +1243,10 @@ function trySpecialCommand(seg, state) {
   const low = seg.toLowerCase().trim();
 
   // 🆕 Detect beats
-  if (/^(?:detect\s*beats?|beats?\s*detect|find\s*beats?|identify\s*beats?)$/i.test(low)) {
-    state.detectBeats = true;
-    return true;
-  }
+if (/^(?:detect\s*beats?|beats?\s*detect|find\s*beats?|identify\s*beats?)$/i.test(low)) {
+  state.detectBeats = true;
+  return true;
+}
 
   if (/^(tighten\s*track|close\s*gaps?|magnet|no\s*gaps?)$/i.test(low)) {
     state.tightenTracks = true;
@@ -1415,6 +1415,8 @@ export function parsePrompt(rawPrompt) {
     return { ok: false, error: 'Empty prompt' };
   }
 
+  console.log('[parsePrompt] input:', JSON.stringify(rawPrompt));
+
   _resetUnknown();
   const ratio = detectRatio(rawPrompt);
 
@@ -1439,17 +1441,80 @@ export function parsePrompt(rawPrompt) {
     tightenTracks: false,
     transitionAll: null,
     atTransitions: [],
-    layerTransitions: null
+    layerTransitions: null,
+    detectBeats: false,
+    beatsEdit: null
   };
 
   let prompt = rawPrompt.toLowerCase().trim();
   prompt = prompt.replace(/^\s*ratio\s+\d+\s*:\s*\d+\s*$/im, '');
 
-  // 🆕 Pre-extract layer transitions BEFORE comma-split
-  const extracted = extractLayerTransitionsFromPrompt(prompt);
-  if (extracted) {
-    state.layerTransitions = extracted.parsed;
-    prompt = extracted.remaining;
+  // ═══════════════════════════════════════════════════════════
+  //  🆕 BEATS EDIT — scan raw prompt for "beats edit"
+  // ═══════════════════════════════════════════════════════════
+  {
+    const marker = 'beats edit';
+    const markerIdx = prompt.indexOf(marker);
+
+    console.log('[parsePrompt] beats marker index:', markerIdx);
+
+    if (markerIdx >= 0) {
+      // Everything after "beats edit"
+      const after = prompt.slice(markerIdx + marker.length);
+
+      // Split at first newline
+      const nlIdx = after.search(/\n/);
+      let beatsPart, rest;
+      if (nlIdx >= 0) {
+        beatsPart = after.slice(0, nlIdx);
+        rest = after.slice(nlIdx + 1);
+      } else {
+        beatsPart = after;
+        rest = '';
+      }
+
+      // Strip leading separators
+      beatsPart = beatsPart.replace(/^[\s,:;\-]+/, '').trim();
+
+      console.log('[parsePrompt] beatsPart:', JSON.stringify(beatsPart));
+
+      if (beatsPart) {
+        const pattern = beatsPart
+          .split(/[\s,]+/)
+          .map(s => s.trim().toLowerCase())
+          .filter(s => s && /^[a-z][a-z0-9_]*$/.test(s));
+
+        console.log('[parsePrompt] beats pattern:', pattern);
+
+        if (pattern.length) {
+          state.beatsEdit = { pattern };
+
+          const before = prompt.slice(0, markerIdx).replace(/[\s,]+$/, '');
+          prompt = (before + (rest ? '\n' + rest.trim() : '')).trim();
+
+          console.log('[parsePrompt] remaining after extraction:', JSON.stringify(prompt));
+        }
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  //  🆕 LAYER TRANSITIONS — scan raw prompt
+  // ═══════════════════════════════════════════════════════════
+  {
+    const re = /(?:^|\n|,)\s*((?:layer\s+[a-z]\d+\s+)?transitions?\s+(?:(?:fade\s*black|fade\s*white|fade|dissolve|slide(?:\s+(?:left|right|up|down))?|zoom(?:\s+(?:in|out))?|wipe(?:\s+(?:left|right))?|circle(?:\s+in)?|blur|null|none|skip|-)(?:\s+\d+(?:\.\d+)?)?)(?:\s*,\s*(?:(?:fade\s*black|fade\s*white|fade|dissolve|slide(?:\s+(?:left|right|up|down))?|zoom(?:\s+(?:in|out))?|wipe(?:\s+(?:left|right))?|circle(?:\s+in)?|blur|null|none|skip|-)(?:\s+\d+(?:\.\d+)?)?))*)(\s+loop)?/i;
+    const m = prompt.match(re);
+    if (m) {
+      const cmd = (m[1] + (m[2] || '')).trim();
+      const parsed = parseLayerTransitions(cmd);
+      if (parsed && parsed.list && parsed.list.length) {
+        state.layerTransitions = parsed;
+        prompt = (
+          prompt.slice(0, m.index) +
+          prompt.slice(m.index + m[0].length)
+        ).trim();
+      }
+    }
   }
 
   if (/\ball\s+clips?\b|\bevery\s+clip\b|\bsab\s+clips?\b|\bhar\s+clip\b/.test(prompt)) {
@@ -1458,10 +1523,14 @@ export function parsePrompt(rawPrompt) {
   }
 
   const parts = prompt.split(/[,\n]+/).map(s => s.trim()).filter(Boolean);
+  console.log('[parsePrompt] final parts:', parts);
+  console.log('[parsePrompt] state.beatsEdit:', state.beatsEdit);
+
   for (const part of parts) {
     if (trySpecialCommand(part, state)) continue;
     parseSegment(part, state);
   }
+
   return { ok: true, state };
 }
 
@@ -1754,6 +1823,8 @@ function hexToRgb(hex) {
 // ═══════════════════════════════════════════════════════════════
 export async function executePrompt(state) {
   if (!state) return { ok: false, error: 'No state' };
+  
+
   const appState = window.__appState;
   if (!appState) return { ok: false, error: 'App state missing' };
 
