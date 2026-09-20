@@ -1,8 +1,6 @@
 // ================================================================
 //  js/workspace/timelineEngine.js
 //  Unlimited-layer timeline with strict no-overlap per track.
-//  + Track reorder (ripple) with linked audio mirror.
-//  + Linked clips behave as one unit (delete + select highlight).
 // ================================================================
 
 import {
@@ -17,8 +15,8 @@ import {
 import {
   initTimelineScaler,
   setDuration as setTimelineDuration,
-  getDuration as getScalerDuration,   // 🆕 auto-fit ke liye
-  setZoom     as setTimelineZoom,     // 🆕 auto-fit ke liye
+  getDuration as getScalerDuration,
+  setZoom     as setTimelineZoom,
   getMetrics   as getScaleMetrics,
   computeClipRect,
   getRulerStep,
@@ -36,9 +34,7 @@ function injectLinkedStyles() {
   s.textContent = `
     .clip.linked-selected {
       border-color: #4f9dff !important;
-      box-shadow:
-        0 0 0 1px #4f9dff,
-        0 0 10px rgba(79,157,255,0.5) !important;
+      box-shadow: 0 0 0 1px #4f9dff, 0 0 10px rgba(79,157,255,0.5) !important;
       outline: 1.5px solid #4f9dff;
       outline-offset: -1.5px;
     }
@@ -74,7 +70,6 @@ export function initTimelineEngine(config) {
   rulerContainer.className = 'timeline-ruler';
   matrix.prepend(rulerContainer);
 
-  // ─── SCALER INIT ───────────────────────────────────────────
   initTimelineScaler({
     viewport:   viewport,
     slider:     zoomSlider,
@@ -89,7 +84,6 @@ export function initTimelineEngine(config) {
     document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
   }
 
-  // ─── Click empty area → deselect ──────────────────────────
   if (viewport) {
     viewport.addEventListener('pointerdown', function (e) {
       if (e.target.closest && (
@@ -117,16 +111,7 @@ export function initTimelineEngine(config) {
     document.dispatchEvent(new CustomEvent('editor:clip-selected'));
   });
 
-  // ═══════════════════════════════════════════════════════════
-  //  🆕 FIX: Timeline minimum 40 minutes
-  //
-  //  Pehle: Ruler sirf content tak extend hota tha → drag-drop
-  //         karte waqt ruler shrink/expand hota → jhatka lagta
-  //
-  //  Ab:    40 min minimum → ruler stable, drag-drop smooth
-  //         Agar content 40 min se zyada ho, to expand karega
-  // ═══════════════════════════════════════════════════════════
-  const MIN_TIMELINE_DURATION_SEC = 40 * 60; // 40 minutes = 2400 sec
+  const MIN_TIMELINE_DURATION_SEC = 40 * 60;
 
   function computeDuration() {
     let furthestEnd = 0;
@@ -139,26 +124,17 @@ export function initTimelineEngine(config) {
         if (r.end > furthestEnd) furthestEnd = r.end;
       }
     }
-
-    // Agar content nahi hai, video duration check karo
     if (furthestEnd === 0) {
       const video = document.querySelector('#preview-video');
       if (video && Number.isFinite(video.duration) && video.duration > 0) {
         furthestEnd = video.duration;
       }
     }
-
-    // 🆕 Minimum 40 minute — ruler stable rahega
-    if (furthestEnd < MIN_TIMELINE_DURATION_SEC) {
-      return MIN_TIMELINE_DURATION_SEC;
-    }
-
+    if (furthestEnd < MIN_TIMELINE_DURATION_SEC) return MIN_TIMELINE_DURATION_SEC;
     return furthestEnd;
   }
 
-  function rangesOverlap(aS, aE, bS, bE) {
-    return aS < bE && bS < aE;
-  }
+  function rangesOverlap(aS, aE, bS, bE) { return aS < bE && bS < aE; }
 
   function trackHasOverlap(track, start, end, excludeClip) {
     if (!Array.isArray(track)) return false;
@@ -188,9 +164,6 @@ export function initTimelineEngine(config) {
     return clip ? clip.__linkedId : null;
   }
 
-  // ═══════════════════════════════════════════════════════════
-  //  🆕 RIPPLE REORDER — with linked audio mirror
-  // ═══════════════════════════════════════════════════════════
   function reorderTrack(group, fromIdx, toIdx) {
     const list = state[group];
     if (!Array.isArray(list)) return;
@@ -198,7 +171,6 @@ export function initTimelineEngine(config) {
     if (toIdx < 0 || toIdx >= list.length) return;
     if (fromIdx === toIdx) return;
 
-    // Collect linked IDs from the moved track
     const sourceTrack = list[fromIdx];
     const linkedIds = new Set();
     if (Array.isArray(sourceTrack)) {
@@ -207,7 +179,6 @@ export function initTimelineEngine(config) {
       });
     }
 
-    // Find corresponding track in the OTHER group
     let otherGroup = null;
     let otherIdx = -1;
     if (linkedIds.size > 0) {
@@ -227,11 +198,9 @@ export function initTimelineEngine(config) {
       }
     }
 
-    // Reorder this group
     const movedThis = list.splice(fromIdx, 1)[0];
     list.splice(toIdx, 0, movedThis);
 
-    // Reorder the other group (mirror shift)
     if (otherGroup && otherIdx >= 0 && Array.isArray(state[otherGroup])) {
       const otherList = state[otherGroup];
       const movedOther = otherList.splice(otherIdx, 1)[0];
@@ -246,7 +215,6 @@ export function initTimelineEngine(config) {
     showToast('Track reordered' + (otherIdx >= 0 ? ' (linked audio mirrored)' : ''));
   }
 
-  // Listen for reorder events from layerDrag
   document.addEventListener('editor:reorder-track', function (e) {
     const d = e.detail || {};
     if (!Number.isFinite(d.from) || !Number.isFinite(d.to)) return;
@@ -254,7 +222,6 @@ export function initTimelineEngine(config) {
     reorderTrack(d.group, d.from, d.to);
   });
 
-  // ─── Track builder ────────────────────────────────────────
   function buildTrack(label, clips, trackIndex, group, selectedLinkedId) {
     const track = document.createElement('div');
     track.className = 'track';
@@ -396,7 +363,6 @@ export function initTimelineEngine(config) {
     return track;
   }
 
-  // ─── Ruler ────────────────────────────────────────────────
   function renderRuler() {
     rulerContainer.innerHTML = '';
     const m = getScaleMetrics();
@@ -432,7 +398,6 @@ export function initTimelineEngine(config) {
     }
   }
 
-  // ─── Main render ──────────────────────────────────────────
   function render() {
     if (_rendering) return;
     _rendering = true;
@@ -444,7 +409,6 @@ export function initTimelineEngine(config) {
 
       const linkedId = getSelectedLinkedId();
 
-      // Visual tracks — reversed for display (V1 at bottom of stack)
       const visualNodes = [];
       for (let i = state.visual.length - 1; i >= 0; i--) {
         visualNodes.push(buildTrack('V' + (i + 1), state.visual[i] || [], i, 'visual', linkedId));
@@ -463,50 +427,26 @@ export function initTimelineEngine(config) {
     }
   }
 
-  // ═══════════════════════════════════════════════════════════
-  //  🆕 AUTO-FIT IMPORTED CONTENT
-  //
-  //  Import ke baad zoom aisi set karo ke naya clip poori
-  //  visible timeline area mein fit ho jaye.
-  //
-  //  Formula: viewportWidth / timelineDuration × zoom = viewportWidth / clipDuration
-  //        ⇒  zoom = timelineDuration / clipDuration
-  // ═══════════════════════════════════════════════════════════
   function autoFitImportedContent(items) {
     if (!items || !items.length) return;
-
-    // Longest imported item dhundo (visual ko priority)
     let maxVisualDur = 0;
     let maxAnyDur = 0;
-
     for (let i = 0; i < items.length; i++) {
       const it = items[i];
       if (!it) continue;
-
-      const d = (Number.isFinite(it.duration) && it.duration > 0)
-        ? it.duration
-        : DEFAULT_CLIP_SEC;
-
+      const d = (Number.isFinite(it.duration) && it.duration > 0) ? it.duration : DEFAULT_CLIP_SEC;
       const t = it.type || '';
       const isAudio = t.indexOf('audio/') === 0;
-
       if (!isAudio && d > maxVisualDur) maxVisualDur = d;
       if (d > maxAnyDur) maxAnyDur = d;
     }
-
     const fitDur = maxVisualDur > 0 ? maxVisualDur : maxAnyDur;
     if (fitDur <= 0) return;
-
     const timelineDur = getScalerDuration();
     if (timelineDur <= 0) return;
-
-    // Desired zoom so imported clip fills the viewport
-    const desiredZoom = timelineDur / fitDur;
-    setTimelineZoom(desiredZoom);
+    setTimelineZoom(timelineDur / fitDur);
   }
-    // ═══════════════════════════════════════════════════════════
-  //  🆕 Auto-fit to any duration (used by codebase prompt)
-  // ═══════════════════════════════════════════════════════════
+
   function autoFitToDuration(durSec) {
     const d = Number(durSec);
     if (!Number.isFinite(d) || d <= 0) return;
@@ -515,27 +455,59 @@ export function initTimelineEngine(config) {
     setTimelineZoom(timelineDur / d);
   }
 
-  // 🆕 Expose globally so codebaseEngine can trigger it
   window.__autofitTimelineToDuration = autoFitToDuration;
 
-  // ─── Add media ────────────────────────────────────────────
   function addMedia(items) {
     const atTime = Number(getPlayheadTime()) || 0;
+    const visualItems = [];
+    const audioItems = [];
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      const t = item.type || '';
+      if (t.indexOf('audio/') === 0) audioItems.push(item);
+      else visualItems.push(item);
+    }
+    if (visualItems.length > 0) importSequentially(visualItems, 'visual', atTime);
+    if (audioItems.length > 0) importSequentially(audioItems, 'audio', atTime);
+    render();
+    autoFitImportedContent(items);
+    notifyChanged();
+  }
+
+  function importSequentially(items, group, atTime) {
+    const list = state[group];
+    const minLayers = group === 'visual' ? DEFAULT_VISUAL_LAYERS : DEFAULT_AUDIO_LAYERS;
+    ensureMinLayers(list, minLayers);
+
+    let currentTrackIdx = 0;
+    let cursor = atTime;
 
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
-      const isAudio = item.type.indexOf('audio/') === 0;
-      const isVideo = item.type.indexOf('video/') === 0;
-      const isImage = item.type.indexOf('image/') === 0;
+      const t = item.type || '';
+      const isImage = t.indexOf('image/') === 0;
+      const isVideo = t.indexOf('video/') === 0;
 
       const realDur = (Number.isFinite(item.duration) && item.duration > 0)
         ? item.duration
         : (isImage ? 3 : DEFAULT_CLIP_SEC);
 
-      const trackType = isAudio ? 'audio' : 'visual';
-      const list = state[trackType];
-      ensureMinLayers(list,
-        trackType === 'visual' ? DEFAULT_VISUAL_LAYERS : DEFAULT_AUDIO_LAYERS);
+      const end = cursor + realDur;
+
+      let placed = false;
+      for (let tIdx = currentTrackIdx; tIdx < list.length; tIdx++) {
+        if (!Array.isArray(list[tIdx])) list[tIdx] = [];
+        if (!trackHasOverlap(list[tIdx], cursor, end, null)) {
+          currentTrackIdx = tIdx;
+          placed = true;
+          break;
+        }
+      }
+
+      if (!placed) {
+        list.push([]);
+        currentTrackIdx = list.length - 1;
+      }
 
       const linkedId = isVideo
         ? 'lk-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7)
@@ -551,61 +523,52 @@ export function initTimelineEngine(config) {
           duration: realDur,
           sourceIn: 0,
           __sourceTotalDuration: realDur,
-          __linkedId: linkedId
+          __linkedId: linkedId,
+          startTime: cursor
         };
-        let already = false;
-        for (let t = 0; t < state.audio.length; t++) {
-          const tr = state.audio[t];
+        let alreadyAudio = false;
+        for (let at = 0; at < state.audio.length; at++) {
+          const tr = state.audio[at];
           if (!Array.isArray(tr)) continue;
-          for (let c = 0; c < tr.length; c++) {
-            if (tr[c].url === item.url && tr[c].autoGenerated) {
-              already = true;
+          for (let ac = 0; ac < tr.length; ac++) {
+            if (tr[ac].url === item.url && tr[ac].autoGenerated && Math.abs(tr[ac].startTime - cursor) < 0.1) {
+              alreadyAudio = true;
               break;
             }
           }
-          if (already) break;
+          if (alreadyAudio) break;
         }
-        if (!already) {
-          const end = atTime + realDur;
-          const freeIdx = findFreeTrackIndex(state.audio, atTime, end, null);
-          while (state.audio.length <= freeIdx) state.audio.push([]);
-          state.audio[freeIdx].push(Object.assign({}, audioAuto, {
-            startTime: atTime,
-            duration: realDur
-          }));
+        if (!alreadyAudio) {
+          let audioIdx = -1;
+          for (let at = 0; at < state.audio.length; at++) {
+            if (!Array.isArray(state.audio[at])) continue;
+            if (!trackHasOverlap(state.audio[at], cursor, end, null)) {
+              audioIdx = at;
+              break;
+            }
+          }
+          if (audioIdx === -1) {
+            state.audio.push([]);
+            audioIdx = state.audio.length - 1;
+          }
+          state.audio[audioIdx].push(audioAuto);
         }
       }
-
-      const end = atTime + realDur;
-      const freeIdx = findFreeTrackIndex(list, atTime, end, null);
-      while (list.length <= freeIdx) list.push([]);
-
-      // 🆕 Image ko unlimited duration — user jitna chhota/bada kare
-      const isImageItem = item.type.indexOf('image/') === 0;
 
       const clipEntry = {
         name: item.name || 'Media',
         url: item.url,
         type: item.type,
         duration: realDur,
-        startTime: atTime,
+        startTime: cursor,
         sourceIn: 0,
         __linkedId: linkedId
       };
 
-      // Images: __sourceTotalDuration mat set karo
-      // → trimHandles mein "Infinity" default ho jayega
-      // → user kisi bhi lambai tak extend kar sakta hai
-      if (!isImageItem) {
-        clipEntry.__sourceTotalDuration = realDur;
-      }
-
-      list[freeIdx].push(clipEntry);
+      if (!isImage) clipEntry.__sourceTotalDuration = realDur;
+      list[currentTrackIdx].push(clipEntry);
+      cursor = end;
     }
-
-    render();
-    autoFitImportedContent(items);   // 🆕 auto-fit after import
-    notifyChanged();
   }
 
   function addVisualLayer() {
@@ -622,7 +585,6 @@ export function initTimelineEngine(config) {
     notifyChanged();
   }
 
-  // ─── Metadata sync ────────────────────────────────────────
   const previewVideoEl = document.querySelector('#preview-video');
   if (previewVideoEl) {
     previewVideoEl.addEventListener('loadedmetadata', function () {
@@ -630,7 +592,6 @@ export function initTimelineEngine(config) {
       if (!Number.isFinite(real) || real <= 0) return;
       const src = previewVideoEl.currentSrc || previewVideoEl.src || '';
       if (!src) return;
-
       let changed = false;
       for (let t = 0; t < state.visual.length; t++) {
         const track = state.visual[t];
@@ -641,8 +602,7 @@ export function initTimelineEngine(config) {
           clip.__sourceTotalDuration = real;
           const hasSourceIn = Number.isFinite(clip.sourceIn) && clip.sourceIn > 0.01;
           const hasTrimFlag = clip.__trimmed === true;
-          if (!hasSourceIn && !hasTrimFlag &&
-              Math.abs((clip.duration || 0) - real) > 0.05) {
+          if (!hasSourceIn && !hasTrimFlag && Math.abs((clip.duration || 0) - real) > 0.05) {
             clip.duration = real;
             changed = true;
           }
@@ -665,14 +625,11 @@ export function initTimelineEngine(config) {
       if (changed) { render(); notifyChanged(); }
     });
     previewVideoEl.addEventListener('durationchange', render);
-    previewVideoEl.addEventListener('loadedmetadata', render);
   }
 
   render();
 
-  // ─── DELETE — removes linked clips too ────────────────────
   function deleteSelected() {
-    // 🆕 MULTI-SELECT DELETE
     const multi = window.__multiSelect;
     const multiClips = [];
     if (multi && typeof multi.forEachSelectedClip === 'function') {
@@ -683,7 +640,6 @@ export function initTimelineEngine(config) {
       const toRemove = [];
       for (let i = 0; i < multiClips.length; i++) {
         const clip = multiClips[i];
-        // Find location
         let locType = null;
         ['visual', 'audio'].forEach(function (tt) {
           if (locType) return;
@@ -697,7 +653,6 @@ export function initTimelineEngine(config) {
         });
         if (locType) toRemove.push({ clip: clip, type: locType });
 
-        // Also include linked clips
         const linkedId = clip.__linkedId;
         if (linkedId) {
           ['visual', 'audio'].forEach(function (type) {
@@ -705,7 +660,6 @@ export function initTimelineEngine(config) {
               if (!Array.isArray(t)) return;
               t.forEach(function (c) {
                 if (c && c !== clip && c.__linkedId === linkedId) {
-                  // Avoid duplicates
                   let exists = false;
                   for (let k = 0; k < toRemove.length; k++) {
                     if (toRemove[k].clip === c) { exists = true; break; }
@@ -717,8 +671,6 @@ export function initTimelineEngine(config) {
           });
         }
       }
-
-      // Remove all
       for (let i = 0; i < toRemove.length; i++) {
         const entry = toRemove[i];
         if (onDeleteSelected) onDeleteSelected(entry.clip, entry.type);
@@ -732,30 +684,23 @@ export function initTimelineEngine(config) {
           }
         });
       }
-
-      // Clear multi + single selection
       document.querySelectorAll('.clip.multi-selected').forEach(function (el) {
         el.classList.remove('multi-selected');
       });
       selected = null;
       render();
       notifyChanged();
-
       showToast('Removed ' + toRemove.length + ' clips');
       return;
     }
 
-    // ─── SINGLE DELETE (existing) ────────────────────────────
     if (!selected) return;
-
     const trackIdx = Number(selected.track.slice(1)) - 1;
     const track = state[selected.type][trackIdx];
     if (!Array.isArray(track)) return;
     const clip = track[selected.clipIndex];
     if (!clip) return;
-
     const linkedId = clip.__linkedId;
-
     const toRemove = [{ clip: clip, type: selected.type }];
     if (linkedId) {
       ['visual', 'audio'].forEach(function (type) {
@@ -769,7 +714,6 @@ export function initTimelineEngine(config) {
         });
       });
     }
-
     toRemove.forEach(function (entry) {
       if (onDeleteSelected) onDeleteSelected(entry.clip, entry.type);
       ['visual', 'audio'].forEach(function (tt) {
@@ -782,14 +726,10 @@ export function initTimelineEngine(config) {
         }
       });
     });
-
     selected = null;
     render();
     notifyChanged();
-
-    if (toRemove.length > 1) {
-      showToast('Removed ' + toRemove.length + ' linked clips');
-    }
+    if (toRemove.length > 1) showToast('Removed ' + toRemove.length + ' linked clips');
   }
 
   document.addEventListener('editor:delete-selected', deleteSelected);
@@ -804,7 +744,7 @@ export function initTimelineEngine(config) {
     deleteSelected: deleteSelected,
     addVisualLayer: addVisualLayer,
     addAudioLayer: addAudioLayer,
-    reorderTrack: reorderTrack    // 🆕 expose
+    reorderTrack: reorderTrack
   };
 }
 

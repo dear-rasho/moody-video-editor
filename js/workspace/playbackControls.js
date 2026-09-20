@@ -2,8 +2,9 @@
 //  js/workspace/playbackControls.js
 //  Play / pause / delete.
 //  🆕 Delete button is SMART:
-//     - Keyframe selected → delete keyframe
-//     - Otherwise → delete selected layer
+//     - Transition selected → delete transition
+//     - Keyframe selected   → delete keyframe
+//     - Otherwise           → delete selected layer
 // ================================================================
 
 import { removeAllKeyframesAtTime } from './keyframeStore.js';
@@ -38,10 +39,27 @@ export function initPlaybackControls({ play, undo, redo, deleteButton, engine })
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  🆕 SMART DELETE
+//  🆕 SMART DELETE — transition > keyframe > layer
 // ═══════════════════════════════════════════════════════════════
 function handleSmartDelete() {
-  // Priority 1: Keyframe selected?
+  // Priority 1: Transition selected?
+  const trUI = window.__transitionUI;
+  const selTr = (trUI && typeof trUI.getSelectedTransition === 'function')
+    ? trUI.getSelectedTransition()
+    : null;
+
+  if (selTr) {
+    const trType = (selTr.__transitionIn && selTr.__transitionIn.key) || 'transition';
+    if (typeof trUI.deleteSelectedTransition === 'function') {
+      const ok = trUI.deleteSelectedTransition();
+      if (ok) {
+        showToast('⇄ Transition "' + trType + '" removed');
+        return;
+      }
+    }
+  }
+
+  // Priority 2: Keyframe selected?
   const kfUI = window.__keyframeUI;
   const selKf = (kfUI && typeof kfUI.getSelectedKeyframe === 'function')
     ? kfUI.getSelectedKeyframe()
@@ -68,7 +86,7 @@ function handleSmartDelete() {
     return;
   }
 
-  // Priority 2: Delete selected layer
+  // Priority 3: Delete selected layer
   document.dispatchEvent(new CustomEvent('editor:delete-selected'));
 }
 

@@ -229,7 +229,13 @@ const CATEGORIES = [
       'transition all slide left 0.5',
       'transition at 3 fade 0.5',
       'transition at 6 dissolve 0.8',
-      'transition at 3 fade 0.5, transition at 6 dissolve 0.8, transition at 9 slide left 0.5'
+      'transition at 3 fade 0.5, transition at 6 dissolve 0.8, transition at 9 slide left 0.5',
+      'layer v1 transitions dissolve, slide, zoom, fade',
+'layer v1 transitions dissolve, null, slide, null, zoom',
+'layer v1 transitions dissolve 0.5, slide 0.8, zoom 1',
+'layer v1 transitions dissolve, slide, zoom loop',
+'transitions dissolve, slide, zoom',
+'layer v2 transitions fade black 0.6, circle, wipe left'
     ]
   },
   {
@@ -295,6 +301,22 @@ const CATEGORIES = [
       'sticker 🔥',
       'sticker ❤️',
       'sticker ⭐'
+    ]
+  },
+    {
+    key: 'beats',
+    label: 'Beats',
+    icon: '🥁',
+    examples: [
+      'detect beats',
+      'beats edit shake',
+      'beats edit shake, zoom',
+      'beats edit shake, zoom, pulse',
+      'beats edit zoom, pulse, glitch',
+      'beats edit bounce, shake',
+      'beats edit warm, cool, vivid',
+      'beats edit shake, flash, zoom',
+      'beats edit pulse, zoom, shake, glitch'
     ]
   },
   {
@@ -447,7 +469,7 @@ function renderChips() {
 // ═══════════════════════════════════════════════════════════════
 //  APPLY
 // ═══════════════════════════════════════════════════════════════
-function onApply() {
+async function onApply() {
   if (!inputEl) return;
 
   const prompt = inputEl.value.trim();
@@ -484,27 +506,39 @@ function onApply() {
     const hasTrim = state.trimOps && state.trimOps.length > 0;
     const hasTextProps = state.textProps && Object.keys(state.textProps).length > 0;
 
-    // SPECIAL COMMANDS
     const hasTransitionAll = !!state.transitionAll;
     const hasTighten = !!state.tightenTracks;
     const hasClearKf = !!state.clearKeyframes;
     const hasOpenGraph = !!state.openGraph;
     const hasAutoGraph = state.autoGraph != null;
     const hasAtTransitions = state.atTransitions && state.atTransitions.length > 0;
+    const hasLayerTransitions = !!state.layerTransitions;
+    const hasDetectBeats = !!state.detectBeats;
+    const hasBeatsEdit = !!state.beatsEdit;
 
     hasSomething = hasAdjust || hasFilters || hasEffect || hasSpeed ||
                    hasTransition || hasTexts || hasStickers || hasWheel ||
                    hasChroma || hasTransforms || hasKeyframes ||
                    hasAudioFx || hasTrim || hasTextProps ||
                    hasTransitionAll || hasTighten || hasClearKf ||
-                   hasOpenGraph || hasAutoGraph || hasAtTransitions;
+                   hasOpenGraph || hasAutoGraph || hasAtTransitions ||
+                   hasLayerTransitions || hasDetectBeats || hasBeatsEdit;
   }
 
   if (!hasSomething) {
     showFeedback('❌ Kuch samajh nahi aaya — category chips try karein', 'err');
     return;
   }
-  const result = executePrompt(state);
+
+  // 🆕 Await async (beats detection needs time)
+  let result;
+  try {
+    result = await executePrompt(state);
+  } catch (e) {
+    showFeedback('❌ Execute failed: ' + (e.message || 'unknown'), 'err');
+    return;
+  }
+
   if (!result.ok) {
     let msg = '❌ ' + (result.error || 'Execute fail');
     if (result.unknown && result.unknown.length > 0) {

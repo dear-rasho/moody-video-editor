@@ -2,6 +2,8 @@
 //  js/workspace/transitionMarkers.js
 //  Renders transition markers between adjacent clips.
 //  Click → select (red). Drag → adjust duration.
+//  🆕 Exposes global API for delete from any button.
+//  🆕 Renders ALL markers (fixed loop bug)
 // ================================================================
 
 import { getPixelsPerSecond } from './timelineScaler.js';
@@ -92,6 +94,23 @@ export function clearTransitionSelection() {
   document.dispatchEvent(new CustomEvent('transition:selected', { detail: null }));
 }
 
+export function deleteSelectedTransition() {
+  if (!selectedTransitionClip) return false;
+  const clip = selectedTransitionClip;
+  delete clip.__transitionIn;
+  clearTransitionSelection();
+  document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
+  document.dispatchEvent(new CustomEvent('transition:changed'));
+  return true;
+}
+
+// Expose globally for delete.js + playbackControls.js
+window.__transitionUI = {
+  getSelectedTransition: getSelectedTransition,
+  clearTransitionSelection: clearTransitionSelection,
+  deleteSelectedTransition: deleteSelectedTransition
+};
+
 // ═══════════════════════════════════════════════════════════════
 //  RENDER
 // ═══════════════════════════════════════════════════════════════
@@ -114,6 +133,9 @@ function renderMarkers() {
   const pps = getPixelsPerSecond();
   const tracks = appState.timeline.visual || [];
 
+  // 🆕 Debug (comment out if not needed)
+  // console.log('[transitionMarkers] Rendering, pps=' + pps);
+
   for (let t = 0; t < tracks.length; t++) {
     const track = tracks[t];
     if (!Array.isArray(track)) continue;
@@ -123,16 +145,25 @@ function renderMarkers() {
       if (!clip.__transitionIn) continue;
       if (!clip.__transitionIn.key || clip.__transitionIn.key === 'none') continue;
       const startTime = Number.isFinite(clip.startTime) ? clip.startTime : 0;
+
+      // Skip clip 1 (start = 0)
+      if (startTime <= 0.01) continue;
+
+      // 🆕 Strict: preceding clip must end EXACTLY at this clip's start
       let hasPreceding = false;
       for (const other of track) {
         if (other === clip) continue;
-        const otherEnd = (Number.isFinite(other.startTime) ? other.startTime : 0) +
-                         (Number.isFinite(other.duration) ? other.duration : 0);
-        if (Math.abs(otherEnd - startTime) < 0.5) { hasPreceding = true; break; }
+        const otherStart = Number.isFinite(other.startTime) ? other.startTime : 0;
+        if (otherStart >= startTime - 0.01) continue;
+        const otherEnd = otherStart + (Number.isFinite(other.duration) ? other.duration : 0);
+        if (Math.abs(otherEnd - startTime) <= 0.5) { hasPreceding = true; break; }
       }
       if (!hasPreceding) continue;
       junctions.push({ clip, time: startTime });
     }
+
+    // 🆕 Debug
+    // console.log('[transitionMarkers] Track V' + (t+1), 'junctions=', junctions.length);
 
     if (!junctions.length) continue;
 
@@ -182,12 +213,11 @@ function createMarker(clip, xPx) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  DRAG HANDLER (duration adjust)
+//  DRAG HANDLER
 // ═══════════════════════════════════════════════════════════════
 let dragState = null;
 
 function onMarkerPointerDown(e, clip, markerEl) {
-  // Select
   selectTransition(clip, markerEl);
 
   dragState = {
@@ -195,7 +225,8 @@ function onMarkerPointerDown(e, clip, markerEl) {
     markerEl,
     startX: e.clientX,
     startDuration: Number(clip.__transitionIn.duration) || 0.5,
-    pointerId: e.pointerId
+    pointerId: e.pointerId,
+    moved: false
   };
 
   window.addEventListener('pointermove', onPointerMove);
@@ -210,6 +241,9 @@ function onPointerMove(e) {
 
   const pps = getPixelsPerSecond();
   const dx = e.clientX - dragState.startX;
+  if (Math.abs(dx) > 3) dragState.moved = true;
+  if (!dragState.moved) return;
+
   const dSec = dx / Math.max(1, pps);
 
   let newDur = dragState.startDuration + dSec * 2;
@@ -218,7 +252,6 @@ function onPointerMove(e) {
 
   dragState.clip.__transitionIn.duration = newDur;
 
-  // Update tooltip text live
   const durEl = dragState.markerEl.querySelector('.transition-marker-duration');
   if (durEl) durEl.textContent = newDur.toFixed(2) + 's';
 }
@@ -227,18 +260,20 @@ function onPointerUp(e) {
   if (!dragState) return;
   if (e.pointerId !== dragState.pointerId) return;
 
+  const moved = dragState.moved;
   dragState = null;
   window.removeEventListener('pointermove', onPointerMove);
   window.removeEventListener('pointerup', onPointerUp);
   window.removeEventListener('pointercancel', onPointerUp);
 
-  document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
-  document.dispatchEvent(new CustomEvent('transition:changed'));
+  if (moved) {
+    document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
+    document.dispatchEvent(new CustomEvent('transition:changed'));
+  }
 }
 
 function selectTransition(clip, markerEl) {
   if (selectedTransitionClip === clip) {
-    // Toggle off
     clearTransitionSelection();
     return;
   }

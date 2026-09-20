@@ -1,25 +1,10 @@
-// ================================================================
-//  js/codebase/codebaseEngine.js
-//  Prompt → commands → layers
-//
-//  Features:
-//   - Timestamped multi-layer  [MM:SS - MM:SS]
-//   - Segments with per-word styling/animation
-//   - Ratio (9:16, 16:9, etc.)
-//   - Color grading (adjustments + color wheels)
-//   - Attach-to-selected-clip or hierarchy fallback
-//   - Tighten track + transition all
-//   - 🆕 Transition at specific time (per-junction control)
-//   - Graph commands
-//   - Unknown tracking (feeds back to user)
-// ================================================================
-
 import { createEffectLayer } from '../workspace/effectLayer.js';
 import { createAudioFxLayer } from '../workspace/audioEffectLayer.js';
 import { placeClipAtTime } from '../layers/layersManager.js';
 import { resolveFontFamily, loadGoogleFont } from './fontLibrary.js';
 import { openKeyframeGraph } from '../workspace/keyframeGraph.js';
 import { clearKeyframes as clearAllKeyframes } from '../workspace/keyframeStore.js';
+import { runDetectBeats, runBeatsEditing } from './beatsEngine.js';
 
 // ═══════════════════════════════════════════════════════════════
 //  CONSTANTS
@@ -85,6 +70,24 @@ const SYNONYMS = {
   hara: 'greens', neela: 'blues', jamuni: 'purples', gulabi: 'magentas'
 };
 
+// 🆕 Transition aliases — ONCE at top
+const TRANSITION_ALIASES = {
+  'fade': 'fade',
+  'dissolve': 'dissolve',
+  'fade black': 'fadeBlack', 'fadeblack': 'fadeBlack',
+  'fade white': 'fadeWhite', 'fadewhite': 'fadeWhite',
+  'slide': 'slideLeft', 'slide left': 'slideLeft', 'slideleft': 'slideLeft',
+  'slide right': 'slideRight', 'slideright': 'slideRight',
+  'slide up': 'slideUp', 'slideup': 'slideUp',
+  'slide down': 'slideDown', 'slidedown': 'slideDown',
+  'zoom': 'zoomIn', 'zoom in': 'zoomIn', 'zoomin': 'zoomIn',
+  'zoom out': 'zoomOut', 'zoomout': 'zoomOut',
+  'wipe left': 'wipeLeft', 'wipeleft': 'wipeLeft',
+  'wipe right': 'wipeRight', 'wiperight': 'wipeRight',
+  'circle': 'circleIn', 'circle in': 'circleIn', 'circlein': 'circleIn',
+  'blur': 'blur'
+};
+
 // ═══════════════════════════════════════════════════════════════
 //  STATE
 // ═══════════════════════════════════════════════════════════════
@@ -102,7 +105,7 @@ function _addUnknown(part, context) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  PROPERTY SPLITTER (pattern-based, robust)
+//  PROPERTY SPLITTER
 // ═══════════════════════════════════════════════════════════════
 const PROP_PATTERNS = [
   /^(?:font\s*[-]?size)\s+\d+/i,
@@ -323,7 +326,7 @@ function parseTimestampBlock(block) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  TEXT BLOCK PARSER (apostrophe-safe manual extraction)
+//  TEXT BLOCK PARSER
 // ═══════════════════════════════════════════════════════════════
 function parseTextBlock(block, content) {
   const segments = [];
@@ -493,27 +496,21 @@ function parseLayerProps(str) {
       continue;
     }
 
-    // positionX N
     m = part.match(/^position\s*x\s+(-?\d+(?:\.\d+)?)/i);
     if (m) { props.positionX = parseFloat(m[1]); continue; }
 
-    // positionY N
     m = part.match(/^position\s*y\s+(-?\d+(?:\.\d+)?)/i);
     if (m) { props.positionY = parseFloat(m[1]); continue; }
 
-    // anchor X Y
     m = part.match(/^anchor\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)/i);
     if (m) { props.anchorX = parseFloat(m[1]); props.anchorY = parseFloat(m[2]); continue; }
 
-    // anchorX
     m = part.match(/^anchor\s*x\s+(-?\d+(?:\.\d+)?)/i);
     if (m) { props.anchorX = parseFloat(m[1]); continue; }
 
-    // anchorY
     m = part.match(/^anchor\s*y\s+(-?\d+(?:\.\d+)?)/i);
     if (m) { props.anchorY = parseFloat(m[1]); continue; }
 
-    // anchor presets
     m = part.match(/^anchor\s+(top-left|top-center|top-right|center-left|center-right|bottom-left|bottom-center|bottom-right|top|bottom|center|middle|left|right)\b/i);
     if (m) {
       const a = m[1].toLowerCase();
@@ -529,7 +526,6 @@ function parseLayerProps(str) {
       continue;
     }
 
-    // position top/bottom/center/etc
     m = part.match(/^position\s+(top|bottom|center|middle|left|right)\b/i);
     if (m) {
       const p = m[1].toLowerCase();
@@ -541,11 +537,9 @@ function parseLayerProps(str) {
       continue;
     }
 
-    // position X Y
     m = part.match(/^position\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)/i);
     if (m) { props.positionX = parseFloat(m[1]); props.positionY = parseFloat(m[2]); continue; }
 
-    // gradient
     m = part.match(/^(?:colou?r\s+ramp|gradient|ramp)\s+(#[0-9a-fA-F]{3,8})\s+(?:to|→|->)\s+(#[0-9a-fA-F]{3,8})/i);
     if (m) {
       props.gradientEnabled = true;
@@ -561,25 +555,20 @@ function parseLayerProps(str) {
       continue;
     }
 
-    // color
     m = part.match(/^colou?r\s+(#[0-9a-fA-F]{3,8})/i);
     if (m) { props.color = m[1]; continue; }
     m = part.match(/^colou?r\s+([a-zA-Z]+)/i);
     if (m) { props.color = colorNameToHex(m[1]); continue; }
 
-    // shadow
     if (/^shadow\b/i.test(part)) { props.shadowEnabled = true; continue; }
 
-    // newline
     if (/^newline\b/i.test(part) || /^linebreak\b/i.test(part)) { props.newline = true; continue; }
 
-    // bold / italic (standalone or with font)
     if (/^font\s+bold\b/i.test(part)) { props.fontWeight = 'bold'; continue; }
     if (/^font\s+italic\b/i.test(part)) { props.fontStyle = 'italic'; continue; }
     if (/^bold$/i.test(part)) { props.fontWeight = 'bold'; continue; }
     if (/^italic$/i.test(part)) { props.fontStyle = 'italic'; continue; }
 
-    // font X
     m = part.match(/^font\s+(.+)$/i);
     if (m) {
       const requested = m[1].trim();
@@ -589,31 +578,24 @@ function parseLayerProps(str) {
       continue;
     }
 
-    // font size N
     m = part.match(/^font\s*[-]?size\s+(\d+)/i);
     if (m) { props.fontSize = parseInt(m[1], 10); continue; }
 
-    // size N
     m = part.match(/^size\s+(\d+)/i);
     if (m) { props.fontSize = parseInt(m[1], 10); continue; }
 
-    // align
     m = part.match(/^align(?:ment)?\s+(left|center|right)/i);
     if (m) { props.alignment = m[1].toLowerCase(); continue; }
 
-    // scale
     m = part.match(/^scale\s+(-?\d+)/i);
     if (m) { props.scale = parseInt(m[1], 10); continue; }
 
-    // rotation
     m = part.match(/^rot(?:ation)?\s+(-?\d+)/i);
     if (m) { props.rotation = parseInt(m[1], 10); continue; }
 
-    // opacity
     m = part.match(/^opacity\s+(\d+)/i);
     if (m) { props.opacity = parseInt(m[1], 10); continue; }
 
-    // stroke
     m = part.match(/^stroke\s*[- ]?(?:width\s+)?(\d+)(?:\s+(#[0-9a-fA-F]{3,8}))?/i);
     if (m) {
       props.strokeWidth = parseInt(m[1], 10);
@@ -740,7 +722,7 @@ function buildStickerClip(L, duration) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  BUILD EFFECT LAYER — attach to selected clip OR hierarchy
+//  BUILD EFFECT LAYER
 // ═══════════════════════════════════════════════════════════════
 function buildEffectLayer(L) {
   const appState = window.__appState;
@@ -767,7 +749,6 @@ function buildEffectLayer(L) {
   const hasAny = Object.keys(adj).length > 0 || cw || hasFilter || isPreset || ch;
   if (!hasAny) return null;
 
-  // ─── MODE A: Attach to selected clip ───────────────────────
   if (targetClip) {
     if (!targetClip.__grading) targetClip.__grading = {};
 
@@ -792,7 +773,6 @@ function buildEffectLayer(L) {
     return 'attached to "' + (targetClip.name || 'clip').slice(0, 20) + '"';
   }
 
-  // ─── MODE B: Hierarchy layers ──────────────────────────────
   const created = [];
 
   if (Object.keys(adj).length > 0) {
@@ -1199,18 +1179,86 @@ function resetPlayhead() {
 }
 
 // ═══════════════════════════════════════════════════════════════
+//  LAYER TRANSITIONS PARSER
+// ═══════════════════════════════════════════════════════════════
+function parseLayerTransitions(seg) {
+  const m = seg.match(/^(?:layer\s+([a-z]\d+)\s+)?transitions?\s+(.+?)(\s+loop)?$/i);
+  if (!m) return null;
+
+  const layerKey = m[1] ? m[1].toUpperCase() : null;
+  const listStr = m[2].trim();
+  const loop = !!m[3];
+
+  const parts = listStr.split(',').map(s => s.trim()).filter(Boolean);
+  if (!parts.length) return null;
+  if (parts.length === 1 && !layerKey) return null;
+
+  const list = [];
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i].toLowerCase().trim();
+
+    if (part === 'null' || part === 'none' || part === 'skip' || part === '-') {
+      list.push({ type: null, duration: null });
+      continue;
+    }
+
+    const dm = part.match(/^(.+?)\s+([\d.]+)$/);
+    let name = part;
+    let dur = 0.5;
+
+    if (dm) {
+      const possibleName = dm[1].trim();
+      const possibleDur = parseFloat(dm[2]);
+      if (TRANSITION_ALIASES[possibleName.replace(/\s+/g, ' ')] !== undefined) {
+        name = possibleName;
+        dur = Math.max(0.1, Math.min(3, possibleDur));
+      }
+    }
+
+    const normalizedName = name.toLowerCase().replace(/\s+/g, ' ').trim();
+    let resolved = TRANSITION_ALIASES[normalizedName];
+    if (resolved === undefined) {
+      resolved = TRANSITION_ALIASES[normalizedName.replace(/\s+/g, '')];
+    }
+    if (resolved === undefined) {
+      resolved = TRANSITION_ALIASES[normalizedName.split(/\s+/)[0]];
+    }
+
+    if (resolved === undefined) continue;
+
+    list.push({
+      type: resolved,
+      duration: resolved ? dur : null
+    });
+  }
+
+  if (!list.length) return null;
+  return { layerKey, list, loop };
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  SPECIAL COMMANDS
 // ═══════════════════════════════════════════════════════════════
 function trySpecialCommand(seg, state) {
   const low = seg.toLowerCase().trim();
 
-  // tighten track
+  // 🆕 Detect beats
+  if (/^(?:detect\s*beats?|beats?\s*detect|find\s*beats?|identify\s*beats?)$/i.test(low)) {
+    state.detectBeats = true;
+    return true;
+  }
+
   if (/^(tighten\s*track|close\s*gaps?|magnet|no\s*gaps?)$/i.test(low)) {
     state.tightenTracks = true;
     return true;
   }
 
-  // transition all
+  const layerTransM = parseLayerTransitions(low);
+  if (layerTransM) {
+    state.layerTransitions = layerTransM;
+    return true;
+  }
+
   const transAllM = low.match(/^(?:transition\s+all|all\s+transitions?|transitions?\s+between\s+all)\s+(fade\s*black|fade\s*white|fade|dissolve|slide\s*left|slide\s*right|slide\s*up|slide\s*down|zoom\s*in|zoom\s*out|wipe\s*left|wipe\s*right|circle\s*in)(?:\s+([\d.]+))?$/i);
   if (transAllM) {
     const raw = transAllM[1].toLowerCase().replace(/\s+/g, '');
@@ -1227,7 +1275,6 @@ function trySpecialCommand(seg, state) {
     return true;
   }
 
-  // 🆕 transition at <time> <type> <duration>
   const atM = low.match(
     /^transition\s+at\s+([\d.]+)\s*s?\s+(fade\s*black|fade\s*white|fade|dissolve|slide\s*left|slide\s*right|slide\s*up|slide\s*down|zoom\s*in|zoom\s*out|wipe\s*left|wipe\s*right|circle\s*in)\s*([\d.]+)?$/i
   );
@@ -1250,25 +1297,116 @@ function trySpecialCommand(seg, state) {
     return true;
   }
 
-  // graph on / off
   if (/^(graph\s*on|auto\s*graph|show\s*graph\s*on)$/i.test(low)) {
     state.autoGraph = true; return true;
   }
   if (/^(graph\s*off|auto\s*graph\s*off|no\s*graph)$/i.test(low)) {
     state.autoGraph = false; return true;
   }
-  // open graph now
   if (/^(graph|show\s*graph|open\s*graph|keyframe\s*graph|kf\s*graph)$/i.test(low)) {
     state.openGraph = true; return true;
   }
-  // clear keyframes
   if (/^(clear\s*keyframes?|delete\s*keyframes?|remove\s*keyframes?|reset\s*keyframes?)$/i.test(low)) {
     state.clearKeyframes = true; return true;
   }
 
   return false;
 }
+// ═══════════════════════════════════════════════════════════════
+//  🆕 LAYER TRANSITIONS EXTRACTOR (before comma-split)
+//
+//  Problem: parsePrompt splits input by comma. A command like:
+//    "layer v1 transitions dissolve, slide, zoom, fade"
+//  breaks into:
+//    ["layer v1 transitions dissolve", "slide", "zoom", "fade"]
+//  → only 1 transition gets applied instead of 4.
+//
+//  Fix: scan the RAW prompt, grab the full comma-list BEFORE
+//  the generic split runs.
+// ═══════════════════════════════════════════════════════════════
+const _TRANS_ITEM_SRC =
+  '(?:(?:fade\\s*black|fade\\s*white|fade|dissolve' +
+  '|slide(?:\\s+(?:left|right|up|down))?' +
+  '|zoom(?:\\s+(?:in|out))?' +
+  '|wipe(?:\\s+(?:left|right))?' +
+  '|circle(?:\\s+in)?' +
+  '|blur' +
+  '|null|none|skip|-)' +
+  '(?:\\s+\\d+(?:\\.\\d+)?)?)';
 
+function extractLayerTransitionsFromPrompt(rawPrompt) {
+  if (!rawPrompt || typeof rawPrompt !== 'string') return null;
+
+  const re = new RegExp(
+    '(?:^|\\n|,)\\s*(' +
+      '(?:layer\\s+[a-z]\\d+\\s+)?transitions?\\s+' +
+      _TRANS_ITEM_SRC +
+      '(?:\\s*,\\s*' + _TRANS_ITEM_SRC + ')*' +
+    ')(\\s+loop)?',
+    'i'
+  );
+
+  const m = rawPrompt.match(re);
+  if (!m) return null;
+
+  const cmd = (m[1] + (m[2] || '')).trim();
+  const parsed = parseLayerTransitions(cmd);
+  if (!parsed || !parsed.list || !parsed.list.length) return null;
+
+  const remaining = (
+    rawPrompt.slice(0, m.index) +
+    rawPrompt.slice(m.index + m[0].length)
+  ).trim();
+
+  return { parsed: parsed, remaining: remaining };
+}
+// ═══════════════════════════════════════════════════════════════
+//  🆕 BEATS EDIT EXTRACTOR (before comma-split)
+//  "beats edit shake, zoom, pulse" → pattern array
+// ═══════════════════════════════════════════════════════════════
+function extractBeatsEditFromPrompt(rawPrompt) {
+  if (!rawPrompt || typeof rawPrompt !== 'string') return null;
+
+  const low = String(rawPrompt).toLowerCase();
+  const marker = 'beats edit';
+  const idx = low.indexOf(marker);
+  if (idx < 0) return null;
+
+  // Everything after "beats edit"
+  const after = rawPrompt.slice(idx + marker.length);
+
+  // Find first newline — beats edit ends at newline
+  const nlIdx = after.search(/\n/);
+  let beatsPart, rest;
+
+  if (nlIdx >= 0) {
+    beatsPart = after.slice(0, nlIdx);
+    rest = after.slice(nlIdx + 1);
+  } else {
+    beatsPart = after;
+    rest = '';
+  }
+
+  // Clean leading separators
+  beatsPart = beatsPart.replace(/^[\s,:;\-]+/, '').trim();
+  if (!beatsPart) return null;
+
+  // Split by comma OR whitespace
+  const pattern = beatsPart
+    .split(/[\s,]+/)
+    .map(s => s.trim())
+    .filter(s => s && /^[a-z][a-z0-9_]*$/i.test(s));
+
+  if (!pattern.length) return null;
+
+  const before = rawPrompt.slice(0, idx).replace(/[\s,]+$/, '');
+  const remaining = (before + (rest ? '\n' + rest.trim() : '')).trim();
+
+  return { pattern, remaining };
+}
+
+// 🆕 Import at top of file (agar nahi hai):
+// import { runDetectBeats, runBeatsEditing } from './beatsEngine.js';
 // ═══════════════════════════════════════════════════════════════
 //  PARSE PROMPT
 // ═══════════════════════════════════════════════════════════════
@@ -1301,11 +1439,18 @@ export function parsePrompt(rawPrompt) {
     tightenTracks: false,
     transitionAll: null,
     atTransitions: [],
-    layerTransitions: null   
+    layerTransitions: null
   };
 
   let prompt = rawPrompt.toLowerCase().trim();
   prompt = prompt.replace(/^\s*ratio\s+\d+\s*:\s*\d+\s*$/im, '');
+
+  // 🆕 Pre-extract layer transitions BEFORE comma-split
+  const extracted = extractLayerTransitionsFromPrompt(prompt);
+  if (extracted) {
+    state.layerTransitions = extracted.parsed;
+    prompt = extracted.remaining;
+  }
 
   if (/\ball\s+clips?\b|\bevery\s+clip\b|\bsab\s+clips?\b|\bhar\s+clip\b/.test(prompt)) {
     state.target = 'all';
@@ -1321,13 +1466,11 @@ export function parsePrompt(rawPrompt) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  PARSE SEGMENT (non-timestamped)
+//  PARSE SEGMENT
 // ═══════════════════════════════════════════════════════════════
 function parseSegment(seg, state) {
-  // 🆕 EARLY RETURN — transition at / transition all are handled by trySpecialCommand
-  if (/^transition\s+(?:at|all)\s/i.test(seg)) {
-    return;
-  }
+  if (/^(?:layer\s+[a-z]\d+\s+)?transitions?\s+/i.test(seg)) return;
+  if (/^transition\s+(?:at|all)\s/i.test(seg)) return;
 
   const kfM = seg.match(/\b(scale|zoom|rotation|rotate|x|y|position|opacity)\s+(-?[\d.]+)(?:\s*,?\s*(-?[\d.]+))?\s+to\s+(-?[\d.]+)(?:\s*,?\s*(-?[\d.]+))?\s+(?:over|in)\s+([\d.]+)\s*s?/i);
   if (kfM) {
@@ -1427,7 +1570,6 @@ function parseSegment(seg, state) {
     if (Number.isFinite(v) && v >= 0.1 && v <= 16) { state.speed = v; return; }
   }
 
-  // Regular transition (without "at" or "all") — for single selected clip
   const transM = seg.match(/^(fade\s*black|fade\s*white|fade|dissolve|slide\s*left|slide\s*right|slide\s*up|slide\s*down|zoom\s*in|zoom\s*out|wipe\s*left|wipe\s*right|circle\s*in)\s*(?:in|out|transition)?\s*([\d.]+)?$/i);
   if (transM) {
     const raw = transM[1].toLowerCase().replace(/\s+/g, '');
@@ -1493,7 +1635,6 @@ function parseSegment(seg, state) {
     if (EFFECT_PRESETS.includes(w)) { state.effectPreset = w; return; }
   }
 
-  // Standalone text props
   if (!state.textProps) state.textProps = {};
   let matched = false;
   let m2;
@@ -1611,7 +1752,7 @@ function hexToRgb(hex) {
 // ═══════════════════════════════════════════════════════════════
 //  EXECUTE PROMPT
 // ═══════════════════════════════════════════════════════════════
-export function executePrompt(state) {
+export async function executePrompt(state) {
   if (!state) return { ok: false, error: 'No state' };
   const appState = window.__appState;
   if (!appState) return { ok: false, error: 'App state missing' };
@@ -1621,7 +1762,29 @@ export function executePrompt(state) {
   if (state.autoGraph === true)  _autoOpenGraph = true;
   if (state.autoGraph === false) _autoOpenGraph = false;
 
-  // ─── Tighten tracks ────────────────────────────────────────
+  // ═══ 🆕 BEATS — terminal (short-circuit) ═══════════════════
+  if (state.detectBeats) {
+    const r = await runDetectBeats();
+    if (!r.ok) return { ok: false, error: r.error };
+    _showToast('🥁 ' + r.beatsCount + ' beats detected');
+    return { ok: true, results: ['detectBeats:' + r.beatsCount] };
+  }
+
+  if (state.beatsEdit) {
+    const r = await runBeatsEditing(state.beatsEdit.pattern);
+    if (!r.ok) return { ok: false, error: r.error };
+    _showToast('🥁 ' + r.effectsApplied + ' effects on ' + r.beatsCount + ' beats');
+    return {
+      ok: true,
+      results: ['beatsEdit:' + r.effectsApplied + ' on ' + r.beatsCount + ' beats']
+    };
+  }
+
+  // ═══ Regular commands ═════════════════════════════════════
+  const results = [];
+  const warnings = [];
+  _lastCreatedClips = [];
+
   if (state.tightenTracks) {
     let closedCount = 0;
     const allTracks = [].concat(
@@ -1646,17 +1809,78 @@ export function executePrompt(state) {
     }
     document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
     _showToast('🧲 ' + closedCount + ' gaps closed');
-    resetPlayhead();
-    return { ok: true, results: ['tighten ' + closedCount] };
+    results.push('tighten ' + closedCount);
   }
 
-  // ─── Transition all ────────────────────────────────────────
+  if (state.layerTransitions) {
+    const lt = state.layerTransitions;
+    let targetLayerKey = lt.layerKey;
+
+    if (!targetLayerKey) {
+      const sel = document.querySelector('.clip.selected');
+      if (sel && sel.dataset.track) targetLayerKey = sel.dataset.track.toUpperCase();
+    }
+
+    if (!targetLayerKey) {
+      warnings.push('Layer transitions: no layer specified and no clip selected');
+    } else {
+      const layerGroup = targetLayerKey.charAt(0) === 'A' ? 'audio' : 'visual';
+      const layerIdx = parseInt(targetLayerKey.slice(1), 10) - 1;
+      const tracks = appState.timeline[layerGroup] || [];
+      const track = tracks[layerIdx];
+
+      if (!Array.isArray(track) || track.length === 0) {
+        warnings.push('Layer ' + targetLayerKey + ' is empty');
+      } else {
+        const sortedClips = track.slice().sort((a, b) =>
+          (a.startTime || 0) - (b.startTime || 0)
+        );
+        let applied = 0, skipped = 0, idx = 0;
+
+        for (let i = 1; i < sortedClips.length; i++) {
+          const clip = sortedClips[i];
+          const curStart = Number.isFinite(clip.startTime) ? clip.startTime : 0;
+          if (curStart <= 0.01) { skipped++; continue; }
+
+          let patItem = null;
+          if (idx < lt.list.length) { patItem = lt.list[idx]; idx++; }
+          else if (lt.loop) { patItem = lt.list[idx % lt.list.length]; idx++; }
+          else { skipped++; continue; }
+
+          const prev = sortedClips[i - 1];
+          const prevStart = Number.isFinite(prev.startTime) ? prev.startTime : 0;
+          const prevEnd = prevStart + (Number.isFinite(prev.duration) ? prev.duration : 0);
+          if (prevStart >= curStart - 0.01) { skipped++; continue; }
+          if (Math.abs(prevEnd - curStart) > 0.5) { skipped++; continue; }
+
+          if (!patItem || patItem.type === null) {
+            delete clip.__transitionIn;
+            skipped++;
+            continue;
+          }
+
+          clip.__transitionIn = {
+            key: patItem.type,
+            duration: patItem.duration != null ? patItem.duration : 0.5
+          };
+          applied++;
+        }
+
+        document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
+        document.dispatchEvent(new CustomEvent('transition:changed'));
+
+        let msg = '⇄ ' + targetLayerKey + ': ' + applied + ' applied';
+        if (skipped > 0) msg += ' (' + skipped + ' skipped)';
+        _showToast(msg);
+        results.push('layerTransitions:' + applied);
+      }
+    }
+  }
+
   if (state.transitionAll) {
     const key = state.transitionAll.type;
     const dur = state.transitionAll.duration;
-    let applied = 0;
-    let skipped = 0;
-
+    let applied = 0, skipped = 0;
     const tracks = appState.timeline.visual || [];
     for (let t = 0; t < tracks.length; t++) {
       const track = tracks[t];
@@ -1664,78 +1888,60 @@ export function executePrompt(state) {
       const sorted = track.slice().sort((a, b) => (a.startTime || 0) - (b.startTime || 0));
       for (let i = 1; i < sorted.length; i++) {
         const clip = sorted[i];
+        const clipStart = clip.startTime || 0;
+        if (clipStart <= 0.01) { skipped++; continue; }
         const prev = sorted[i - 1];
         const prevEnd = (prev.startTime || 0) + (prev.duration || 0);
-        const clipStart = clip.startTime || 0;
         if (Math.abs(prevEnd - clipStart) <= 0.5) {
           clip.__transitionIn = { key: key, duration: dur };
           applied++;
-        } else {
-          skipped++;
-        }
+        } else skipped++;
       }
     }
-
     document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
     document.dispatchEvent(new CustomEvent('transition:changed'));
-
     let msg = '⇄ ' + applied + ' transitions';
     if (skipped > 0) msg += ' (' + skipped + ' skipped)';
     _showToast(msg);
-    resetPlayhead();
-    return { ok: true, results: ['transitions:' + applied] };
+    results.push('transitions:' + applied);
   }
 
-  // ─── 🆕 Transition at specific times ───────────────────────
   if (state.atTransitions && state.atTransitions.length > 0) {
-    let applied = 0;
-    let missed = 0;
+    let applied = 0, missed = 0;
     const tracks = appState.timeline.visual || [];
-
     for (let k = 0; k < state.atTransitions.length; k++) {
       const at = state.atTransitions[k];
       let hit = false;
-
       for (let t = 0; t < tracks.length; t++) {
         const track = tracks[t];
         if (!Array.isArray(track)) continue;
-
         for (let i = 0; i < track.length; i++) {
           const clip = track[i];
           const s = Number.isFinite(clip.startTime) ? clip.startTime : 0;
           if (Math.abs(s - at.time) > 0.2) continue;
-
-          // Check preceding adjacent clip
+          if (s <= 0.01) continue;
           let hasPrev = false;
           for (let j = 0; j < track.length; j++) {
             if (j === i) continue;
             const o = track[j];
-            const oEnd = (Number.isFinite(o.startTime) ? o.startTime : 0) +
-                         (Number.isFinite(o.duration) ? o.duration : 0);
-            if (Math.abs(oEnd - at.time) <= 0.5) { hasPrev = true; break; }
+            const oStart = Number.isFinite(o.startTime) ? o.startTime : 0;
+            if (oStart >= s - 0.01) continue;
+            const oEnd = oStart + (Number.isFinite(o.duration) ? o.duration : 0);
+            if (Math.abs(oEnd - s) <= 0.5) { hasPrev = true; break; }
           }
-
-          if (hasPrev) {
-            clip.__transitionIn = { key: at.type, duration: at.duration };
-            applied++;
-            hit = true;
-          }
+          if (hasPrev) { clip.__transitionIn = { key: at.type, duration: at.duration }; applied++; hit = true; }
           break;
         }
         if (hit) break;
       }
-
       if (!hit) missed++;
     }
-
     document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
     document.dispatchEvent(new CustomEvent('transition:changed'));
-
     let msg = '⇄ ' + applied + ' transition' + (applied === 1 ? '' : 's') + ' applied';
     if (missed > 0) msg += ' (' + missed + ' time not found)';
     _showToast(msg);
-    resetPlayhead();
-    return { ok: true, results: ['transitionsAt:' + applied] };
+    results.push('transitionsAt:' + applied);
   }
 
   if (state.clearKeyframes) {
@@ -1764,17 +1970,12 @@ export function executePrompt(state) {
     return executeTimestampedLayers(state.timestampedLayers);
   }
 
-  _lastCreatedClips = [];
   const hasClips = hasAnyClips(appState);
-  const results = [];
-  const warnings = [];
 
-  // TEXT
   if (state.texts.length > 0) {
     if (!Array.isArray(appState.timeline.visual)) appState.timeline.visual = [];
     const eng = window.__playbackEngine;
     const atTime = eng && typeof eng.getTime === 'function' ? eng.getTime() : 0;
-
     state.texts.forEach((t, i) => {
       const id = 'tx-' + Date.now() + '-' + i + '-' + Math.random().toString(36).slice(2, 6);
       const clipData = {
@@ -1797,12 +1998,10 @@ export function executePrompt(state) {
     });
   }
 
-  // STICKER
   if (state.stickers.length > 0) {
     if (!Array.isArray(appState.timeline.visual)) appState.timeline.visual = [];
     const eng = window.__playbackEngine;
     const atTime = eng && typeof eng.getTime === 'function' ? eng.getTime() : 0;
-
     state.stickers.forEach((s, i) => {
       const id = 'sk-' + Date.now() + '-' + i + '-' + Math.random().toString(36).slice(2, 6);
       const clipData = {
@@ -1817,7 +2016,6 @@ export function executePrompt(state) {
     });
   }
 
-  // AUDIO FX
   if (state.audioFx.length > 0) {
     state.audioFx.forEach(key => {
       try {
@@ -1828,11 +2026,8 @@ export function executePrompt(state) {
   }
 
   let targetClip = getSelectedClip(appState);
-  if (!targetClip && _lastCreatedClips.length > 0) {
-    targetClip = _lastCreatedClips[_lastCreatedClips.length - 1];
-  }
+  if (!targetClip && _lastCreatedClips.length > 0) targetClip = _lastCreatedClips[_lastCreatedClips.length - 1];
 
-  // Fallback: last text clip
   if (!targetClip && state.textProps) {
     const vTracks = appState.timeline.visual || [];
     let lastText = null;
@@ -1847,7 +2042,6 @@ export function executePrompt(state) {
     if (lastText) targetClip = lastText;
   }
 
-  // Apply textProps
   if (state.textProps && targetClip && targetClip.__textId && targetClip.textState) {
     const tp = state.textProps;
     const ts = targetClip.textState;
@@ -1862,7 +2056,6 @@ export function executePrompt(state) {
     if (tp.positionY != null) ts.positionY = tp.positionY;
     if (tp.anchorX != null) ts.anchorX = tp.anchorX;
     if (tp.anchorY != null) ts.anchorY = tp.anchorY;
-
     results.push('text-props');
     document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
     document.dispatchEvent(new CustomEvent('transform:changed'));
@@ -1870,7 +2063,6 @@ export function executePrompt(state) {
     warnings.push('Text properties need a text clip');
   }
 
-  // Transform
   const tfKeys = Object.keys(state.transforms);
   if (tfKeys.length > 0 && targetClip) {
     if (!targetClip.__transform) targetClip.__transform = {};
@@ -1884,7 +2076,6 @@ export function executePrompt(state) {
     results.push('transform');
   }
 
-  // Keyframes
   if (state.keyframes.length > 0 && targetClip) {
     const eng = window.__playbackEngine;
     const now = eng && typeof eng.getTime === 'function' ? eng.getTime() : 0;
@@ -1908,28 +2099,19 @@ export function executePrompt(state) {
       currentTime += kf.duration;
     }
     results.push('keyframes');
-
-    if (_autoOpenGraph) {
-      setTimeout(() => openKeyframeGraph(), 150);
-    }
+    if (_autoOpenGraph) setTimeout(() => openKeyframeGraph(), 150);
   }
 
-  // Speed
   if (state.speed != null && targetClip) {
     applySpeedToClip(targetClip, state.speed);
     results.push('speed:' + state.speed + 'x');
   }
 
-  // Transition
   if (state.transition && targetClip) {
-    targetClip.__transitionIn = {
-      key: state.transition.type,
-      duration: state.transition.duration
-    };
+    targetClip.__transitionIn = { key: state.transition.type, duration: state.transition.duration };
     results.push('transition');
   }
 
-  // Adjustments
   if (Object.keys(state.adjustments).length > 0) {
     if (hasClips || _lastCreatedClips.length > 0) {
       try {
@@ -1939,7 +2121,6 @@ export function executePrompt(state) {
     } else warnings.push('adjustments: clip daalein');
   }
 
-  // Filters
   if (Object.keys(state.filters).length > 0) {
     if (hasClips || _lastCreatedClips.length > 0) {
       const filters = {
@@ -1954,7 +2135,6 @@ export function executePrompt(state) {
     } else warnings.push('filter: clip daalein');
   }
 
-  // Effect preset
   if (state.effectPreset) {
     if (hasClips || _lastCreatedClips.length > 0) {
       const baseFilters = {
@@ -1970,7 +2150,6 @@ export function executePrompt(state) {
     } else warnings.push('effect: clip daalein');
   }
 
-  // Color wheel
   if (state.colorWheel) {
     if (hasClips || _lastCreatedClips.length > 0) {
       try {
@@ -1980,7 +2159,6 @@ export function executePrompt(state) {
     } else warnings.push('colorWheel: clip daalein');
   }
 
-  // Chroma
   if (state.chroma) {
     if (hasClips || _lastCreatedClips.length > 0) {
       try {
@@ -2004,7 +2182,6 @@ export function executePrompt(state) {
   if (warnings.length > 0) results.push('⚠️ ' + warnings.join(', '));
   return { ok: true, results, unknown: _unknownParts.slice() };
 }
-
 // ═══════════════════════════════════════════════════════════════
 //  HELPERS
 // ═══════════════════════════════════════════════════════════════

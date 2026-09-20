@@ -1,8 +1,10 @@
 // ================================================================
 //  js/features/delete.js
 //  Delete feature (from feature shelf).
-//  🆕 Smart: Keyframe selected → delete keyframe.
-//            Otherwise → delete selected layer.
+//  🆕 Smart priority:
+//     1. Transition selected → delete transition
+//     2. Keyframe selected   → delete keyframe
+//     3. Otherwise           → delete selected layer
 // ================================================================
 
 import { removeAllKeyframesAtTime } from '../workspace/keyframeStore.js';
@@ -55,7 +57,24 @@ function showToast(message, ok = true) {
 //  ROUTER ENTRY
 // ═══════════════════════════════════════════════════════════════
 export function open({ router }) {
-  // 🆕 Priority 1: Keyframe selected?
+  // 🆕 Priority 1: Transition selected?
+  const trUI = window.__transitionUI;
+  const selTr = (trUI && typeof trUI.getSelectedTransition === 'function')
+    ? trUI.getSelectedTransition()
+    : null;
+
+  if (selTr) {
+    const trType = (selTr.__transitionIn && selTr.__transitionIn.key) || 'transition';
+    if (typeof trUI.deleteSelectedTransition === 'function') {
+      const ok = trUI.deleteSelectedTransition();
+      if (ok) {
+        showToast('⇄ Transition "' + trType + '" removed');
+        return;
+      }
+    }
+  }
+
+  // 🆕 Priority 2: Keyframe selected?
   const kfUI = window.__keyframeUI;
   const selKf = (kfUI && typeof kfUI.getSelectedKeyframe === 'function')
     ? kfUI.getSelectedKeyframe()
@@ -82,11 +101,11 @@ export function open({ router }) {
     return;
   }
 
-  // ─── Priority 2: Delete selected layer ────────────────────
+  // ─── Priority 3: Delete selected layer ────────────────────
   const selectedEl = document.querySelector('.clip.selected');
 
   if (!selectedEl) {
-    showToast('Select a clip or keyframe first', false);
+    showToast('Select a clip, keyframe, or transition first', false);
     return;
   }
 
@@ -94,7 +113,6 @@ export function open({ router }) {
     .replace(/\s+/g, ' ')
     .trim();
 
-  // Sync timelineEngine's internal `selected`
   try {
     selectedEl.dispatchEvent(new MouseEvent('mousedown', {
       bubbles: true,
@@ -103,7 +121,6 @@ export function open({ router }) {
     }));
   } catch (_) {}
 
-  // Fire the delete event
   document.dispatchEvent(new CustomEvent('editor:delete-selected'));
 
   showToast(`Deleted "${clipName}"`);

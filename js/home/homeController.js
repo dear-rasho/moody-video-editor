@@ -77,7 +77,7 @@ export function initAiPromptHelper() {
    const PROMPT_TEXT =
 `You are helping me write commands for a video editor's prompt panel.
 
-The editor supports TWO formats:
+The editor supports TWO formats + BEATS mode:
 
 ═══════════════════════════════════════════════
 FORMAT 1 — TIMESTAMPED LAYERS (recommended)
@@ -110,10 +110,8 @@ TEXT LAYER PROPERTIES (after quoted text)
 
   position <name>      top, bottom, center, left, right
   position <X> <Y>     coords 0-100, e.g. 50 30
-
   color <name|#hex>    white, black, red, gold, #ff0066
   color ramp #A to #B  gradient
-
   font <name|category> specific font OR category
   size <number>        font size px (default 36)
   bold | italic        style flags
@@ -144,13 +142,10 @@ OTHER LAYER TYPES
 ═══════════════════════════════════════════════
 
 STICKER:
-  [MM:SS - MM:SS] sticker 🔥
   [MM:SS - MM:SS] sticker 🔥 at 50 30
-  [MM:SS - MM:SS] sticker 😀 at 20 80 size 150
 
 ADJUSTMENT (values 100-300 = filter scale; -100 to 100 = adjustment scale):
   [MM:SS - MM:SS] brightness 130, saturation 140
-
   Keys: brightness, contrast, exposure, whites, blacks, shadows,
         highlights, clarity, saturation, vibrance, temperature,
         tint, noise, sharpen, vignette
@@ -160,29 +155,99 @@ ADJUSTMENT (values 100-300 = filter scale; -100 to 100 = adjustment scale):
 FILTER:
   [MM:SS - MM:SS] blur 5
   [MM:SS - MM:SS] grayscale 80
-  [MM:SS - MM:SS] sepia 50, invert 100
 
-EFFECT PRESET (single word):
+EFFECT PRESET:
   [MM:SS - MM:SS] vintage
-  [MM:SS - MM:SS] cinematic
   Presets: shake, bounce, pulse, zoomPulse, glitch, wobble,
            warm, cool, vintage, cinematic, bw, dreamy, vivid,
            faded, dramatic, negative, softGlow, noir
 
 COLOR WHEEL:
   [MM:SS - MM:SS] shadows red 50 40
-  [MM:SS - MM:SS] midtones blue 40 50
   [MM:SS - MM:SS] hdr 120
 
 CHROMA KEY:
   [MM:SS - MM:SS] green screen
-  [MM:SS - MM:SS] chroma #00ff00 similarity 30
 
 AUDIO FX:
   [MM:SS - MM:SS] audio echo
   Keys: studio, warm, bright, vocal, podcast, deep, monster,
         chipmunk, baby, robot, echo, reverb, cave, stadium,
         telephone, underwater, whisper, radio
+
+═══════════════════════════════════════════════
+LAYER TRANSITIONS (comma-separated, per-layer)
+═══════════════════════════════════════════════
+
+Transitions apply to the START of each clip on a layer.
+The FIRST clip of a layer is skipped (it has no preceding clip).
+
+BASIC:
+  layer v1 transitions fade, dissolve, slide left, zoom
+  transitions fade, dissolve, slide          (uses selected clip's layer)
+
+  Each type applies to clip #2, #3, #4, ... in order.
+
+WITH DURATION:
+  layer v1 transitions fade 0.5, dissolve 0.8, zoom 1
+  Duration range: 0.1-3.0s. Default: 0.5s
+
+SKIP A JUNCTION:
+  layer v1 transitions dissolve, null, slide, null, zoom
+  Use null / none / skip / - to skip.
+
+LOOP:
+  layer v1 transitions fade, dissolve loop
+  Pattern repeats across all clips.
+
+TRANSITION TYPES:
+  fade, dissolve, fade black, fade white,
+  slide left, slide right, slide up, slide down,
+  zoom in, zoom out,
+  wipe left, wipe right, circle in, blur
+
+SHORTCUTS:
+  transition all <type> [<dur>]              → all layers, all junctions
+  transition at <time> <type> [<dur>]        → clips starting at <time>±0.2s
+
+═══════════════════════════════════════════════
+🥁 BEATS EDITING (audio-driven)
+═══════════════════════════════════════════════
+
+STEP 1 — DETECT BEATS (on selected AUDIO clip):
+  detect beats
+
+  The audio clip gets analyzed. Beat timestamps are saved inside the clip.
+
+STEP 2 — BEATS EDIT (with selected VISUAL clips):
+  beats edit <effect1>, <effect2>, <effect3>, ...
+
+  What happens:
+  1. Selected visual clips get distributed across the audio's beat times.
+     - If clips < beats → clips loop (auto-cloned)
+     - If clips > beats → extra clips unused
+     - Each clip duration = average gap between beats
+  2. A new effect track is created ABOVE the clips.
+  3. Effects are applied cyclically on each beat:
+       beat 0 → effect1, beat 1 → effect2, beat 2 → effect3, beat 3 → effect1, ...
+
+EFFECT KEYS for beats edit:
+  Motion:  shake, bounce, pulse, zoom, glitch, wobble, rotate, flicker
+  Color:   warm, cool, vivid, bw, noir, vintage, cinematic, flash, fade, dreamy
+
+EXAMPLES:
+  beats edit shake
+  beats edit shake, zoom
+  beats edit shake, zoom, pulse
+  beats edit zoom, pulse, glitch
+  beats edit warm, cool, vivid
+  beats edit shake, flash, zoom
+  beats edit pulse, zoom, shake, glitch
+
+TYPICAL WORKFLOW:
+  1. Import audio + images.
+  2. Select the audio clip → "detect beats"
+  3. Multi-select visual clips (⏩ button) → "beats edit shake, zoom, pulse"
 
 ═══════════════════════════════════════════════
 FORMAT 2 — SIMPLE (no timestamps, at playhead)
@@ -197,7 +262,6 @@ FORMAT 2 — SIMPLE (no timestamps, at playhead)
   audio echo
   sticker 😀
   trim left
-  split
 
 ═══════════════════════════════════════════════
 EXAMPLES
@@ -207,24 +271,16 @@ Intro:
   ratio 9:16
   [00:00 - 00:05] "Welcome" animation typewriter, position center, color white
   [00:05 - 00:08] "Bounce" animation bounce, position bottom, color yellow
-  [00:08 - 00:15] brightness 130, saturation 140
 
-Typography:
-  ratio 9:16
-  [00:00 - 00:05] [seg "i am" font handwriting size 20 color whitish] [seg "fine" font music size 60 color ramp #00FF87 to #60EFFF] position center
+Transitions (4 clips on V1):
+  layer v1 transitions fade 0.5, dissolve 0.8, slide left 0.6, zoom 1
 
-Full mix:
-  ratio 9:16
-  [00:00 - 00:05] "Intro" font music size 60 position center, animation typewriter
-  [00:00 - 00:05] brightness 110, saturation 130
-  [00:05 - 00:08] sticker 🔥 at 50 30
-  [00:08 - 00:15] "Main content" font handwriting size 36 color ramp #ff0066 to #0066ff, position center, animation bounce
-  [00:15 - 00:18] audio echo
-  [00:18 - 00:25] "Thanks" font cinematic size 42 color gold, position bottom, animation fadeUp
+Beats workflow:
+  Step 1 (select audio):  detect beats
+  Step 2 (select visuals): beats edit shake, zoom, pulse
 
-Music video:
-  ratio 9:16
-  [00:00 - 00:04] [seg "WE" font music size 72 color #ff0066] [seg "ARE" font music size 72 color #00FF87] [seg "LIVE" font music size 72 color #60EFFF] position center, animation bounce
+Mixed:
+  brightness 120, layer v1 transitions fade, dissolve, slide, zoom, saturation 140
 
 ═══════════════════════════════════════════════
 RULES
@@ -232,10 +288,11 @@ RULES
 
 1. Start with "ratio X:Y" if user specifies aspect ratio.
 2. Timestamps: MM:SS or HH:MM:SS.
-3. Each [MM:SS - MM:SS] block is a separate timeline layer.
-4. Text MUST be in "double quotes".
-5. Non-timestamped commands use the first text layer's duration.
-6. Properties are comma-separated.
+3. Text MUST be in "double quotes".
+4. Properties are comma-separated.
+5. Layer transitions: put the ENTIRE comma-list inside ONE command.
+6. Beats edit: effect names separated by commas, in ONE command.
+7. Transition names with spaces (not hyphens): "slide left" ✓, "slide-left" ✗
 
 MY REQUEST: [yahan apna request likho]
 
@@ -253,7 +310,6 @@ Return ONLY the editor commands. No explanation.`;
         copyBtn.textContent = '📋 Copy Prompt';
       }, 1800);
     } catch (err) {
-      // Fallback for older browsers
       const ta = document.createElement('textarea');
       ta.value = PROMPT_TEXT;
       ta.style.position = 'fixed';
