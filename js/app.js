@@ -32,6 +32,12 @@ import { initPreviewDrag } from './workspace/previewDrag.js';
   // ─── Multi-select (forward/backward range selection) ───────
   initMultiSelect();
 
+  // 🆕 Expose globally for other modules
+  window.__multiSelect = {
+    forEachSelectedClip: forEachSelectedClip,
+    getSelectionCount: getSelectionCount
+  };
+
   const fwdBtn = document.querySelector('#select-forward-btn');
   if (fwdBtn) {
     fwdBtn.addEventListener('click', function (e) {
@@ -47,7 +53,7 @@ import { initPreviewDrag } from './workspace/previewDrag.js';
       selectBackward();
     });
   }
-import { initMultiSelect, selectForward, selectBackward } from './workspace/multiSelect.js';
+  import { initMultiSelect, selectForward, selectBackward, forEachSelectedClip, getSelectionCount } from './workspace/multiSelect.js';
 import { showError } from './workspace/errorNotifier.js';
 import * as keyframeStore from './workspace/keyframeStore.js';
 import * as featureModules from './features/index.js';

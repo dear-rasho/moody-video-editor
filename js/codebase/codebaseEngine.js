@@ -1,14 +1,29 @@
 // ================================================================
 //  js/codebase/codebaseEngine.js
 //  Prompt → commands → layers
-//  🆕 Timestamped multi-layer + segments + ratio + unknown tracking
+//
+//  Features:
+//   - Timestamped multi-layer  [MM:SS - MM:SS]
+//   - Segments with per-word styling/animation
+//   - Ratio (9:16, 16:9, etc.)
+//   - Color grading (adjustments + color wheels)
+//   - Attach-to-selected-clip or hierarchy fallback
+//   - Tighten track + transition all
+//   - 🆕 Transition at specific time (per-junction control)
+//   - Graph commands
+//   - Unknown tracking (feeds back to user)
 // ================================================================
 
 import { createEffectLayer } from '../workspace/effectLayer.js';
 import { createAudioFxLayer } from '../workspace/audioEffectLayer.js';
 import { placeClipAtTime } from '../layers/layersManager.js';
 import { resolveFontFamily, loadGoogleFont } from './fontLibrary.js';
+import { openKeyframeGraph } from '../workspace/keyframeGraph.js';
+import { clearKeyframes as clearAllKeyframes } from '../workspace/keyframeStore.js';
 
+// ═══════════════════════════════════════════════════════════════
+//  CONSTANTS
+// ═══════════════════════════════════════════════════════════════
 const ADJUSTMENT_KEYS = [
   'brightness', 'contrast', 'exposure', 'whites', 'blacks',
   'shadows', 'highlights', 'clarity', 'saturation', 'vibrance',
@@ -70,8 +85,12 @@ const SYNONYMS = {
   hara: 'greens', neela: 'blues', jamuni: 'purples', gulabi: 'magentas'
 };
 
+// ═══════════════════════════════════════════════════════════════
+//  STATE
+// ═══════════════════════════════════════════════════════════════
 let _lastCreatedClips = [];
 let _unknownParts = [];
+let _autoOpenGraph = false;
 
 function _resetUnknown() { _unknownParts = []; }
 function _addUnknown(part, context) {
@@ -83,11 +102,7 @@ function _addUnknown(part, context) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  🆕 SPLIT PROPERTY STRING
-// ═══════════════════════════════════════════════════════════════
-//  🆕 PATTERN-BASED PROPERTY SPLITTER
-//  Consumes properties from START of string — robust against
-//  apostrophes, no-space separation, and "font bold" cases.
+//  PROPERTY SPLITTER (pattern-based, robust)
 // ═══════════════════════════════════════════════════════════════
 const PROP_PATTERNS = [
   /^(?:font\s*[-]?size)\s+\d+/i,
@@ -120,7 +135,7 @@ const PROP_PATTERNS = [
 
 function splitPropString(str) {
   if (!str) return [];
-  const commaParts = String(str).split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+  const commaParts = String(str).split(',').map(s => s.trim()).filter(Boolean);
   const result = [];
 
   for (let ci = 0; ci < commaParts.length; ci++) {
@@ -139,10 +154,7 @@ function splitPropString(str) {
           break;
         }
       }
-      if (!matched) {
-        result.push(rest);
-        break;
-      }
+      if (!matched) { result.push(rest); break; }
     }
   }
   return result;
@@ -171,11 +183,12 @@ function applyRatio(ratioStr) {
 
 // ═══════════════════════════════════════════════════════════════
 //  TIMESTAMPED LAYERS
+// ═══════════════════════════════════════════════════════════════
 function hasTimestampedLayers(rawPrompt) {
   if (!rawPrompt || typeof rawPrompt !== 'string') return false;
-  // 🆕 Support fractional seconds: 00:01.5, 1:23.75, 01:23:45.5
   return /\[\s*\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?\s*[-–—]\s*\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?\s*\]/.test(rawPrompt);
 }
+
 function parseTimeStr(str) {
   const s = String(str).trim();
   const parts = s.split(':');
@@ -192,6 +205,7 @@ function parseTimeStr(str) {
   }
   return parseFloat(parts[0]) || 0;
 }
+
 function fmtSec(s) {
   if (!Number.isFinite(s)) s = 0;
   const m = Math.floor(s / 60);
@@ -202,7 +216,6 @@ function fmtSec(s) {
 
 function parseTimestampedLayers(rawPrompt) {
   _resetUnknown();
-    // 🆕 Support fractional seconds
   const blockRegex = /\[\s*(\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?)\s*[-–—]\s*(\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?)\s*\]/g;
 
   const blocks = [];
@@ -243,6 +256,9 @@ function parseTimestampedLayers(rawPrompt) {
   return { layers, trailingCommands };
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  BLOCK TYPE DETECTION
+// ═══════════════════════════════════════════════════════════════
 function detectBlockType(content) {
   const c = (content || '').trim();
   if (!c) return null;
@@ -252,24 +268,33 @@ function detectBlockType(content) {
   if (/^["']/.test(c)) return 'text';
   if (/^text\s+["']/i.test(c)) return 'text';
   if (/\[seg/i.test(c)) return 'text';
-  if (/\b(shadows?|midtones?|highlights?|hdr)\b\s+\w+/i.test(c)) return 'colorwheel';
-  if (/\b(chroma|green\s*screen|blue\s*screen)\b/i.test(c)) return 'chroma';
 
   const onlyWord = c.toLowerCase().trim();
   if (EFFECT_PRESETS.indexOf(onlyWord) >= 0) return 'effect';
 
-  const parts = c.split(/[,\n]+/).map(function (s) { return s.trim(); });
+  const parts = c.split(/[,\n]+/).map(s => s.trim());
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i];
-    const m = part.toLowerCase().match(/^([a-z][a-z\s]*?)\s+(-?\d+(?:\.\d+)?)/);
+    const low = part.toLowerCase();
+
+    if (FILTER_KEYS.indexOf(low) >= 0) return 'effect';
+
+    const m = low.match(/^([a-z][a-z\s]*?)\s+(-?\d+(?:\.\d+)?)/);
     if (m) {
       const key = m[1].replace(/\s+/g, '');
       const mapped = SYNONYMS[key] || key;
-      if (ADJUSTMENT_KEYS.indexOf(mapped) >= 0) return 'adjustment';
-      if (FILTER_KEYS.indexOf(mapped) >= 0) return 'filter';
+      if (ADJUSTMENT_KEYS.indexOf(mapped) >= 0) return 'effect';
+      if (FILTER_KEYS.indexOf(mapped) >= 0) return 'effect';
+      if (mapped === 'shadows' || mapped === 'midtones' ||
+          mapped === 'highlights' || mapped === 'hdr') return 'effect';
     }
-    if (FILTER_KEYS.indexOf(part.toLowerCase()) >= 0) return 'filter';
   }
+
+  if (/\b(shadows?|midtones?|highlights?)\s+(?:red|orange|yellow|lime|green|teal|cyan|sky|blue|indigo|purple|violet|magenta|pink|rose)\b/i.test(c)) {
+    return 'effect';
+  }
+  if (/\bhdr\s+\d+/i.test(c)) return 'effect';
+  if (/\b(chroma|green\s*screen|blue\s*screen)\b/i.test(c)) return 'effect';
 
   return 'trailing';
 }
@@ -287,26 +312,20 @@ function parseTimestampBlock(block) {
   if (type === 'trailing') {
     return { type: 'trailing', commands: [content], start: block.start, end: block.end };
   }
-
   if (type === 'text') return parseTextBlock(block, content);
   if (type === 'sticker') return parseStickerBlock(block, content);
   if (type === 'audiofx') return parseAudioFxBlock(block, content);
-  if (type === 'adjustment' || type === 'filter' || type === 'effect' ||
-      type === 'colorwheel' || type === 'chroma') {
-    return { type: type, start: block.start, end: block.end, raw: content };
+  if (type === 'effect') {
+    return { type: 'effect', start: block.start, end: block.end, raw: content };
   }
 
   return null;
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  TEXT BLOCK PARSER (with segments)
+//  TEXT BLOCK PARSER (apostrophe-safe manual extraction)
+// ═══════════════════════════════════════════════════════════════
 function parseTextBlock(block, content) {
-  // ═══════════════════════════════════════════════════════════
-  //  🆕 MANUAL SEGMENT EXTRACTION
-  //  Handles apostrophes, quotes, and complex text safely.
-  //  Format: [seg "text" props] [seg 'text' props]
-  // ═══════════════════════════════════════════════════════════
   const segments = [];
   const ranges = [];
   const startRegex = /\[\s*(?:seg|segment|word)\s+/gi;
@@ -315,19 +334,14 @@ function parseTextBlock(block, content) {
   while ((m = startRegex.exec(content)) !== null) {
     const blockStart = m.index;
 
-    // Find the first quote after "seg "
     let qi = m.index + m[0].length;
     while (qi < content.length && content[qi] !== '"' && content[qi] !== "'") qi++;
     if (qi >= content.length) continue;
 
     const openQ = content[qi];
-
-    // Find the closing `]`
     const endBracket = content.indexOf(']', qi + 1);
     if (endBracket < 0) continue;
 
-    // Find the LAST occurrence of the SAME quote before `]`
-    // (props don't contain quotes, so this is the closing quote)
     let closeQi = -1;
     for (let j = endBracket - 1; j > qi; j--) {
       if (content[j] === openQ) { closeQi = j; break; }
@@ -347,11 +361,9 @@ function parseTextBlock(block, content) {
     segments.push({ text: segText, props: segProps });
     ranges.push([blockStart, endBracket + 1]);
 
-    // Advance startRegex lastIndex so we don't re-match inside this block
     startRegex.lastIndex = endBracket + 1;
   }
 
-  // Remove all segment blocks from content (from end to start)
   let textWithoutSegs = content;
   for (let i = ranges.length - 1; i >= 0; i--) {
     textWithoutSegs =
@@ -360,7 +372,6 @@ function parseTextBlock(block, content) {
   }
   textWithoutSegs = textWithoutSegs.replace(/\s+/g, ' ').trim();
 
-  // ─── Extract main text (if any) ─────────────────────────────
   let mainText = '';
   let propsStr = '';
 
@@ -384,7 +395,6 @@ function parseTextBlock(block, content) {
   const props = parsedProps.props || parsedProps;
   const unknownProps = parsedProps.unknown || [];
   for (let k = 0; k < unknownProps.length; k++) {
-    // 🆕 Fixed double-s bug
     _addUnknown(unknownProps[k], 'text @ ' + fmtSec(block.start));
   }
 
@@ -398,9 +408,6 @@ function parseTextBlock(block, content) {
   };
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  STICKER / AUDIO FX BLOCKS
-// ═══════════════════════════════════════════════════════════════
 function parseStickerBlock(block, content) {
   const emojiM = content.match(/^(?:sticker|emoji)\s+(.)/u);
   if (!emojiM) return null;
@@ -411,22 +418,16 @@ function parseStickerBlock(block, content) {
   if (atM) { props.x = parseFloat(atM[1]); props.y = parseFloat(atM[2]); }
   const sizeM = rest.match(/\bsize\s+(\d+)/i);
   if (sizeM) props.scale = parseInt(sizeM[1], 10);
-  return {
-    type: 'sticker',
-    start: block.start,
-    end: block.end,
-    emoji: emoji,
-    props: props
-  };
+  return { type: 'sticker', start: block.start, end: block.end, emoji, props };
 }
 
 function parseAudioFxBlock(block, content) {
   const m = content.match(/^(?:audio|sound|awaaz)\s+([a-z][a-z\s]*)/i);
   if (!m) return null;
   const words = m[1].trim().split(/\s+/).filter(Boolean);
-  const keys = words.filter(function (w) { return AUDIO_FX_KEYS.indexOf(w) >= 0; });
+  const keys = words.filter(w => AUDIO_FX_KEYS.indexOf(w) >= 0);
   if (!keys.length) return null;
-  return { type: 'audiofx', start: block.start, end: block.end, keys: keys };
+  return { type: 'audiofx', start: block.start, end: block.end, keys };
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -434,7 +435,7 @@ function parseAudioFxBlock(block, content) {
 // ═══════════════════════════════════════════════════════════════
 function parseLayerProps(str) {
   const unknown = [];
-   const props = {
+  const props = {
     animation: 'none',
     animationDuration: 0.6,
     positionX: 50,
@@ -460,7 +461,7 @@ function parseLayerProps(str) {
     newline: false
   };
 
-  if (!str) return { props: props, unknown: unknown };
+  if (!str) return { props, unknown };
 
   const parts = splitPropString(str);
 
@@ -468,7 +469,6 @@ function parseLayerProps(str) {
     const part = parts[i];
     let m;
 
-    // animation
     m = part.match(/^animation\s+([A-Za-z][A-Za-z0-9]*)/i);
     if (m) {
       const raw = m[1].toLowerCase();
@@ -493,7 +493,7 @@ function parseLayerProps(str) {
       continue;
     }
 
-     // positionX N
+    // positionX N
     m = part.match(/^position\s*x\s+(-?\d+(?:\.\d+)?)/i);
     if (m) { props.positionX = parseFloat(m[1]); continue; }
 
@@ -501,31 +501,27 @@ function parseLayerProps(str) {
     m = part.match(/^position\s*y\s+(-?\d+(?:\.\d+)?)/i);
     if (m) { props.positionY = parseFloat(m[1]); continue; }
 
-    // anchorX N
+    // anchor X Y
+    m = part.match(/^anchor\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)/i);
+    if (m) { props.anchorX = parseFloat(m[1]); props.anchorY = parseFloat(m[2]); continue; }
+
+    // anchorX
     m = part.match(/^anchor\s*x\s+(-?\d+(?:\.\d+)?)/i);
     if (m) { props.anchorX = parseFloat(m[1]); continue; }
 
-    // anchorY N
+    // anchorY
     m = part.match(/^anchor\s*y\s+(-?\d+(?:\.\d+)?)/i);
     if (m) { props.anchorY = parseFloat(m[1]); continue; }
 
-    // anchor X Y
-    m = part.match(/^anchor\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)/i);
-    if (m) {
-      props.anchorX = parseFloat(m[1]);
-      props.anchorY = parseFloat(m[2]);
-      continue;
-    }
-
-    // anchor top-left / center / etc.
-    m = part.match(/^anchor\s+(top-left|top-center|top-right|center-left|center-right|bottom-left|bottom-center|bottom-right|top|bottom|center|left|right)/i);
+    // anchor presets
+    m = part.match(/^anchor\s+(top-left|top-center|top-right|center-left|center-right|bottom-left|bottom-center|bottom-right|top|bottom|center|middle|left|right)\b/i);
     if (m) {
       const a = m[1].toLowerCase();
       if (a === 'top-left')          { props.anchorX = 0;   props.anchorY = 0; }
       else if (a === 'top-center' || a === 'top')    { props.anchorX = 50;  props.anchorY = 0; }
       else if (a === 'top-right')    { props.anchorX = 100; props.anchorY = 0; }
       else if (a === 'center-left' || a === 'left')  { props.anchorX = 0;   props.anchorY = 50; }
-      else if (a === 'center')       { props.anchorX = 50;  props.anchorY = 50; }
+      else if (a === 'center' || a === 'middle')     { props.anchorX = 50;  props.anchorY = 50; }
       else if (a === 'center-right' || a === 'right') { props.anchorX = 100; props.anchorY = 50; }
       else if (a === 'bottom-left')  { props.anchorX = 0;   props.anchorY = 100; }
       else if (a === 'bottom-center' || a === 'bottom') { props.anchorX = 50; props.anchorY = 100; }
@@ -533,7 +529,7 @@ function parseLayerProps(str) {
       continue;
     }
 
-    // position top/bottom/center/left/right
+    // position top/bottom/center/etc
     m = part.match(/^position\s+(top|bottom|center|middle|left|right)\b/i);
     if (m) {
       const p = m[1].toLowerCase();
@@ -547,11 +543,8 @@ function parseLayerProps(str) {
 
     // position X Y
     m = part.match(/^position\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)/i);
-    if (m) {
-      props.positionX = parseFloat(m[1]);
-      props.positionY = parseFloat(m[2]);
-      continue;
-    }
+    if (m) { props.positionX = parseFloat(m[1]); props.positionY = parseFloat(m[2]); continue; }
+
     // gradient
     m = part.match(/^(?:colou?r\s+ramp|gradient|ramp)\s+(#[0-9a-fA-F]{3,8})\s+(?:to|→|->)\s+(#[0-9a-fA-F]{3,8})/i);
     if (m) {
@@ -578,14 +571,11 @@ function parseLayerProps(str) {
     if (/^shadow\b/i.test(part)) { props.shadowEnabled = true; continue; }
 
     // newline
-    if (/^newline$/i.test(part) || /^linebreak$/i.test(part)) {
-      props.newline = true;
-      continue;
-    }
+    if (/^newline\b/i.test(part) || /^linebreak\b/i.test(part)) { props.newline = true; continue; }
 
-    // bold / italic
-    if (/^font\s+bold$/i.test(part)) { props.fontWeight = 'bold'; continue; }
-    if (/^font\s+italic$/i.test(part)) { props.fontStyle = 'italic'; continue; }
+    // bold / italic (standalone or with font)
+    if (/^font\s+bold\b/i.test(part)) { props.fontWeight = 'bold'; continue; }
+    if (/^font\s+italic\b/i.test(part)) { props.fontStyle = 'italic'; continue; }
     if (/^bold$/i.test(part)) { props.fontWeight = 'bold'; continue; }
     if (/^italic$/i.test(part)) { props.fontStyle = 'italic'; continue; }
 
@@ -634,7 +624,7 @@ function parseLayerProps(str) {
     unknown.push(part);
   }
 
-  return { props: props, unknown: unknown };
+  return { props, unknown };
 }
 
 function colorNameToHex(name) {
@@ -646,8 +636,7 @@ function colorNameToHex(name) {
     brown: '#8b4513', navy: '#000080', teal: '#008080', olive: '#808000',
     maroon: '#800000', aqua: '#00ffff', whitish: '#f5f5f5'
   };
-  const k = String(name || '').toLowerCase();
-  return map[k] || '#ffffff';
+  return map[String(name || '').toLowerCase()] || '#ffffff';
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -659,7 +648,7 @@ function buildTextClip(L, duration) {
 
   let segments = null;
   if (L.segments && L.segments.length > 0) {
-    segments = L.segments.map(function (s) {
+    segments = L.segments.map(s => {
       const sp = s.props || {};
       return {
         text: s.text,
@@ -679,7 +668,7 @@ function buildTextClip(L, duration) {
         rotation: sp.rotation || 0,
         scale: sp.scale != null ? sp.scale : 100,
         opacity: sp.opacity != null ? sp.opacity : 100,
-            align: sp.alignment || 'center',
+        align: sp.alignment || 'center',
         anchorX: sp.anchorX != null ? sp.anchorX : 50,
         anchorY: sp.anchorY != null ? sp.anchorY : 50,
         newline: !!sp.newline
@@ -691,7 +680,7 @@ function buildTextClip(L, duration) {
   if (!mainText && !segments) return null;
 
   return {
-    name: (mainText || (segments ? segments.map(function (s) { return s.text; }).join(' ') : '')).slice(0, 30),
+    name: (mainText || (segments ? segments.map(s => s.text).join(' ') : '')).slice(0, 30),
     url: 'text://' + id,
     type: 'text/plain',
     __textId: id,
@@ -714,7 +703,7 @@ function buildTextClip(L, duration) {
       shadowBlur: 8,
       shadowOffsetX: 2,
       shadowOffsetY: 2,
-            alignment: p.alignment || 'center',
+      alignment: p.alignment || 'center',
       positionX: p.positionX != null ? p.positionX : 50,
       positionY: p.positionY != null ? p.positionY : 50,
       anchorX: p.anchorX != null ? p.anchorX : 50,
@@ -751,7 +740,7 @@ function buildStickerClip(L, duration) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  BUILD EFFECT LAYER
+//  BUILD EFFECT LAYER — attach to selected clip OR hierarchy
 // ═══════════════════════════════════════════════════════════════
 function buildEffectLayer(L) {
   const appState = window.__appState;
@@ -761,78 +750,192 @@ function buildEffectLayer(L) {
   if (duration <= 0) return null;
 
   const raw = L.raw || '';
-  const id = 'fx-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
+  const targetClip = getSelectedDisplayClip(appState);
 
-  let effectState = null;
-  let label = '';
+  const adj = extractAdjustments(raw);
+  const cw = extractColorWheel(raw);
+  const fil = extractFilters(raw);
+  const hasFilter = Object.keys(fil).some(k => {
+    if (k === 'brightness' || k === 'contrast' || k === 'saturation' ||
+        k === 'hue' || k === 'opacity') return false;
+    return fil[k] !== 0;
+  });
+  const onlyWord = raw.trim().toLowerCase();
+  const isPreset = EFFECT_PRESETS.indexOf(onlyWord) >= 0;
+  const ch = extractChroma(raw);
 
-  if (L.type === 'adjustment') {
-    const adj = extractAdjustments(raw);
-    if (!Object.keys(adj).length) return null;
-    effectState = { kind: 'adjustment', adjustments: adj };
-    label = 'Adj';
-  } else if (L.type === 'filter') {
-    const fil = extractFilters(raw);
-    if (!Object.keys(fil).length) return null;
-    effectState = { kind: 'filter', filters: fil };
-    label = 'Filter';
-  } else if (L.type === 'effect') {
-    const preset = raw.trim().toLowerCase();
-    if (EFFECT_PRESETS.indexOf(preset) < 0) return null;
-    effectState = {
-      kind: 'effect',
-      presetKey: preset,
-      filters: {
-        brightness: 100, contrast: 100, saturation: 100, hue: 0,
-        grayscale: 0, sepia: 0, invert: 0, blur: 0, opacity: 100
-      },
-      motion: null
-    };
-    label = preset;
-  } else if (L.type === 'colorwheel') {
-    const cw = extractColorWheel(raw);
-    if (!cw) return null;
-    effectState = { kind: 'colorWheel', colorWheel: cw };
-    label = 'Color Wheel';
-  } else if (L.type === 'chroma') {
-    const ch = extractChroma(raw);
-    if (!ch) return null;
-    effectState = { kind: 'chroma', chroma: ch };
-    label = 'Chroma';
+  const hasAny = Object.keys(adj).length > 0 || cw || hasFilter || isPreset || ch;
+  if (!hasAny) return null;
+
+  // ─── MODE A: Attach to selected clip ───────────────────────
+  if (targetClip) {
+    if (!targetClip.__grading) targetClip.__grading = {};
+
+    if (Object.keys(adj).length > 0) {
+      targetClip.__grading.adjustments = Object.assign(
+        {}, targetClip.__grading.adjustments || {}, adj
+      );
+    }
+    if (cw) {
+      targetClip.__grading.colorWheel = Object.assign(
+        {}, targetClip.__grading.colorWheel || {}, cw
+      );
+    }
+    if (hasFilter) {
+      targetClip.__grading.filters = Object.assign(
+        {}, targetClip.__grading.filters || {}, fil
+      );
+    }
+    if (ch) targetClip.__grading.chroma = ch;
+    if (isPreset) targetClip.__grading.preset = onlyWord;
+
+    return 'attached to "' + (targetClip.name || 'clip').slice(0, 20) + '"';
   }
 
-  if (!effectState) return null;
+  // ─── MODE B: Hierarchy layers ──────────────────────────────
+  const created = [];
 
-  const clipData = {
-    name: label,
-    url: 'effect://' + id,
-    type: 'effect/plain',
-    __effectId: id,
-    effectState: effectState,
-    startTime: L.start,
-    duration: duration,
-    sourceIn: 0,
-    __trimmed: true
-  };
+  if (Object.keys(adj).length > 0) {
+    const id = 'fx-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7) + '-adj';
+    placeClipAtTime(appState.timeline.visual, {
+      name: 'Adj',
+      url: 'effect://' + id,
+      type: 'effect/plain',
+      __effectId: id,
+      effectState: { kind: 'adjustment', adjustments: adj },
+      startTime: L.start,
+      duration: duration,
+      sourceIn: 0,
+      __trimmed: true
+    }, L.start);
+    created.push('adj');
+  }
 
-  placeClipAtTime(appState.timeline.visual, clipData, L.start);
-  return L.type + '@' + fmtSec(L.start) + ' (' + fmtSec(duration) + 's)';
+  if (cw) {
+    const id = 'fx-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7) + '-cw';
+    placeClipAtTime(appState.timeline.visual, {
+      name: 'Wheel',
+      url: 'effect://' + id,
+      type: 'effect/plain',
+      __effectId: id,
+      effectState: { kind: 'colorWheel', colorWheel: cw },
+      startTime: L.start,
+      duration: duration,
+      sourceIn: 0,
+      __trimmed: true
+    }, L.start);
+    created.push('wheel');
+  }
+
+  if (hasFilter) {
+    const id = 'fx-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7) + '-fil';
+    placeClipAtTime(appState.timeline.visual, {
+      name: 'Filter',
+      url: 'effect://' + id,
+      type: 'effect/plain',
+      __effectId: id,
+      effectState: { kind: 'filter', filters: fil },
+      startTime: L.start,
+      duration: duration,
+      sourceIn: 0,
+      __trimmed: true
+    }, L.start);
+    created.push('filter');
+  }
+
+  if (isPreset) {
+    const id = 'fx-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7) + '-pre';
+    placeClipAtTime(appState.timeline.visual, {
+      name: onlyWord,
+      url: 'effect://' + id,
+      type: 'effect/plain',
+      __effectId: id,
+      effectState: {
+        kind: 'effect',
+        presetKey: onlyWord,
+        filters: {
+          brightness: 100, contrast: 100, saturation: 100, hue: 0,
+          grayscale: 0, sepia: 0, invert: 0, blur: 0, opacity: 100
+        },
+        motion: null
+      },
+      startTime: L.start,
+      duration: duration,
+      sourceIn: 0,
+      __trimmed: true
+    }, L.start);
+    created.push('preset:' + onlyWord);
+  }
+
+  if (ch) {
+    const id = 'fx-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7) + '-ch';
+    placeClipAtTime(appState.timeline.visual, {
+      name: 'Chroma',
+      url: 'effect://' + id,
+      type: 'effect/plain',
+      __effectId: id,
+      effectState: { kind: 'chroma', chroma: ch },
+      startTime: L.start,
+      duration: duration,
+      sourceIn: 0,
+      __trimmed: true
+    }, L.start);
+    created.push('chroma');
+  }
+
+  if (created.length === 0) return null;
+
+  return '@' + fmtSec(L.start) + ' (' + fmtSec(duration) + 's) [' +
+         created.join(' + ') + ']';
 }
 
+function getSelectedDisplayClip(appState) {
+  const el = document.querySelector('.clip.selected');
+  if (!el) return null;
+
+  const label = el.dataset.track;
+  if (!label || label.charAt(0) !== 'V') return null;
+
+  const trackIdx = Number(label.slice(1)) - 1;
+  const clipIdx = Number(el.dataset.clip);
+  if (!Number.isFinite(trackIdx) || !Number.isFinite(clipIdx)) return null;
+
+  const track = appState.timeline.visual[trackIdx];
+  if (!Array.isArray(track)) return null;
+
+  const clip = track[clipIdx];
+  if (!clip || !clip.type) return null;
+
+  const isVideo = clip.type.indexOf('video/') === 0;
+  const isImage = clip.type.indexOf('image/') === 0;
+  if (!isVideo && !isImage) return null;
+
+  return clip;
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  EXTRACTORS
+// ═══════════════════════════════════════════════════════════════
 function extractAdjustments(str) {
   const adj = {};
-  const parts = str.split(/[,\n]+/).map(function (s) { return s.trim(); }).filter(Boolean);
+  const parts = str.split(/[,\n]+/).map(s => s.trim()).filter(Boolean);
+
   for (let i = 0; i < parts.length; i++) {
     const m = parts[i].toLowerCase().match(/^([a-z][a-z\s]*?)\s+(-?\d+(?:\.\d+)?)/);
     if (!m) continue;
+
     const key = m[1].replace(/\s+/g, '');
     const mapped = SYNONYMS[key] || key;
-    if (ADJUSTMENT_KEYS.indexOf(mapped) >= 0) {
-      let v = parseFloat(m[2]);
-      // If value > 100, treat as filter scale (100=normal)
-      if (v > 100) v = (v - 100) * 1.5;
-      adj[mapped] = Math.max(-100, Math.min(100, v));
+    if (ADJUSTMENT_KEYS.indexOf(mapped) < 0) continue;
+
+    let v = parseFloat(m[2]);
+
+    if (mapped === 'brightness' || mapped === 'contrast' ||
+        mapped === 'saturation' || mapped === 'exposure') {
+      if (v >= 50) v = (v - 100) * 1.5;
     }
+
+    adj[mapped] = Math.max(-100, Math.min(100, v));
   }
   return adj;
 }
@@ -842,7 +945,7 @@ function extractFilters(str) {
     brightness: 100, contrast: 100, saturation: 100, hue: 0,
     grayscale: 0, sepia: 0, invert: 0, blur: 0, opacity: 100
   };
-  const parts = str.split(/[,\n]+/).map(function (s) { return s.trim(); }).filter(Boolean);
+  const parts = str.split(/[,\n]+/).map(s => s.trim()).filter(Boolean);
   for (let i = 0; i < parts.length; i++) {
     const low = parts[i].toLowerCase();
     if (FILTER_KEYS.indexOf(low) >= 0) {
@@ -864,7 +967,7 @@ function extractFilters(str) {
 function extractColorWheel(str) {
   const cw = { tones: {}, hdrWhite: 100 };
   let found = false;
-  const parts = str.split(/[,\n]+/).map(function (s) { return s.trim(); }).filter(Boolean);
+  const parts = str.split(/[,\n]+/).map(s => s.trim()).filter(Boolean);
   for (let i = 0; i < parts.length; i++) {
     const m = parts[i].toLowerCase().match(/^(shadows?|midtones?|mid|highlights?|highs?)\s+(\w+)(?:\s+(\d+))?(?:\s+(\d+))?/);
     if (m) {
@@ -912,9 +1015,6 @@ function extractChroma(str) {
   };
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  AUDIO FX
-// ═══════════════════════════════════════════════════════════════
 function createAudioFxLayerWithRange(key, label, startTime, duration) {
   const appState = window.__appState;
   if (!appState) return null;
@@ -937,7 +1037,7 @@ function createAudioFxLayerWithRange(key, label, startTime, duration) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  EXECUTE TIMESTAMPED
+//  EXECUTE TIMESTAMPED LAYERS
 // ═══════════════════════════════════════════════════════════════
 function executeTimestampedLayers(parsed) {
   const appState = window.__appState;
@@ -978,11 +1078,10 @@ function executeTimestampedLayers(parsed) {
         for (let k = 0; k < L.keys.length; k++) {
           try {
             createAudioFxLayerWithRange(L.keys[k], L.keys[k], L.start, duration);
-            results.push('audio:' + L.keys[k] + '@' + fmtSec(L.start));
+            results.push('audio:' + L.keys[k]);
           } catch (e) { warnings.push('audio ' + L.keys[k] + ': fail'); }
         }
-      } else if (L.type === 'adjustment' || L.type === 'filter' || L.type === 'effect' ||
-                 L.type === 'colorwheel' || L.type === 'chroma') {
+      } else if (L.type === 'effect') {
         const r = buildEffectLayer(L);
         if (r) results.push(r);
       }
@@ -994,11 +1093,10 @@ function executeTimestampedLayers(parsed) {
   if (parsed.trailingCommands && parsed.trailingCommands.length > 0) {
     const fallbackDur = firstDuration > 0 ? firstDuration : 3;
     for (let i = 0; i < parsed.trailingCommands.length; i++) {
-      const cmd = parsed.trailingCommands[i];
       try {
-        const r = executeTrailingCommand(cmd, fallbackDur);
+        const r = executeTrailingCommand(parsed.trailingCommands[i], fallbackDur);
         if (r) results.push(r);
-      } catch (e) { warnings.push(cmd); }
+      } catch (e) { warnings.push(parsed.trailingCommands[i]); }
     }
   }
 
@@ -1013,9 +1111,11 @@ function executeTimestampedLayers(parsed) {
     if (Number.isFinite(e) && e > maxEnd) maxEnd = e;
   }
   if (maxEnd > 0 && typeof window.__autofitTimelineToDuration === 'function') {
-    setTimeout(function () {
-      window.__autofitTimelineToDuration(maxEnd);
-    }, 50);
+    setTimeout(() => window.__autofitTimelineToDuration(maxEnd), 50);
+  }
+
+  if (_autoOpenGraph) {
+    setTimeout(() => openKeyframeGraph(), 200);
   }
 
   resetPlayhead();
@@ -1045,7 +1145,7 @@ function executeTrailingCommand(cmd, fallbackDuration) {
   }
 
   const fil = extractFilters(low);
-  const hasFilter = Object.keys(fil).some(function (k) {
+  const hasFilter = Object.keys(fil).some(k => {
     return k !== 'brightness' && k !== 'contrast' && k !== 'saturation' &&
            k !== 'hue' && k !== 'opacity' && fil[k] !== 0;
   });
@@ -1081,7 +1181,7 @@ function createEffectWithDuration(kind, state, name, startTime, duration) {
     url: 'effect://' + id,
     type: 'effect/plain',
     __effectId: id,
-    effectState: Object.assign({ kind: kind }, state),
+    effectState: Object.assign({ kind }, state),
     startTime: startTime || 0,
     duration: duration > 0 ? duration : 3,
     sourceIn: 0,
@@ -1099,6 +1199,77 @@ function resetPlayhead() {
 }
 
 // ═══════════════════════════════════════════════════════════════
+//  SPECIAL COMMANDS
+// ═══════════════════════════════════════════════════════════════
+function trySpecialCommand(seg, state) {
+  const low = seg.toLowerCase().trim();
+
+  // tighten track
+  if (/^(tighten\s*track|close\s*gaps?|magnet|no\s*gaps?)$/i.test(low)) {
+    state.tightenTracks = true;
+    return true;
+  }
+
+  // transition all
+  const transAllM = low.match(/^(?:transition\s+all|all\s+transitions?|transitions?\s+between\s+all)\s+(fade\s*black|fade\s*white|fade|dissolve|slide\s*left|slide\s*right|slide\s*up|slide\s*down|zoom\s*in|zoom\s*out|wipe\s*left|wipe\s*right|circle\s*in)(?:\s+([\d.]+))?$/i);
+  if (transAllM) {
+    const raw = transAllM[1].toLowerCase().replace(/\s+/g, '');
+    const typeMap = {
+      fade: 'fade', fadeblack: 'fadeBlack', fadewhite: 'fadeWhite',
+      dissolve: 'dissolve', slideleft: 'slideLeft', slideright: 'slideRight',
+      slideup: 'slideUp', slidedown: 'slideDown', zoomin: 'zoomIn',
+      zoomout: 'zoomOut', wipeleft: 'wipeLeft', wiperight: 'wipeRight',
+      circlein: 'circleIn'
+    };
+    const key = typeMap[raw] || 'fade';
+    const duration = transAllM[2] ? parseFloat(transAllM[2]) : 0.5;
+    state.transitionAll = { type: key, duration: Math.max(0.1, Math.min(3, duration)) };
+    return true;
+  }
+
+  // 🆕 transition at <time> <type> <duration>
+  const atM = low.match(
+    /^transition\s+at\s+([\d.]+)\s*s?\s+(fade\s*black|fade\s*white|fade|dissolve|slide\s*left|slide\s*right|slide\s*up|slide\s*down|zoom\s*in|zoom\s*out|wipe\s*left|wipe\s*right|circle\s*in)\s*([\d.]+)?$/i
+  );
+  if (atM) {
+    const time = parseFloat(atM[1]);
+    const raw = atM[2].toLowerCase().replace(/\s+/g, '');
+    const typeMap = {
+      fade: 'fade', fadeblack: 'fadeBlack', fadewhite: 'fadeWhite',
+      dissolve: 'dissolve', slideleft: 'slideLeft', slideright: 'slideRight',
+      slideup: 'slideUp', slidedown: 'slideDown', zoomin: 'zoomIn',
+      zoomout: 'zoomOut', wipeleft: 'wipeLeft', wiperight: 'wipeRight',
+      circlein: 'circleIn'
+    };
+    if (!state.atTransitions) state.atTransitions = [];
+    state.atTransitions.push({
+      time: time,
+      type: typeMap[raw] || 'fade',
+      duration: atM[3] ? Math.max(0.1, Math.min(3, parseFloat(atM[3]))) : 0.5
+    });
+    return true;
+  }
+
+  // graph on / off
+  if (/^(graph\s*on|auto\s*graph|show\s*graph\s*on)$/i.test(low)) {
+    state.autoGraph = true; return true;
+  }
+  if (/^(graph\s*off|auto\s*graph\s*off|no\s*graph)$/i.test(low)) {
+    state.autoGraph = false; return true;
+  }
+  // open graph now
+  if (/^(graph|show\s*graph|open\s*graph|keyframe\s*graph|kf\s*graph)$/i.test(low)) {
+    state.openGraph = true; return true;
+  }
+  // clear keyframes
+  if (/^(clear\s*keyframes?|delete\s*keyframes?|remove\s*keyframes?|reset\s*keyframes?)$/i.test(low)) {
+    state.clearKeyframes = true; return true;
+  }
+
+  return false;
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  PARSE PROMPT
 // ═══════════════════════════════════════════════════════════════
 export function parsePrompt(rawPrompt) {
@@ -1112,19 +1283,27 @@ export function parsePrompt(rawPrompt) {
   if (hasTimestampedLayers(rawPrompt)) {
     const parsed = parseTimestampedLayers(rawPrompt);
     if (parsed.layers && parsed.layers.length > 0) {
-      return { ok: true, state: { timestampedLayers: parsed, ratio: ratio } };
+      return { ok: true, state: { timestampedLayers: parsed, ratio } };
     }
   }
 
-   const state = {
+  const state = {
     adjustments: {}, filters: {}, effectPreset: null, speed: null,
     transition: null, texts: [], stickers: [], colorWheel: null,
     chroma: null, transforms: {}, keyframes: [], audioFx: [],
     trimOps: [],
     textProps: null,
     ratio: ratio,
-    target: 'selected'
+    target: 'selected',
+    autoGraph: null,
+    openGraph: false,
+    clearKeyframes: false,
+    tightenTracks: false,
+    transitionAll: null,
+    atTransitions: [],
+    layerTransitions: null   
   };
+
   let prompt = rawPrompt.toLowerCase().trim();
   prompt = prompt.replace(/^\s*ratio\s+\d+\s*:\s*\d+\s*$/im, '');
 
@@ -1132,12 +1311,24 @@ export function parsePrompt(rawPrompt) {
     state.target = 'all';
     prompt = prompt.replace(/\ball\s+clips?\b|\bevery\s+clip\b|\bsab\s+clips?\b|\bhar\s+clip\b/g, '');
   }
+
   const parts = prompt.split(/[,\n]+/).map(s => s.trim()).filter(Boolean);
-  for (const part of parts) parseSegment(part, state);
+  for (const part of parts) {
+    if (trySpecialCommand(part, state)) continue;
+    parseSegment(part, state);
+  }
   return { ok: true, state };
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  PARSE SEGMENT (non-timestamped)
+// ═══════════════════════════════════════════════════════════════
 function parseSegment(seg, state) {
+  // 🆕 EARLY RETURN — transition at / transition all are handled by trySpecialCommand
+  if (/^transition\s+(?:at|all)\s/i.test(seg)) {
+    return;
+  }
+
   const kfM = seg.match(/\b(scale|zoom|rotation|rotate|x|y|position|opacity)\s+(-?[\d.]+)(?:\s*,?\s*(-?[\d.]+))?\s+to\s+(-?[\d.]+)(?:\s*,?\s*(-?[\d.]+))?\s+(?:over|in)\s+([\d.]+)\s*s?/i);
   if (kfM) {
     const propRaw = kfM[1].toLowerCase();
@@ -1146,10 +1337,10 @@ function parseSegment(seg, state) {
     let from, to;
     if (isPosition) {
       from = { x: parseFloat(kfM[2]), y: parseFloat(kfM[3] || kfM[2]) };
-      to   = { x: parseFloat(kfM[4]), y: parseFloat(kfM[5] || kfM[4]) };
+      to = { x: parseFloat(kfM[4]), y: parseFloat(kfM[5] || kfM[4]) };
     } else {
       from = { value: parseFloat(kfM[2]) };
-      to   = { value: parseFloat(kfM[4]) };
+      to = { value: parseFloat(kfM[4]) };
     }
     const duration = parseFloat(kfM[6]) || 3;
     state.keyframes.push({ prop, from, to, duration, isPosition, source: propRaw });
@@ -1162,8 +1353,7 @@ function parseSegment(seg, state) {
     const toneKey = toneRaw.startsWith('sh') ? 'shadows'
                   : toneRaw.startsWith('mi') || toneRaw === 'mid' ? 'midtones'
                   : 'highlights';
-    const colorName = cwM[2].toLowerCase();
-    const hue = COLOR_HUES[colorName];
+    const hue = COLOR_HUES[cwM[2].toLowerCase()];
     if (hue != null) {
       const sat = cwM[3] ? clamp(parseFloat(cwM[3]), 0, 100) : 50;
       const intensity = cwM[4] ? clamp(parseFloat(cwM[4]), 0, 100) : 50;
@@ -1190,16 +1380,9 @@ function parseSegment(seg, state) {
     }
     const rgb = hexToRgb(hex);
     if (rgb) {
-      const simM = seg.match(/similarity\s+(\d+)/i);
-      const smoothM = seg.match(/smooth(?:ness)?\s+(\d+)/i);
-      const spillM = seg.match(/spill\s+(\d+)/i);
-      const intM = seg.match(/intensity\s+(\d+)/i);
       state.chroma = {
         keyColor: rgb,
-        similarity: simM ? clamp(parseFloat(simM[1]), 0, 100) : 30,
-        smoothness: smoothM ? clamp(parseFloat(smoothM[1]), 0, 100) : 20,
-        spill: spillM ? clamp(parseFloat(spillM[1]), 0, 100) : 50,
-        intensity: intM ? clamp(parseFloat(intM[1]), 0, 100) : 100
+        similarity: 30, smoothness: 20, spill: 50, intensity: 100
       };
       return;
     }
@@ -1207,8 +1390,7 @@ function parseSegment(seg, state) {
 
   const audioM = seg.match(/\b(?:audio|sound|awaaz|soundfx)\s+([a-z][a-z\s]*)/i);
   if (audioM) {
-    const words = audioM[1].trim().split(/\s+/);
-    words.forEach(w => {
+    audioM[1].trim().split(/\s+/).forEach(w => {
       if (AUDIO_FX_KEYS.includes(w)) state.audioFx.push(w);
     });
     if (state.audioFx.length > 0) return;
@@ -1217,8 +1399,7 @@ function parseSegment(seg, state) {
     state.audioFx.push(seg);
     return;
   }
-  // 🆕 Updated: allow apostrophes inside quoted text
-    // 🆕 Apostrophe-safe (DON'T, IT'S, CAN'T)
+
   let textMatch = seg.match(/text\s+["']([\s\S]*?)["'](.*)$/i);
   if (!textMatch) textMatch = seg.match(/["']([\s\S]*?)["'](.*)$/);
   if (textMatch && /text|likho|write/i.test(seg)) {
@@ -1229,7 +1410,7 @@ function parseSegment(seg, state) {
     if (sizeM) textObj.fontSize = parseInt(sizeM[1], 10);
     const colorM = rest.match(/color\s+([#\w]+)/i);
     if (colorM) textObj.color = colorM[1];
-    if (/\btop\b|upar/i.test(rest))      textObj.positionY = 20;
+    if (/\btop\b|upar/i.test(rest)) textObj.positionY = 20;
     if (/\bbottom\b|neeche/i.test(rest)) textObj.positionY = 80;
     if (/\bcenter\b|middle|beech/i.test(rest)) textObj.positionY = 50;
     state.texts.push(textObj);
@@ -1246,7 +1427,8 @@ function parseSegment(seg, state) {
     if (Number.isFinite(v) && v >= 0.1 && v <= 16) { state.speed = v; return; }
   }
 
-  const transM = seg.match(/(fade\s*black|fade\s*white|fade|dissolve|slide\s*left|slide\s*right|slide\s*up|slide\s*down|zoom\s*in|zoom\s*out|wipe\s*left|wipe\s*right|circle\s*in)\s*(?:in|out|transition)?\s*([\d.]+)?/i);
+  // Regular transition (without "at" or "all") — for single selected clip
+  const transM = seg.match(/^(fade\s*black|fade\s*white|fade|dissolve|slide\s*left|slide\s*right|slide\s*up|slide\s*down|zoom\s*in|zoom\s*out|wipe\s*left|wipe\s*right|circle\s*in)\s*(?:in|out|transition)?\s*([\d.]+)?$/i);
   if (transM) {
     const raw = transM[1].toLowerCase().replace(/\s+/g, '');
     const typeMap = {
@@ -1256,22 +1438,16 @@ function parseSegment(seg, state) {
       zoomout: 'zoomOut', wipeleft: 'wipeLeft', wiperight: 'wipeRight',
       circlein: 'circleIn'
     };
-    const type = typeMap[raw] || 'fade';
-    const duration = transM[2] ? parseFloat(transM[2]) : 0.5;
-    state.transition = { type, duration: clamp(duration, 0.1, 3) };
+    state.transition = {
+      type: typeMap[raw] || 'fade',
+      duration: clamp(transM[2] ? parseFloat(transM[2]) : 0.5, 0.1, 3)
+    };
     return;
   }
 
   if (/^(trim\s*left|left\s*trim)$/i.test(seg)) { state.trimOps.push('left'); return; }
   if (/^(trim\s*right|right\s*trim)$/i.test(seg)) { state.trimOps.push('right'); return; }
   if (/^(split|cut|split\s*clip)$/i.test(seg)) { state.trimOps.push('split'); return; }
-
-  const transTfM = seg.match(/^position\s+(\d+)\s+(\d+)$/i);
-  if (transTfM) {
-    state.transforms.x = clamp(parseFloat(transTfM[1]), 0, 100);
-    state.transforms.y = clamp(parseFloat(transTfM[2]), 0, 100);
-    return;
-  }
 
   const tfM = seg.match(/^([a-z]+)\s+(-?[\d.]+)\s*%?$/i);
   if (tfM) {
@@ -1317,74 +1493,39 @@ function parseSegment(seg, state) {
     if (EFFECT_PRESETS.includes(w)) { state.effectPreset = w; return; }
   }
 
-  // ═══════════════════════════════════════════════════════════
-  //  🆕 STANDALONE TEXT PROPS
-  //  Apply to SELECTED text clip. Sets state.textProps.
-  // ═══════════════════════════════════════════════════════════
+  // Standalone text props
   if (!state.textProps) state.textProps = {};
   let matched = false;
   let m2;
 
-  // align left|center|right
   m2 = seg.match(/^align(?:ment)?\s+(left|center|right)$/i);
-  if (m2) {
-    state.textProps.alignment = m2[1].toLowerCase();
-    matched = true;
-  }
+  if (m2) { state.textProps.alignment = m2[1].toLowerCase(); matched = true; }
 
-  // anchor <preset>
   if (!matched) {
     m2 = seg.match(/^anchor\s+(top-left|top-center|top-right|center-left|center-right|bottom-left|bottom-center|bottom-right|top|bottom|center|middle|left|right)$/i);
     if (m2) {
       const a = m2[1].toLowerCase();
-      if (a === 'top-left')          { state.textProps.anchorX = 0;   state.textProps.anchorY = 0; }
-      else if (a === 'top-center' || a === 'top')    { state.textProps.anchorX = 50;  state.textProps.anchorY = 0; }
-      else if (a === 'top-right')    { state.textProps.anchorX = 100; state.textProps.anchorY = 0; }
-      else if (a === 'center-left' || a === 'left')  { state.textProps.anchorX = 0;   state.textProps.anchorY = 50; }
-      else if (a === 'center' || a === 'middle')     { state.textProps.anchorX = 50;  state.textProps.anchorY = 50; }
+      if (a === 'top-left') { state.textProps.anchorX = 0; state.textProps.anchorY = 0; }
+      else if (a === 'top-center' || a === 'top') { state.textProps.anchorX = 50; state.textProps.anchorY = 0; }
+      else if (a === 'top-right') { state.textProps.anchorX = 100; state.textProps.anchorY = 0; }
+      else if (a === 'center-left' || a === 'left') { state.textProps.anchorX = 0; state.textProps.anchorY = 50; }
+      else if (a === 'center' || a === 'middle') { state.textProps.anchorX = 50; state.textProps.anchorY = 50; }
       else if (a === 'center-right' || a === 'right') { state.textProps.anchorX = 100; state.textProps.anchorY = 50; }
-      else if (a === 'bottom-left')  { state.textProps.anchorX = 0;   state.textProps.anchorY = 100; }
+      else if (a === 'bottom-left') { state.textProps.anchorX = 0; state.textProps.anchorY = 100; }
       else if (a === 'bottom-center' || a === 'bottom') { state.textProps.anchorX = 50; state.textProps.anchorY = 100; }
       else if (a === 'bottom-right') { state.textProps.anchorX = 100; state.textProps.anchorY = 100; }
       matched = true;
     }
   }
 
-  // anchor X Y
-  if (!matched) {
-    m2 = seg.match(/^anchor\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)$/i);
-    if (m2) {
-      state.textProps.anchorX = parseFloat(m2[1]);
-      state.textProps.anchorY = parseFloat(m2[2]);
-      matched = true;
-    }
-  }
-
-  // anchorX N
-  if (!matched) {
-    m2 = seg.match(/^anchor\s*x\s+(-?\d+(?:\.\d+)?)$/i);
-    if (m2) { state.textProps.anchorX = parseFloat(m2[1]); matched = true; }
-  }
-
-  // anchorY N
-  if (!matched) {
-    m2 = seg.match(/^anchor\s*y\s+(-?\d+(?:\.\d+)?)$/i);
-    if (m2) { state.textProps.anchorY = parseFloat(m2[1]); matched = true; }
-  }
-
-  // positionX N
   if (!matched) {
     m2 = seg.match(/^position\s*x\s+(-?\d+(?:\.\d+)?)$/i);
     if (m2) { state.textProps.positionX = parseFloat(m2[1]); matched = true; }
   }
-
-  // positionY N
   if (!matched) {
     m2 = seg.match(/^position\s*y\s+(-?\d+(?:\.\d+)?)$/i);
     if (m2) { state.textProps.positionY = parseFloat(m2[1]); matched = true; }
   }
-
-  // position X Y  (standalone for text selection)
   if (!matched) {
     m2 = seg.match(/^position\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)$/i);
     if (m2) {
@@ -1393,8 +1534,6 @@ function parseSegment(seg, state) {
       matched = true;
     }
   }
-
-  // position top|bottom|center|left|right  (standalone)
   if (!matched) {
     m2 = seg.match(/^position\s+(top|bottom|center|middle|left|right)$/i);
     if (m2) {
@@ -1407,8 +1546,6 @@ function parseSegment(seg, state) {
       matched = true;
     }
   }
-
-  // font X  (standalone)
   if (!matched) {
     m2 = seg.match(/^font\s+([a-z][a-z0-9 _-]+)$/i);
     if (m2) {
@@ -1419,48 +1556,31 @@ function parseSegment(seg, state) {
       matched = true;
     }
   }
-
-  // size N  (standalone)
   if (!matched) {
     m2 = seg.match(/^(?:font\s*)?size\s+(\d+)$/i);
     if (m2) { state.textProps.fontSize = parseInt(m2[1], 10); matched = true; }
   }
-
-  // color #hex  (standalone)
   if (!matched) {
     m2 = seg.match(/^colou?r\s+(#[0-9a-fA-F]{3,8})$/i);
     if (m2) { state.textProps.color = m2[1]; matched = true; }
   }
-
-  // color name  (standalone)
   if (!matched) {
     m2 = seg.match(/^colou?r\s+([a-z]+)$/i);
     if (m2) { state.textProps.color = colorNameToHex(m2[1]); matched = true; }
   }
-
-  // shadow  (standalone)
   if (!matched && /^shadow$/i.test(seg)) {
-    state.textProps.shadowEnabled = true;
-    matched = true;
+    state.textProps.shadowEnabled = true; matched = true;
   }
-
-  // bold / italic  (standalone)
   if (!matched && /^bold$/i.test(seg)) {
-    state.textProps.fontWeight = 'bold';
-    matched = true;
+    state.textProps.fontWeight = 'bold'; matched = true;
   }
   if (!matched && /^italic$/i.test(seg)) {
-    state.textProps.fontStyle = 'italic';
-    matched = true;
+    state.textProps.fontStyle = 'italic'; matched = true;
   }
 
   if (matched) return;
 
-  // If nothing matched, clear textProps (was empty object)
-  if (Object.keys(state.textProps).length === 0) {
-    state.textProps = null;
-  }
-
+  if (Object.keys(state.textProps).length === 0) state.textProps = null;
   _addUnknown(seg);
 }
 
@@ -1470,10 +1590,12 @@ function mapKeyframeProp(raw) {
   if (raw === 'position') return 'position';
   return raw;
 }
+
 function clamp(v, min, max) {
   if (!Number.isFinite(v)) return 0;
   return Math.max(min, Math.min(max, v));
 }
+
 function hexToRgb(hex) {
   if (!hex) return null;
   let h = hex.replace('#', '');
@@ -1496,16 +1618,158 @@ export function executePrompt(state) {
 
   if (state.ratio) applyRatio(state.ratio);
 
+  if (state.autoGraph === true)  _autoOpenGraph = true;
+  if (state.autoGraph === false) _autoOpenGraph = false;
+
+  // ─── Tighten tracks ────────────────────────────────────────
+  if (state.tightenTracks) {
+    let closedCount = 0;
+    const allTracks = [].concat(
+      appState.timeline.visual || [],
+      appState.timeline.audio || []
+    );
+    for (let t = 0; t < allTracks.length; t++) {
+      const track = allTracks[t];
+      if (!Array.isArray(track) || track.length < 2) continue;
+      track.sort((a, b) => (a.startTime || 0) - (b.startTime || 0));
+      let cursor = 0;
+      for (let i = 0; i < track.length; i++) {
+        const clip = track[i];
+        const dur = Number.isFinite(clip.duration) ? clip.duration : 3;
+        if (Math.abs((clip.startTime || 0) - cursor) > 0.01) {
+          clip.startTime = cursor;
+          clip.__trimmed = true;
+          closedCount++;
+        }
+        cursor += dur;
+      }
+    }
+    document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
+    _showToast('🧲 ' + closedCount + ' gaps closed');
+    resetPlayhead();
+    return { ok: true, results: ['tighten ' + closedCount] };
+  }
+
+  // ─── Transition all ────────────────────────────────────────
+  if (state.transitionAll) {
+    const key = state.transitionAll.type;
+    const dur = state.transitionAll.duration;
+    let applied = 0;
+    let skipped = 0;
+
+    const tracks = appState.timeline.visual || [];
+    for (let t = 0; t < tracks.length; t++) {
+      const track = tracks[t];
+      if (!Array.isArray(track) || track.length < 2) continue;
+      const sorted = track.slice().sort((a, b) => (a.startTime || 0) - (b.startTime || 0));
+      for (let i = 1; i < sorted.length; i++) {
+        const clip = sorted[i];
+        const prev = sorted[i - 1];
+        const prevEnd = (prev.startTime || 0) + (prev.duration || 0);
+        const clipStart = clip.startTime || 0;
+        if (Math.abs(prevEnd - clipStart) <= 0.5) {
+          clip.__transitionIn = { key: key, duration: dur };
+          applied++;
+        } else {
+          skipped++;
+        }
+      }
+    }
+
+    document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
+    document.dispatchEvent(new CustomEvent('transition:changed'));
+
+    let msg = '⇄ ' + applied + ' transitions';
+    if (skipped > 0) msg += ' (' + skipped + ' skipped)';
+    _showToast(msg);
+    resetPlayhead();
+    return { ok: true, results: ['transitions:' + applied] };
+  }
+
+  // ─── 🆕 Transition at specific times ───────────────────────
+  if (state.atTransitions && state.atTransitions.length > 0) {
+    let applied = 0;
+    let missed = 0;
+    const tracks = appState.timeline.visual || [];
+
+    for (let k = 0; k < state.atTransitions.length; k++) {
+      const at = state.atTransitions[k];
+      let hit = false;
+
+      for (let t = 0; t < tracks.length; t++) {
+        const track = tracks[t];
+        if (!Array.isArray(track)) continue;
+
+        for (let i = 0; i < track.length; i++) {
+          const clip = track[i];
+          const s = Number.isFinite(clip.startTime) ? clip.startTime : 0;
+          if (Math.abs(s - at.time) > 0.2) continue;
+
+          // Check preceding adjacent clip
+          let hasPrev = false;
+          for (let j = 0; j < track.length; j++) {
+            if (j === i) continue;
+            const o = track[j];
+            const oEnd = (Number.isFinite(o.startTime) ? o.startTime : 0) +
+                         (Number.isFinite(o.duration) ? o.duration : 0);
+            if (Math.abs(oEnd - at.time) <= 0.5) { hasPrev = true; break; }
+          }
+
+          if (hasPrev) {
+            clip.__transitionIn = { key: at.type, duration: at.duration };
+            applied++;
+            hit = true;
+          }
+          break;
+        }
+        if (hit) break;
+      }
+
+      if (!hit) missed++;
+    }
+
+    document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
+    document.dispatchEvent(new CustomEvent('transition:changed'));
+
+    let msg = '⇄ ' + applied + ' transition' + (applied === 1 ? '' : 's') + ' applied';
+    if (missed > 0) msg += ' (' + missed + ' time not found)';
+    _showToast(msg);
+    resetPlayhead();
+    return { ok: true, results: ['transitionsAt:' + applied] };
+  }
+
+  if (state.clearKeyframes) {
+    const clip = getSelectedClip(appState);
+    if (clip) {
+      clearAllKeyframes(clip);
+      document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
+      document.dispatchEvent(new CustomEvent('keyframe:changed'));
+      document.dispatchEvent(new CustomEvent('transform:changed'));
+      _showToast('🗑 Keyframes cleared');
+      return { ok: true, results: ['clearKeyframes'] };
+    }
+    return { ok: false, error: 'Koi clip select nahi' };
+  }
+
+  if (state.openGraph) {
+    const clip = getSelectedClip(appState);
+    if (clip) {
+      setTimeout(() => openKeyframeGraph(), 100);
+      return { ok: true, results: ['openGraph'] };
+    }
+    return { ok: false, error: 'Koi clip select nahi' };
+  }
+
   if (state.timestampedLayers) {
     return executeTimestampedLayers(state.timestampedLayers);
   }
 
   _lastCreatedClips = [];
-
   const hasClips = hasAnyClips(appState);
   const results = [];
   const warnings = [];
 
+  // TEXT
   if (state.texts.length > 0) {
     if (!Array.isArray(appState.timeline.visual)) appState.timeline.visual = [];
     const eng = window.__playbackEngine;
@@ -1527,14 +1791,13 @@ export function executePrompt(state) {
         startTime: atTime, duration: 3
       };
       placeClipAtTime(appState.timeline.visual, clipData, atTime);
-
       const created = findClipByUrl(appState.timeline.visual, clipData.url);
       if (created) _lastCreatedClips.push(created);
-
       results.push('text:"' + t.content + '"');
     });
   }
 
+  // STICKER
   if (state.stickers.length > 0) {
     if (!Array.isArray(appState.timeline.visual)) appState.timeline.visual = [];
     const eng = window.__playbackEngine;
@@ -1548,14 +1811,13 @@ export function executePrompt(state) {
         startTime: atTime, duration: 3
       };
       placeClipAtTime(appState.timeline.visual, clipData, atTime);
-
       const created = findClipByUrl(appState.timeline.visual, clipData.url);
       if (created) _lastCreatedClips.push(created);
-
       results.push('sticker:' + s.emoji);
     });
   }
 
+  // AUDIO FX
   if (state.audioFx.length > 0) {
     state.audioFx.forEach(key => {
       try {
@@ -1565,12 +1827,12 @@ export function executePrompt(state) {
     });
   }
 
-    let targetClip = getSelectedClip(appState);
+  let targetClip = getSelectedClip(appState);
   if (!targetClip && _lastCreatedClips.length > 0) {
     targetClip = _lastCreatedClips[_lastCreatedClips.length - 1];
   }
 
-  // 🆕 FALLBACK: agar koi clip selected nahi, to last text clip dhundo
+  // Fallback: last text clip
   if (!targetClip && state.textProps) {
     const vTracks = appState.timeline.visual || [];
     let lastText = null;
@@ -1585,31 +1847,30 @@ export function executePrompt(state) {
     if (lastText) targetClip = lastText;
   }
 
-  // 🆕 APPLY STANDALONE TEXT PROPS
+  // Apply textProps
   if (state.textProps && targetClip && targetClip.__textId && targetClip.textState) {
     const tp = state.textProps;
     const ts = targetClip.textState;
-
-    if (tp.alignment   != null) ts.alignment   = tp.alignment;
-    if (tp.fontFamily  != null) ts.fontFamily  = tp.fontFamily;
-    if (tp.fontSize    != null) ts.fontSize    = tp.fontSize;
-    if (tp.fontWeight  != null) ts.fontWeight  = tp.fontWeight;
-    if (tp.fontStyle   != null) ts.fontStyle   = tp.fontStyle;
-    if (tp.color       != null) ts.color       = tp.color;
+    if (tp.alignment != null) ts.alignment = tp.alignment;
+    if (tp.fontFamily != null) ts.fontFamily = tp.fontFamily;
+    if (tp.fontSize != null) ts.fontSize = tp.fontSize;
+    if (tp.fontWeight != null) ts.fontWeight = tp.fontWeight;
+    if (tp.fontStyle != null) ts.fontStyle = tp.fontStyle;
+    if (tp.color != null) ts.color = tp.color;
     if (tp.shadowEnabled != null) ts.shadowEnabled = tp.shadowEnabled;
-    if (tp.positionX   != null) ts.positionX   = tp.positionX;
-    if (tp.positionY   != null) ts.positionY   = tp.positionY;
-    if (tp.anchorX     != null) ts.anchorX     = tp.anchorX;
-    if (tp.anchorY     != null) ts.anchorY     = tp.anchorY;
+    if (tp.positionX != null) ts.positionX = tp.positionX;
+    if (tp.positionY != null) ts.positionY = tp.positionY;
+    if (tp.anchorX != null) ts.anchorX = tp.anchorX;
+    if (tp.anchorY != null) ts.anchorY = tp.anchorY;
 
     results.push('text-props');
     document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
     document.dispatchEvent(new CustomEvent('transform:changed'));
-    document.dispatchEvent(new CustomEvent('keyframe:changed'));
   } else if (state.textProps) {
-    warnings.push('Text properties need a text clip — pehle text banao ya select karo');
+    warnings.push('Text properties need a text clip');
   }
 
+  // Transform
   const tfKeys = Object.keys(state.transforms);
   if (tfKeys.length > 0 && targetClip) {
     if (!targetClip.__transform) targetClip.__transform = {};
@@ -1623,6 +1884,7 @@ export function executePrompt(state) {
     results.push('transform');
   }
 
+  // Keyframes
   if (state.keyframes.length > 0 && targetClip) {
     const eng = window.__playbackEngine;
     const now = eng && typeof eng.getTime === 'function' ? eng.getTime() : 0;
@@ -1646,13 +1908,19 @@ export function executePrompt(state) {
       currentTime += kf.duration;
     }
     results.push('keyframes');
+
+    if (_autoOpenGraph) {
+      setTimeout(() => openKeyframeGraph(), 150);
+    }
   }
 
+  // Speed
   if (state.speed != null && targetClip) {
     applySpeedToClip(targetClip, state.speed);
     results.push('speed:' + state.speed + 'x');
   }
 
+  // Transition
   if (state.transition && targetClip) {
     targetClip.__transitionIn = {
       key: state.transition.type,
@@ -1661,6 +1929,7 @@ export function executePrompt(state) {
     results.push('transition');
   }
 
+  // Adjustments
   if (Object.keys(state.adjustments).length > 0) {
     if (hasClips || _lastCreatedClips.length > 0) {
       try {
@@ -1670,6 +1939,7 @@ export function executePrompt(state) {
     } else warnings.push('adjustments: clip daalein');
   }
 
+  // Filters
   if (Object.keys(state.filters).length > 0) {
     if (hasClips || _lastCreatedClips.length > 0) {
       const filters = {
@@ -1684,6 +1954,7 @@ export function executePrompt(state) {
     } else warnings.push('filter: clip daalein');
   }
 
+  // Effect preset
   if (state.effectPreset) {
     if (hasClips || _lastCreatedClips.length > 0) {
       const baseFilters = {
@@ -1699,6 +1970,7 @@ export function executePrompt(state) {
     } else warnings.push('effect: clip daalein');
   }
 
+  // Color wheel
   if (state.colorWheel) {
     if (hasClips || _lastCreatedClips.length > 0) {
       try {
@@ -1708,6 +1980,7 @@ export function executePrompt(state) {
     } else warnings.push('colorWheel: clip daalein');
   }
 
+  // Chroma
   if (state.chroma) {
     if (hasClips || _lastCreatedClips.length > 0) {
       try {
@@ -1782,4 +2055,26 @@ function applySpeedToClip(clip, speed) {
   clip.__speed = speed;
   clip.duration = clip.__speedBase / speed;
   clip.__trimmed = true;
+}
+
+function _showToast(msg) {
+  if (!msg) return;
+  const el = document.createElement('div');
+  el.textContent = msg;
+  el.style.cssText = [
+    'position:fixed','bottom:110px','left:50%',
+    'transform:translateX(-50%)',
+    'background:rgba(0,0,0,0.9)','color:#fff',
+    'padding:9px 18px','border-radius:20px',
+    'font-size:12px','font-weight:600','z-index:99999',
+    'pointer-events:none','font-family:inherit',
+    'box-shadow:0 4px 12px rgba(0,0,0,0.4)',
+    'opacity:0','transition:opacity 0.15s ease'
+  ].join(';');
+  document.body.appendChild(el);
+  requestAnimationFrame(() => { el.style.opacity = '1'; });
+  setTimeout(() => {
+    el.style.opacity = '0';
+    setTimeout(() => el.remove(), 200);
+  }, 1400);
 }

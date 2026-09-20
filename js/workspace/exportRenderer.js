@@ -70,16 +70,19 @@ function getImageSync(url) {
 export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime, prevFrameCanvas) {
   const appState = window.__appState;
   if (!appState) { drawVideoContainFit(ctx, source, W, H, null); return; }
-
   const active = getActiveVisualClipsAt(appState, timelineTime);
 
-  // Top display track index
+  // 🆕 Top VIDEO/IMAGE track — text/sticker ignored for effect hierarchy
   let topDisplayTrack = -1;
   for (let i = active.length - 1; i >= 0; i--) {
-    if (isDisplayClip(active[i].clip)) { topDisplayTrack = active[i].trackIndex; break; }
+    const c = active[i].clip;
+    if (!c || !c.type) continue;
+    const isVideo = c.type.indexOf('video/') === 0;
+    const isImage = c.type.indexOf('image/') === 0;
+    if (isVideo || isImage) { topDisplayTrack = active[i].trackIndex; break; }
   }
 
-  // Effects above top display
+  // Effects above top video/image
   const effects = [];
   if (topDisplayTrack >= 0) {
     for (let i = 0; i < active.length; i++) {
@@ -88,10 +91,14 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime,
     }
   }
 
-  // Top display clip
+  // Top display clip (video/image)
   let topDisplayClip = null;
   for (let i = active.length - 1; i >= 0; i--) {
-    if (isDisplayClip(active[i].clip)) { topDisplayClip = active[i].clip; break; }
+    const c = active[i].clip;
+    if (!c || !c.type) continue;
+    const isVideo = c.type.indexOf('video/') === 0;
+    const isImage = c.type.indexOf('image/') === 0;
+    if (isVideo || isImage) { topDisplayClip = c; break; }
   }
 
   // CSS filter
@@ -196,13 +203,33 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime,
   try { ctx.filter = 'none'; } catch (_) {}
   ctx.globalAlpha = 1;
 
-  // Pixel effects
+   // Pixel effects — hierarchy
   const pixelEffects = [];
   for (let i = 0; i < effects.length; i++) {
     const st = effects[i].clip.effectState;
     if (!st) continue;
     if (st.kind === 'adjustment' || st.kind === 'colorWheel' || st.kind === 'chroma') {
       pixelEffects.push(effects[i]);
+    }
+  }
+
+  // 🆕 Clip-attached grading
+  if (topDisplayClip && topDisplayClip.__grading) {
+    const g = topDisplayClip.__grading;
+    if (g.adjustments && Object.keys(g.adjustments).length > 0) {
+      pixelEffects.push({
+        clip: { effectState: { kind: 'adjustment', adjustments: g.adjustments } }
+      });
+    }
+    if (g.colorWheel) {
+      pixelEffects.push({
+        clip: { effectState: { kind: 'colorWheel', colorWheel: g.colorWheel } }
+      });
+    }
+    if (g.chroma) {
+      pixelEffects.push({
+        clip: { effectState: { kind: 'chroma', chroma: g.chroma } }
+      });
     }
   }
 
@@ -597,24 +624,35 @@ function applyAdjustment(data, w, h, s) {
     if (tiA) { g -= tiA * 28; r += tiA * 12; b += tiA * 12; }
     r = clamp(r); g = clamp(g); b = clamp(b);
 
-    if (hasColorChannels) {
+     if (hasColorChannels) {
       const [hue, sat, lightness] = rgbToHsl(r, g, b);
-      if (sat > 2) {
+      if (sat > 1) {
         let satMul = 1;
         let hueShift = 0;
+        let lightShift = 0;
+
         for (const ch of COLOR_CHANNELS) {
           const val = colorVals[ch.key];
-          if (Math.abs(val) < 0.01) continue;
+          if (Math.abs(val) < 0.005) continue;
           const w = getChannelWeight(hue, ch.center, ch.range);
           if (w > 0.01) {
-            satMul += val * w * 0.8;
-            hueShift += val * w * 3;
+            // 🆕 Much stronger response
+            satMul    += val * w * 2.5;   // was 0.8 → 2.5
+            hueShift  += val * w * 18;    // was 3   → 18
+            lightShift += val * w * 8;    // new — brightness shift
           }
         }
-        satMul = Math.max(0.1, Math.min(3, satMul));
-        hueShift = Math.max(-20, Math.min(20, hueShift));
-        if (Math.abs(satMul - 1) > 0.01 || Math.abs(hueShift) > 0.5) {
-          const rgb2 = hslToRgb(hue + hueShift, sat * satMul, lightness);
+
+        satMul = Math.max(0.05, Math.min(4, satMul));
+        hueShift = Math.max(-60, Math.min(60, hueShift));
+
+        if (Math.abs(satMul - 1) > 0.005 ||
+            Math.abs(hueShift) > 0.3 ||
+            Math.abs(lightShift) > 0.3) {
+          const newHue = hue + hueShift;
+          const newSat = sat * satMul;
+          const newLight = lightness + lightShift;
+          const rgb2 = hslToRgb(newHue, newSat, newLight);
           r = rgb2[0]; g = rgb2[1]; b = rgb2[2];
         }
       }

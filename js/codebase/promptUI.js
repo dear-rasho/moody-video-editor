@@ -1,5 +1,3 @@
-
-
 import { parsePrompt, executePrompt } from './codebaseEngine.js';
 import { showError } from '../workspace/errorNotifier.js';
 const CATEGORIES = [
@@ -225,7 +223,13 @@ const CATEGORIES = [
       'zoom out 1',
       'wipe left 0.6',
       'wipe right 0.6',
-      'circle in 0.8'
+      'circle in 0.8',
+      'transition all fade 0.5',
+      'transition all dissolve 0.6',
+      'transition all slide left 0.5',
+      'transition at 3 fade 0.5',
+      'transition at 6 dissolve 0.8',
+      'transition at 3 fade 0.5, transition at 6 dissolve 0.8, transition at 9 slide left 0.5'
     ]
   },
   {
@@ -426,7 +430,6 @@ function renderChips() {
     chip.textContent = text;
     chip.addEventListener('click', () => {
       const cur = inputEl.value;
-      // For timestamped examples, add on new line
       if (text.startsWith('[')) {
         inputEl.value = cur ? cur.replace(/\s+$/, '') + '\n' + text : text;
       } else {
@@ -442,8 +445,7 @@ function renderChips() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  🆕 APPLY — SAFE VERSION
-//  Handles both timestamped layers AND regular commands
+//  APPLY
 // ═══════════════════════════════════════════════════════════════
 function onApply() {
   if (!inputEl) return;
@@ -460,16 +462,13 @@ function onApply() {
   }
 
   const state = parseResult.state || {};
-
-  // 🆕 Check if this is a timestamped-layer prompt
   const isTimestamped = !!state.timestampedLayers;
 
   let hasSomething = false;
 
-   if (isTimestamped) {
+  if (isTimestamped) {
     hasSomething = true;
   } else {
-    // Safe checks — har field guard karo
     const hasAdjust = state.adjustments && Object.keys(state.adjustments).length > 0;
     const hasFilters = state.filters && Object.keys(state.filters).length > 0;
     const hasEffect = !!state.effectPreset;
@@ -483,13 +482,22 @@ function onApply() {
     const hasKeyframes = state.keyframes && state.keyframes.length > 0;
     const hasAudioFx = state.audioFx && state.audioFx.length > 0;
     const hasTrim = state.trimOps && state.trimOps.length > 0;
-    // 🆕 Standalone text props (align, anchor, positionX/Y, etc.)
     const hasTextProps = state.textProps && Object.keys(state.textProps).length > 0;
+
+    // SPECIAL COMMANDS
+    const hasTransitionAll = !!state.transitionAll;
+    const hasTighten = !!state.tightenTracks;
+    const hasClearKf = !!state.clearKeyframes;
+    const hasOpenGraph = !!state.openGraph;
+    const hasAutoGraph = state.autoGraph != null;
+    const hasAtTransitions = state.atTransitions && state.atTransitions.length > 0;
 
     hasSomething = hasAdjust || hasFilters || hasEffect || hasSpeed ||
                    hasTransition || hasTexts || hasStickers || hasWheel ||
                    hasChroma || hasTransforms || hasKeyframes ||
-                   hasAudioFx || hasTrim || hasTextProps;
+                   hasAudioFx || hasTrim || hasTextProps ||
+                   hasTransitionAll || hasTighten || hasClearKf ||
+                   hasOpenGraph || hasAutoGraph || hasAtTransitions;
   }
 
   if (!hasSomething) {
@@ -509,7 +517,6 @@ function onApply() {
     return;
   }
 
-  // 🆕 Show unknown warnings even on success
   if (result.unknown && result.unknown.length > 0) {
     let msg = '⚠️ Applied with issues';
     msg += '\n\n❓ Could not understand:';
@@ -529,7 +536,6 @@ function onApply() {
   const unknownList = result.unknown || [];
 
   if (unknownList.length > 0) {
-    // 🆕 Show what wasn't understood — user can fix
     const unknownText = unknownList.slice(0, 6).join('  •  ');
     const more = unknownList.length > 6 ? ' (+' + (unknownList.length - 6) + ' more)' : '';
     showFeedback(
@@ -545,7 +551,10 @@ function onApply() {
   inputEl.value = '';
   inputEl.blur();
 }
+
+// ═══════════════════════════════════════════════════════════════
 //  FEEDBACK
+// ═══════════════════════════════════════════════════════════════
 function showFeedback(msg, type, durationMs) {
   clearFeedback();
 
@@ -557,14 +566,12 @@ function showFeedback(msg, type, durationMs) {
   feedbackEl.style.gap = '8px';
   feedbackEl.style.justifyContent = 'space-between';
 
-  // Message text
   const textEl = document.createElement('div');
   textEl.style.flex = '1';
   textEl.style.minWidth = '0';
   textEl.style.wordBreak = 'break-word';
   textEl.textContent = msg;
 
-  // 🆕 Copy button — always visible
   const copyBtn = document.createElement('button');
   copyBtn.type = 'button';
   copyBtn.textContent = '📋';
@@ -591,9 +598,7 @@ function showFeedback(msg, type, durationMs) {
     e.preventDefault();
     e.stopPropagation();
 
-    // Build full payload with environment info
     const payload = buildPromptFeedbackCopy(msg, type);
-
     const ok = await copyToClipboard(payload);
 
     if (ok) {
@@ -625,7 +630,6 @@ function showFeedback(msg, type, durationMs) {
     actionRow.parentNode.insertBefore(feedbackEl, actionRow);
   }
 
-  // 🆕 Errors stay longer (8s), success shorter (4s)
   const ms = durationMs || (type === 'err' ? 8000 : 4000);
   setTimeout(() => {
     if (feedbackEl) {
@@ -634,14 +638,16 @@ function showFeedback(msg, type, durationMs) {
     }
   }, ms);
 }
+
 function clearFeedback() {
   if (feedbackEl) {
     feedbackEl.remove();
     feedbackEl = null;
   }
 }
+
 // ═══════════════════════════════════════════════════════════════
-//  🆕 COPY HELPERS
+//  COPY HELPERS
 // ═══════════════════════════════════════════════════════════════
 function buildPromptFeedbackCopy(msg, type) {
   const lines = [];
@@ -653,7 +659,6 @@ function buildPromptFeedbackCopy(msg, type) {
   lines.push(msg || '(empty)');
   lines.push('');
 
-  // Current prompt text
   try {
     const inp = document.querySelector('#prompt-input');
     if (inp && inp.value) {
@@ -663,7 +668,6 @@ function buildPromptFeedbackCopy(msg, type) {
     }
   } catch (_) {}
 
-  // Selected clip info
   try {
     const sel = document.querySelector('.clip.selected');
     if (sel) {
@@ -681,7 +685,6 @@ function buildPromptFeedbackCopy(msg, type) {
     }
   } catch (_) {}
 
-  // Environment
   try {
     lines.push('Environment:');
     lines.push('  User Agent: ' + (navigator.userAgent || 'n/a'));
@@ -706,7 +709,6 @@ function buildPromptFeedbackCopy(msg, type) {
 }
 
 async function copyToClipboard(text) {
-  // Modern API
   try {
     if (navigator.clipboard && navigator.clipboard.writeText) {
       await navigator.clipboard.writeText(text);
@@ -714,7 +716,6 @@ async function copyToClipboard(text) {
     }
   } catch (_) {}
 
-  // Fallback
   try {
     const ta = document.createElement('textarea');
     ta.value = text;

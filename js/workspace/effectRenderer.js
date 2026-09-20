@@ -135,10 +135,18 @@ function getActiveVisualClips(time) {
   return active;
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  🆕 ONLY video/image counts as "base display" for effects.
+//  Text/sticker are overlays — they don't block effect hierarchy.
+// ═══════════════════════════════════════════════════════════════
 function getTopDisplayTrackIndex(time) {
   const active = getActiveVisualClips(time);
   for (let i = active.length - 1; i >= 0; i--) {
-    if (isDisplayClip(active[i].clip)) return active[i].trackIndex;
+    const c = active[i].clip;
+    if (!c || !c.type) continue;
+    const isVideo = c.type.indexOf('video/') === 0;
+    const isImage = c.type.indexOf('image/') === 0;
+    if (isVideo || isImage) return active[i].trackIndex;
   }
   return -1;
 }
@@ -242,7 +250,7 @@ function applyVisualEffects(time) {
     }
   }
 
-  // 4) PIXEL EFFECTS
+   // 4) PIXEL EFFECTS — merge hierarchy + clip-attached grading
   const pixelEffects = [];
   for (let i = 0; i < effects.length; i++) {
     const st = effects[i].clip.effectState;
@@ -251,6 +259,28 @@ function applyVisualEffects(time) {
       pixelEffects.push(effects[i]);
     }
   }
+
+  // 🆕 Clip-attached grading (from selected clip via prompt)
+  const topClip = getTopDisplayClipObject(time);
+  if (topClip && topClip.__grading) {
+    const g = topClip.__grading;
+    if (g.adjustments && Object.keys(g.adjustments).length > 0) {
+      pixelEffects.push({
+        clip: { effectState: { kind: 'adjustment', adjustments: g.adjustments } }
+      });
+    }
+    if (g.colorWheel) {
+      pixelEffects.push({
+        clip: { effectState: { kind: 'colorWheel', colorWheel: g.colorWheel } }
+      });
+    }
+    if (g.chroma) {
+      pixelEffects.push({
+        clip: { effectState: { kind: 'chroma', chroma: g.chroma } }
+      });
+    }
+  }
+
   if (!pixelEffects.length) return;
 
   let ctx = null;
@@ -339,17 +369,16 @@ function computeMotion(m, time) {
 
 // ═══════════════════════════════════════════════════════════════
 //  🆕 COLOR CHANNEL HELPERS (HSL-based)
-// ═══════════════════════════════════════════════════════════════
 const COLOR_CHANNELS = [
-  { key: 'reds',      center: 0,   range: 30 },
-  { key: 'oranges',   center: 30,  range: 30 },
-  { key: 'yellows',   center: 60,  range: 30 },
-  { key: 'greens',    center: 120, range: 90 },
-  { key: 'cyans',     center: 180, range: 30 },
-  { key: 'blues',     center: 225, range: 60 },
-  { key: 'purples',   center: 270, range: 30 },
-  { key: 'magentas',  center: 315, range: 60 },
-  { key: 'skinTones', center: 20,  range: 25 }
+  { key: 'reds',      center: 0,   range: 45 },
+  { key: 'oranges',   center: 30,  range: 45 },
+  { key: 'yellows',   center: 60,  range: 45 },
+  { key: 'greens',    center: 120, range: 100 },
+  { key: 'cyans',     center: 180, range: 45 },
+  { key: 'blues',     center: 225, range: 75 },
+  { key: 'purples',   center: 270, range: 45 },
+  { key: 'magentas',  center: 315, range: 75 },
+  { key: 'skinTones', center: 20,  range: 30 }
 ];
 
 function rgbToHsl(r, g, b) {
@@ -532,4 +561,32 @@ function applyChroma(data, w, h, c) {
       data[i + 2] = Math.round(data[i + 2] * (1 - bl) + gray * bl);
     }
   }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  🆕 Get top display clip OBJECT at time
+//  Used to read clip-attached color grading
+// ═══════════════════════════════════════════════════════════════
+function getTopDisplayClipObject(time) {
+  const appState = getState();
+  if (!appState) return null;
+  const tracks = appState.timeline.visual || [];
+  const hidden = appState.timeline.hiddenVisualTracks || new Set();
+
+  for (let t = tracks.length - 1; t >= 0; t--) {
+    if (hidden.has(t)) continue;
+    const track = tracks[t];
+    if (!Array.isArray(track)) continue;
+    for (let c = 0; c < track.length; c++) {
+      const clip = track[c];
+      if (!clip || !clip.type) continue;
+      const isV = clip.type.indexOf('video/') === 0;
+      const isI = clip.type.indexOf('image/') === 0;
+      if (!isV && !isI) continue;
+      const s = Number.isFinite(clip.startTime) ? clip.startTime : 0;
+      const d = Number.isFinite(clip.duration) ? clip.duration : 0;
+      if (time >= s && time < s + d) return clip;
+    }
+  }
+  return null;
 }

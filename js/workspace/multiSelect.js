@@ -602,4 +602,31 @@ function showToast(msg) {
     el.style.opacity = '0';
     setTimeout(() => el.remove(), 200);
   }, 1600);
+} 
+
+// ═══════════════════════════════════════════════════════════════
+//  🆕 PUBLIC API — iterate over all selected clips
+//  If multi-selected → iterates all; else → single selected.
+// ═══════════════════════════════════════════════════════════════
+export function forEachSelectedClip(fn) {
+  if (typeof fn !== 'function') return 0;
+  if (multiSelected.length > 0) {
+    for (let i = 0; i < multiSelected.length; i++) {
+      try { fn(multiSelected[i]); } catch (_) {}
+    }
+    return multiSelected.length;
+  }
+  const el = document.querySelector('.clip.selected');
+  if (!el) return 0;
+  const clip = getClipFromElement(el);
+  if (clip) {
+    try { fn(clip); } catch (_) {}
+    return 1;
+  }
+  return 0;
+}
+
+export function getSelectionCount() {
+  if (multiSelected.length > 0) return multiSelected.length;
+  return document.querySelector('.clip.selected') ? 1 : 0;
 }

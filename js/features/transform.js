@@ -704,20 +704,6 @@ function autoSelectFirstVisualClip() {
 // ═══════════════════════════════════════════════════════════════
 //  🆕 APPLY TRANSFORM with AUTO-KEYFRAME
 //
-//  Jab bhi user slider move kare:
-//    - Agar playhead clip ke andar hai → AUTO keyframe set karo
-//    - Text clip ho → textState bhi update karo
-//    - Sticker clip ho → stickerState bhi update karo
-//
-//  Isse user ko sirf ◆ button dabane ki zaroorat nahi.
-//  Slider move = keyframe auto-create.
-// ═══════════════════════════════════════════════════════════════
-// ═══════════════════════════════════════════════════════════════
-//  🆕 AUTO-KEYFRAME — pehli change pe bhi keyframe banega
-//
-//  Pehle: `if (hasAnyKeyframes)` gate tha → pehla keyframe nahi banta
-//  Ab:    Har change pe keyframe banta hai (agar playhead clip ke andar)
-// ═══════════════════════════════════════════════════════════════
 function applyTransform() {
   if (!activeClip) return;
 
@@ -729,44 +715,89 @@ function applyTransform() {
 
   lastState = Object.assign({}, state);
 
-  activeClip.__transform = Object.assign({}, state);
+  // 🆕 APPLY TO ALL SELECTED CLIPS
+  const multi = window.__multiSelect;
+  const clipsToUpdate = [];
 
-  if (activeClip.__textId && activeClip.textState) {
-    activeClip.textState.positionX = state.x;
-    activeClip.textState.positionY = state.y;
-    activeClip.textState.scale = state.scale;
-    activeClip.textState.rotation = state.rotation;
+  if (multi && typeof multi.forEachSelectedClip === 'function') {
+    multi.forEachSelectedClip(function (c) { clipsToUpdate.push(c); });
   }
 
-  if (activeClip.__stickerId && activeClip.stickerState) {
-    activeClip.stickerState.x = state.x;
-    activeClip.stickerState.y = state.y;
-    activeClip.stickerState.scale = state.scale;
-    activeClip.stickerState.rotation = state.rotation;
+  // Always include activeClip (in case nothing selected)
+  if (clipsToUpdate.indexOf(activeClip) < 0) {
+    clipsToUpdate.push(activeClip);
   }
 
-  // 🆕 ALWAYS auto-keyframe (no gate)
+  // Determine the delta (only changed props)
   const changedKeys = Object.keys(changed);
-  if (changedKeys.length > 0) {
-    const eng = window.__playbackEngine;
-    const t = eng && typeof eng.getTime === 'function' ? eng.getTime() : 0;
-    const clipStart = Number.isFinite(activeClip.startTime) ? activeClip.startTime : 0;
-    const clipDur = Number.isFinite(activeClip.duration) ? activeClip.duration : 3;
-    const clipEnd = clipStart + clipDur;
 
-    // Sirf tab jab playhead clip ke andar ho
-    if (t >= clipStart - 0.001 && t <= clipEnd + 0.001) {
-      changedKeys.forEach(prop => {
-        setKeyframe(activeClip, prop, t, changed[prop]);
-      });
-      document.dispatchEvent(new CustomEvent('keyframe:changed'));
+  for (let i = 0; i < clipsToUpdate.length; i++) {
+    const clip = clipsToUpdate[i];
+
+    // Compute new state for this clip:
+    // - First clip (anchor) → use full `state`
+    // - Other clips → apply only the changed props on top of their own base
+    let newState;
+    if (clip === activeClip) {
+      newState = Object.assign({}, state);
+    } else {
+      const base = Object.assign({}, clip.__transform || {});
+      // If text/sticker, pull current values
+      if (clip.__textId && clip.textState) {
+        if (base.x == null) base.x = clip.textState.positionX != null ? clip.textState.positionX : 50;
+        if (base.y == null) base.y = clip.textState.positionY != null ? clip.textState.positionY : 50;
+        if (base.scale == null) base.scale = clip.textState.scale != null ? clip.textState.scale : 100;
+        if (base.rotation == null) base.rotation = clip.textState.rotation || 0;
+      }
+      if (clip.__stickerId && clip.stickerState) {
+        if (base.x == null) base.x = clip.stickerState.x != null ? clip.stickerState.x : 50;
+        if (base.y == null) base.y = clip.stickerState.y != null ? clip.stickerState.y : 50;
+        if (base.scale == null) base.scale = clip.stickerState.scale != null ? clip.stickerState.scale : 100;
+        if (base.rotation == null) base.rotation = clip.stickerState.rotation || 0;
+      }
+      newState = Object.assign({}, base);
+      // Apply only CHANGED props
+      for (let k = 0; k < changedKeys.length; k++) {
+        newState[changedKeys[k]] = changed[changedKeys[k]];
+      }
+    }
+
+    clip.__transform = Object.assign({}, newState);
+
+    if (clip.__textId && clip.textState) {
+      clip.textState.positionX = newState.x;
+      clip.textState.positionY = newState.y;
+      clip.textState.scale = newState.scale;
+      clip.textState.rotation = newState.rotation;
+    }
+    if (clip.__stickerId && clip.stickerState) {
+      clip.stickerState.x = newState.x;
+      clip.stickerState.y = newState.y;
+      clip.stickerState.scale = newState.scale;
+      clip.stickerState.rotation = newState.rotation;
+    }
+
+    // Auto-keyframe for each clip
+    if (changedKeys.length > 0) {
+      const eng = window.__playbackEngine;
+      const t = eng && typeof eng.getTime === 'function' ? eng.getTime() : 0;
+      const clipStart = Number.isFinite(clip.startTime) ? clip.startTime : 0;
+      const clipDur = Number.isFinite(clip.duration) ? clip.duration : 3;
+      const clipEnd = clipStart + clipDur;
+
+      if (t >= clipStart - 0.001 && t <= clipEnd + 0.001) {
+        for (let k = 0; k < changedKeys.length; k++) {
+          const prop = changedKeys[k];
+          setKeyframe(clip, prop, t, newState[prop]);
+        }
+      }
     }
   }
 
+  document.dispatchEvent(new CustomEvent('keyframe:changed'));
   document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
   document.dispatchEvent(new CustomEvent('transform:changed'));
 }
-// ═══════════════════════════════════════════════════════════════
 //  HELPERS
 // ═══════════════════════════════════════════════════════════════
 function formatNum(v) {

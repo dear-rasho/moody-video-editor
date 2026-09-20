@@ -247,21 +247,45 @@ function onButtonClick() {
   if (!sel) { showToast('Select a visual layer first', false); return; }
 
   const t = getPlayheadTime();
-  const clip = sel.clip;
 
-  if (hasAnyKeyframeAt(clip, t)) {
-    removeAllKeyframesAtTime(clip, t);
-    if (selectedKf && selectedKf.clip === clip &&
+  // 🆕 Collect all selected clips (multi or single)
+  const multi = window.__multiSelect;
+  const clips = [];
+  if (multi && typeof multi.forEachSelectedClip === 'function') {
+    multi.forEachSelectedClip(function (c) { clips.push(c); });
+  }
+  if (clips.length === 0) clips.push(sel.clip);
+  if (clips.indexOf(sel.clip) < 0) clips.push(sel.clip);
+
+  // Determine action based on FIRST clip (anchor)
+  const anchor = sel.clip;
+  const addMode = !hasAnyKeyframeAt(anchor, t);
+
+  let addCount = 0;
+  let removeCount = 0;
+
+  for (let i = 0; i < clips.length; i++) {
+    const clip = clips[i];
+    if (addMode) {
+      const props = captureProperties(clip);
+      ANIMATABLE_PROPS.forEach(function (p) {
+        setKeyframe(clip, p, t, props[p]);
+      });
+      addCount++;
+    } else {
+      removeAllKeyframesAtTime(clip, t);
+      removeCount++;
+    }
+  }
+
+  if (addMode) {
+    showToast('◆ ' + addCount + ' keyframe' + (addCount > 1 ? 's' : '') + ' added');
+  } else {
+    showToast('◆ ' + removeCount + ' keyframe' + (removeCount > 1 ? 's' : '') + ' removed');
+    if (selectedKf && clips.indexOf(selectedKf.clip) >= 0 &&
         Math.abs(selectedKf.time - t) < 0.05) {
       clearKeyframeSelection();
     }
-    showToast('Keyframe removed');
-  } else {
-    const props = captureProperties(clip);
-    ANIMATABLE_PROPS.forEach(p => {
-      setKeyframe(clip, p, t, props[p]);
-    });
-    showToast('Keyframe added');
   }
 
   document.dispatchEvent(new CustomEvent('keyframe:changed'));

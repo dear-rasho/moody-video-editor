@@ -672,6 +672,80 @@ export function initTimelineEngine(config) {
 
   // ─── DELETE — removes linked clips too ────────────────────
   function deleteSelected() {
+    // 🆕 MULTI-SELECT DELETE
+    const multi = window.__multiSelect;
+    const multiClips = [];
+    if (multi && typeof multi.forEachSelectedClip === 'function') {
+      multi.forEachSelectedClip(function (c) { multiClips.push(c); });
+    }
+
+    if (multiClips.length > 1) {
+      const toRemove = [];
+      for (let i = 0; i < multiClips.length; i++) {
+        const clip = multiClips[i];
+        // Find location
+        let locType = null;
+        ['visual', 'audio'].forEach(function (tt) {
+          if (locType) return;
+          const tracks = state[tt];
+          for (let t = 0; t < tracks.length; t++) {
+            if (Array.isArray(tracks[t]) && tracks[t].indexOf(clip) >= 0) {
+              locType = tt;
+              break;
+            }
+          }
+        });
+        if (locType) toRemove.push({ clip: clip, type: locType });
+
+        // Also include linked clips
+        const linkedId = clip.__linkedId;
+        if (linkedId) {
+          ['visual', 'audio'].forEach(function (type) {
+            state[type].forEach(function (t) {
+              if (!Array.isArray(t)) return;
+              t.forEach(function (c) {
+                if (c && c !== clip && c.__linkedId === linkedId) {
+                  // Avoid duplicates
+                  let exists = false;
+                  for (let k = 0; k < toRemove.length; k++) {
+                    if (toRemove[k].clip === c) { exists = true; break; }
+                  }
+                  if (!exists) toRemove.push({ clip: c, type: type });
+                }
+              });
+            });
+          });
+        }
+      }
+
+      // Remove all
+      for (let i = 0; i < toRemove.length; i++) {
+        const entry = toRemove[i];
+        if (onDeleteSelected) onDeleteSelected(entry.clip, entry.type);
+        ['visual', 'audio'].forEach(function (tt) {
+          const tracks = state[tt];
+          for (let t = 0; t < tracks.length; t++) {
+            const tr = tracks[t];
+            if (!Array.isArray(tr)) continue;
+            const idx = tr.indexOf(entry.clip);
+            if (idx >= 0) { tr.splice(idx, 1); break; }
+          }
+        });
+      }
+
+      // Clear multi + single selection
+      document.querySelectorAll('.clip.multi-selected').forEach(function (el) {
+        el.classList.remove('multi-selected');
+      });
+      selected = null;
+      render();
+      notifyChanged();
+
+      showToast('Removed ' + toRemove.length + ' clips');
+      return;
+    }
+
+    // ─── SINGLE DELETE (existing) ────────────────────────────
     if (!selected) return;
 
     const trackIdx = Number(selected.track.slice(1)) - 1;
@@ -704,10 +778,7 @@ export function initTimelineEngine(config) {
           const tr = tracks[t];
           if (!Array.isArray(tr)) continue;
           const idx = tr.indexOf(entry.clip);
-          if (idx >= 0) {
-            tr.splice(idx, 1);
-            break;
-          }
+          if (idx >= 0) { tr.splice(idx, 1); break; }
         }
       });
     });
