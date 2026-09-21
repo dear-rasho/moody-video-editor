@@ -57,13 +57,11 @@ export function setElementEffect(el, effectKey) {
   if (!entry) return;
   if (entry.effectKey === effectKey) return;
 
-  // Disconnect previous
   try { entry.source.disconnect(); } catch (_) {}
   if (entry.lastOutput && entry.lastOutput !== entry.source) {
     try { entry.lastOutput.disconnect(); } catch (_) {}
   }
 
-  // Clean pass-through
   if (!effectKey) {
     entry.source.connect(ctx.destination);
     entry.lastOutput = entry.source;
@@ -95,11 +93,65 @@ export function setElementEffect(el, effectKey) {
   entry.effectKey = effectKey;
 }
 
-export function setGlobalEffect(effectKey) {
+// ═══════════════════════════════════════════════════════════════
+//  🆕 CHAINED EFFECTS — apply MULTIPLE effects in series
+//  keys = ['monster', 'reverb']  →  source → monster → reverb → dest
+// ═══════════════════════════════════════════════════════════════
+export function setElementEffects(el, effectKeys) {
+  if (!el) return;
+  const ctx = ensureAudioContext();
+  if (!ctx) return;
+  const entry = attachElement(el);
+  if (!entry) return;
+
+  const keys = Array.isArray(effectKeys)
+    ? effectKeys.map(k => String(k || '').trim()).filter(Boolean)
+    : (effectKeys ? [String(effectKeys)] : []);
+
+  const keyStr = keys.join('+');
+  if (entry.effectKey === keyStr) return;
+
+  try { entry.source.disconnect(); } catch (_) {}
+  if (entry.lastOutput && entry.lastOutput !== entry.source) {
+    try { entry.lastOutput.disconnect(); } catch (_) {}
+  }
+
+  if (!keys.length) {
+    entry.source.connect(ctx.destination);
+    entry.lastOutput = entry.source;
+    entry.effectKey = '';
+    return;
+  }
+
+  let tail = entry.source;
+  for (const key of keys) {
+    const build = builders.get(key);
+    if (!build) continue;
+    try {
+      const next = build(ctx, tail);
+      if (next) tail = next;
+    } catch (e) {
+      console.warn('FX build failed for', key, e);
+    }
+  }
+
+  tail.connect(ctx.destination);
+  entry.lastOutput = tail;
+  entry.effectKey = keyStr;
+}
+
+export function setGlobalEffect(effectKeyOrList) {
   const video = document.querySelector('#preview-video');
   const audio = document.querySelector('#preview-audio');
-  if (video) setElementEffect(video, effectKey);
-  if (audio) setElementEffect(audio, effectKey);
+  const isList = Array.isArray(effectKeyOrList);
+  if (video) {
+    if (isList) setElementEffects(video, effectKeyOrList);
+    else setElementEffect(video, effectKeyOrList);
+  }
+  if (audio) {
+    if (isList) setElementEffects(audio, effectKeyOrList);
+    else setElementEffect(audio, effectKeyOrList);
+  }
 }
 
 export function warmUp() {

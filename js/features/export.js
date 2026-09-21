@@ -665,9 +665,12 @@ function isLinkedAudioMuted(videoEl) {
 function getAudioFxLayersInRange(rangeStart, rangeEnd) {
   const appState = window.__appState;
   if (!appState) return [];
+  const mutedSet = appState.timeline.mutedAudioTracks || new Set();
   const result = [];
   const tracks = appState.timeline.audio || [];
   for (let t = 0; t < tracks.length; t++) {
+    // 🆕 Skip muted tracks entirely — muted FX never export
+    if (mutedSet.has(t)) continue;
     const track = tracks[t];
     if (!Array.isArray(track)) continue;
     for (let c = 0; c < track.length; c++) {
@@ -680,10 +683,13 @@ function getAudioFxLayersInRange(rangeStart, rangeEnd) {
       result.push({
         start: Math.max(s, rangeStart),
         end: Math.min(e, rangeEnd),
-        key: clip.__audioFxKey
+        key: clip.__audioFxKey,
+        trackIndex: t    // 🆕 for chaining order
       });
     }
   }
+  // Sort bottom → top
+  result.sort((a, b) => a.trackIndex - b.trackIndex);
   return result;
 }
 
@@ -852,6 +858,7 @@ async function applyAudioFxLayers(inputBuffer, fxRanges, sourceIn, clipDur, time
   const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
   if (!OAC) throw new Error('OfflineAudioContext not available');
   const ac = new OAC(numCh, outLen, sr);
+
   const points = new Set([timelineStart, timelineStart + clipDur]);
   for (const fx of fxRanges) { points.add(fx.start); points.add(fx.end); }
   const sorted = [...points].sort((a, b) => a - b);
@@ -860,11 +867,15 @@ async function applyAudioFxLayers(inputBuffer, fxRanges, sourceIn, clipDur, time
   for (let i = 0; i < sorted.length - 1; i++) {
     const s = sorted[i], e = sorted[i + 1];
     if (e <= s) continue;
-    let key = null;
+    // 🆕 Collect ALL overlapping FX at this segment, sorted by track index
+    const keys = [];
     for (const fx of fxRanges) {
-      if (fx.start <= s && fx.end >= e) { key = fx.key; break; }
+      if (fx.start <= s && fx.end >= e) {
+        keys.push({ key: fx.key, trackIndex: fx.trackIndex != null ? fx.trackIndex : 0 });
+      }
     }
-    segments.push({ start: s, end: e, key });
+    keys.sort((a, b) => a.trackIndex - b.trackIndex);
+    segments.push({ start: s, end: e, keys: keys.map(k => k.key) });
   }
 
   const FADE_SAMPLES = Math.max(1, Math.floor(0.01 * sr));
@@ -877,6 +888,7 @@ async function applyAudioFxLayers(inputBuffer, fxRanges, sourceIn, clipDur, time
     const eSamp = Math.min(inputBuffer.length, Math.floor((localStart + segDur) * sr));
     const samples = Math.max(1, eSamp - sSamp);
     const segBuf = ac.createBuffer(numCh, samples, sr);
+
     for (let c = 0; c < numCh; c++) {
       const srcCh = inputBuffer.getChannelData(Math.min(c, inputBuffer.numberOfChannels - 1));
       const dstCh = segBuf.getChannelData(c);
@@ -888,20 +900,26 @@ async function applyAudioFxLayers(inputBuffer, fxRanges, sourceIn, clipDur, time
         dstCh[i] = v;
       }
     }
+
     const src = ac.createBufferSource();
     src.buffer = segBuf;
+
+    // 🆕 Chain ALL active keys for this segment (bottom → top)
     let tail = src;
-    if (seg.key) {
-      const build = getBuilder(seg.key);
-      if (build) {
-        try { tail = build(ac, src) || src; }
-        catch (_) { tail = src; }
-      }
+    for (const key of seg.keys) {
+      const build = getBuilder(key);
+      if (!build) continue;
+      try {
+        const next = build(ac, tail);
+        if (next) tail = next;
+      } catch (_) {}
     }
+
     tail.connect(ac.destination);
     const startAtOutput = seg.start - timelineStart;
     src.start(Math.max(0, startAtOutput));
   }
+
   return await ac.startRendering();
 }
 

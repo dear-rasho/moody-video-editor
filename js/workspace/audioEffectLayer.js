@@ -83,6 +83,37 @@ export function getActiveAudioFxAt(time) {
   }
   return null;
 }
+// ═══════════════════════════════════════════════════════════════
+//  🆕 GET ALL ACTIVE FX — returns list sorted by track index
+//  (bottom → top, so chaining goes bottom-to-top)
+// ═══════════════════════════════════════════════════════════════
+export function getActiveAudioFxListAt(time) {
+  const appState = getState();
+  if (!appState) return [];
+  const tracks = appState.timeline.audio || [];
+  const muted = appState.timeline.mutedAudioTracks || new Set();
+  const result = [];
+
+  for (let t = 0; t < tracks.length; t++) {
+    if (muted.has(t)) continue;
+    const track = tracks[t];
+    if (!Array.isArray(track)) continue;
+    for (let c = 0; c < track.length; c++) {
+      const clip = track[c];
+      if (!clip || !clip.__audioFxId) continue;
+      const s = Number.isFinite(clip.startTime) ? clip.startTime : 0;
+      const d = Number.isFinite(clip.duration) ? clip.duration : 0;
+      if (time >= s && time < s + d) {
+        result.push({ key: clip.__audioFxKey, trackIndex: t, clip });
+        break; // only one FX per track
+      }
+    }
+  }
+
+  // Sort bottom → top (chaining order)
+  result.sort((a, b) => a.trackIndex - b.trackIndex);
+  return result;
+}
 
 export function getSelectedAudioFxLayer() {
   const el = document.querySelector('.clip.selected');

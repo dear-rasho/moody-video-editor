@@ -1,13 +1,12 @@
 // ================================================================
 //  js/workspace/audioFxRenderer.js
-//  Watches playback → applies the active FX layer's effect in
-//  real-time via audioFxEngine.
+//  Watches playback → applies ALL active FX layers (chained).
 // ================================================================
 
-import { getActiveAudioFxAt } from './audioEffectLayer.js';
+import { getActiveAudioFxListAt } from './audioEffectLayer.js';
 import { setGlobalEffect, warmUp } from './audioFxEngine.js';
 
-let currentKey = null;
+let currentKeyStr = '';
 let rafPending = false;
 let pendingTime = 0;
 
@@ -38,10 +37,14 @@ function schedule(time) {
   rafPending = true;
   requestAnimationFrame(() => {
     rafPending = false;
-    const active = getActiveAudioFxAt(pendingTime);
-    const key = active ? active.__audioFxKey : null;
-    if (key === currentKey) return;
-    currentKey = key;
-    setGlobalEffect(key);
+
+    const activeList = getActiveAudioFxListAt(pendingTime);
+    const keys = activeList.map(a => a.key);
+    const keyStr = keys.join('+');
+
+    if (keyStr === currentKeyStr) return;
+    currentKeyStr = keyStr;
+
+    setGlobalEffect(keys);   // [] = no fx, [a, b] = chain
   });
 }
