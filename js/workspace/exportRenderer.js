@@ -1,14 +1,21 @@
 // ================================================================
 //  js/workspace/exportRenderer.js
-//  Export frames — HIERARCHY-AWARE.
-//  🆕 Image support + Text/Sticker keyframe sampling
+//  Export frames — hierarchy-aware, multi-layer, stacked motion.
+//
+//  Features:
+//   - All lower layers draw (videos + images)
+//   - Chroma on top clip via temp canvas (alpha composite)
+//   - Multiple motion effects COMBINED into one transform
+//   - CSS filters from effect/filter layers
+//   - Pixel effects: adjustment, colorWheel
+//   - Text + sticker overlays
 // ================================================================
 
 import { hasAnyKeyframes, sampleAll } from './keyframeStore.js';
 import { isTransitionActive, getTransitionProgress, renderTransitionBlend } from './transitionEngine.js';
 
 // ═══════════════════════════════════════════════════════════════
-//  🆕 IMAGE CACHE (for export)
+//  IMAGE CACHE
 // ═══════════════════════════════════════════════════════════════
 const _imageCache = new Map();
 
@@ -69,20 +76,33 @@ function getImageSync(url) {
 // ═══════════════════════════════════════════════════════════════
 export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime, prevFrameCanvas) {
   const appState = window.__appState;
-  if (!appState) { drawVideoContainFit(ctx, source, W, H, null); return; }
+  if (!appState) {
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, W, H);
+    if (source) drawVideoContainFit(ctx, source, W, H, null);
+    return;
+  }
+
   const active = getActiveVisualClipsAt(appState, timelineTime);
 
-  // Top VIDEO/IMAGE track — text/sticker ignored for effect hierarchy
+  // ═══════════════════════════════════════════════════════════
+  //  Find top display clip (video/image)
+  // ═══════════════════════════════════════════════════════════
   let topDisplayTrack = -1;
+  let topDisplayClip = null;
   for (let i = active.length - 1; i >= 0; i--) {
     const c = active[i].clip;
     if (!c || !c.type) continue;
-    const isVideo = c.type.indexOf('video/') === 0;
-    const isImage = c.type.indexOf('image/') === 0;
-    if (isVideo || isImage) { topDisplayTrack = active[i].trackIndex; break; }
+    const isV = c.type.indexOf('video/') === 0;
+    const isI = c.type.indexOf('image/') === 0;
+    if (isV || isI) {
+      topDisplayTrack = active[i].trackIndex;
+      topDisplayClip = c;
+      break;
+    }
   }
 
-  // Effects above top video/image
+  // Effects above top display track
   const effects = [];
   if (topDisplayTrack >= 0) {
     for (let i = 0; i < active.length; i++) {
@@ -91,17 +111,7 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime,
     }
   }
 
-  // Top display clip (video/image)
-  let topDisplayClip = null;
-  for (let i = active.length - 1; i >= 0; i--) {
-    const c = active[i].clip;
-    if (!c || !c.type) continue;
-    const isVideo = c.type.indexOf('video/') === 0;
-    const isImage = c.type.indexOf('image/') === 0;
-    if (isVideo || isImage) { topDisplayClip = c; break; }
-  }
-
-  // CSS filter
+  // CSS filter from effect/filter layers
   let cssFilter = '';
   for (let i = 0; i < effects.length; i++) {
     const st = effects[i].clip.effectState;
@@ -112,39 +122,28 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime,
     }
   }
 
-  // Motion
-  let motion = null;
+  // 🆕 COMBINE all motions (no break!)
+  const motionList = [];
   for (let i = 0; i < effects.length; i++) {
     const st = effects[i].clip.effectState;
     if (st && st.motion) {
-      motion = computeMotionRaw(st.motion, timelineTime);
-      if (motion) break;
+      const m = computeMotionRaw(st.motion, timelineTime);
+      if (m) motionList.push(m);
     }
   }
+  const motion = combineMotions(motionList);
 
-  // Layer transform (video/image only)
-  let topVideoOrImageClip = null;
-  for (let i = active.length - 1; i >= 0; i--) {
-    const c = active[i].clip;
-    if (!c || !c.type) continue;
-    const isV = c.type.indexOf('video/') === 0;
-    const isI = c.type.indexOf('image/') === 0;
-    if (isV || isI) { topVideoOrImageClip = c; break; }
-  }
-  let layerXform = topVideoOrImageClip && topVideoOrImageClip.__transform
-    ? topVideoOrImageClip.__transform
+  // Top clip transform (+ keyframes)
+  let layerXform = topDisplayClip && topDisplayClip.__transform
+    ? topDisplayClip.__transform
     : null;
-  if (topVideoOrImageClip && hasAnyKeyframes(topVideoOrImageClip)) {
-    layerXform = sampleAll(topVideoOrImageClip, timelineTime, layerXform || {});
+  if (topDisplayClip && hasAnyKeyframes(topDisplayClip)) {
+    layerXform = sampleAll(topDisplayClip, timelineTime, layerXform || {});
   }
 
-  // Draw base
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.globalAlpha = 1;
-  ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = '#000';
-  ctx.fillRect(0, 0, W, H);
-  // 🆕 Get ALL active display clips (bottom → top)
+  // ═══════════════════════════════════════════════════════════
+  //  Collect ALL active display clips (video/image)
+  // ═══════════════════════════════════════════════════════════
   const allDisplayClips = [];
   for (let i = 0; i < active.length; i++) {
     const ac = active[i].clip;
@@ -155,7 +154,7 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime,
   }
   allDisplayClips.sort((a, b) => a.trackIndex - b.trackIndex);
 
-  // 🆕 Find chroma for top clip
+  // Chroma config for TOP clip
   let topChromaCfg = null;
   for (let i = 0; i < effects.length; i++) {
     const st = effects[i].clip.effectState;
@@ -165,44 +164,52 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime,
     topChromaCfg = topDisplayClip.__grading.chroma;
   }
 
-  // 🆕 Draw lower display clips OPAQUE
+  // Clear + black
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+
+  // ═══════════════════════════════════════════════════════════
+  //  Draw LOWER layers (all except top)
+  // ═══════════════════════════════════════════════════════════
   for (let i = 0; i < allDisplayClips.length - 1; i++) {
     const dc = allDisplayClips[i];
     const lc = dc.clip;
     let lsrc = null;
+
     if (lc.type.indexOf('image/') === 0) {
       lsrc = getImageSync(lc.url);
+      if (!lsrc) {
+        console.warn('[export] lower image not cached:', (lc.name || '').slice(0, 30));
+        continue;
+      }
     } else if (lc.type.indexOf('video/') === 0) {
-      // only if this IS the matched video
-      if (lc === topVideoOrImageClip) lsrc = source;
+      // Use decoded frame for lower videos
+      if (source) lsrc = source;
       else continue;
     }
+
     if (!lsrc) continue;
 
     ctx.save();
     const lxf = lc.__transform || null;
-    if (lxf) {
-      const aX = lxf.anchorX != null ? lxf.anchorX : 50;
-      const aY = lxf.anchorY != null ? lxf.anchorY : 50;
-      const pX = lxf.x != null ? lxf.x : 50;
-      const pY = lxf.y != null ? lxf.y : 50;
-      const ox = W * (aX / 100), oy = H * (aY / 100);
-      const offX = (pX - 50) / 100 * W;
-      const offY = (pY - 50) / 100 * H;
-      ctx.translate(ox + offX, oy + offY);
-      if (lxf.rotation) ctx.rotate(lxf.rotation * Math.PI / 180);
-      const sc = (lxf.scale != null ? lxf.scale : 100) / 100;
-      if (sc !== 1) ctx.scale(sc, sc);
-      ctx.translate(-ox, -oy);
-    }
+    if (lxf) applyLayerTransform(ctx, W, H, lxf);
     drawVideoContainFit(ctx, lsrc, W, H, lxf);
     ctx.restore();
   }
 
+  // ═══════════════════════════════════════════════════════════
+  //  Draw TOP layer (with chroma / transition / motion / filter)
+  // ═══════════════════════════════════════════════════════════
   function drawCurrentFrame(c, w, h) {
     c.save();
+
+    // CSS filter
     if (cssFilter) { try { c.filter = cssFilter; } catch (_) {} }
 
+    // Combined motion
     if (motion) {
       const cx = w / 2, cy = h / 2;
       c.translate(cx + (motion.tx || 0), cy + (motion.ty || 0));
@@ -211,34 +218,22 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime,
       c.translate(-cx, -cy);
     }
 
-    if (layerXform) {
-      const anchorX = layerXform.anchorX != null ? layerXform.anchorX : 50;
-      const anchorY = layerXform.anchorY != null ? layerXform.anchorY : 50;
-      const posX = layerXform.x != null ? layerXform.x : 50;
-      const posY = layerXform.y != null ? layerXform.y : 50;
-      const originX = w * (anchorX / 100);
-      const originY = h * (anchorY / 100);
-      const offsetX = (posX - 50) / 100 * w;
-      const offsetY = (posY - 50) / 100 * h;
-      c.translate(originX + offsetX, originY + offsetY);
-      if (layerXform.rotation) c.rotate(layerXform.rotation * Math.PI / 180);
-      const sc = (layerXform.scale != null ? layerXform.scale : 100) / 100;
-      if (sc !== 1) c.scale(sc, sc);
-      c.translate(-originX, -originY);
-    }
+    // Layer transform
+    if (layerXform) applyLayerTransform(c, w, h, layerXform);
 
+    // Source
     let drawSource = null;
-    if (topVideoOrImageClip) {
-      const t = topVideoOrImageClip.type || '';
+    if (topDisplayClip) {
+      const t = topDisplayClip.type || '';
       if (t.indexOf('image/') === 0) {
-        const img = getImageSync(topVideoOrImageClip.url);
-        drawSource = img || null;
+        drawSource = getImageSync(topDisplayClip.url);
+        if (!drawSource) console.warn('[export] TOP image not cached:', (topDisplayClip.name || '').slice(0, 30));
       } else if (t.indexOf('video/') === 0) {
         drawSource = source;
       }
     }
 
-    // 🆕 Chroma: temp canvas → alpha reduction → composite
+    // Chroma via temp canvas (preserves alpha)
     if (topChromaCfg && drawSource) {
       const tc = document.createElement('canvas');
       tc.width = w;
@@ -254,46 +249,11 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime,
     } else {
       drawVideoContainFit(c, drawSource, w, h, layerXform);
     }
+
     c.restore();
     try { c.filter = 'none'; } catch (_) {}
   }
 
-  // 🆕 Helper for chroma on raw data
-  function applyChromaToData(data, w, h, cc) {
-    if (!cc || !cc.keyColor) return;
-    const kr = cc.keyColor.r, kg = cc.keyColor.g, kb = cc.keyColor.b;
-    const sim = (cc.similarity != null ? cc.similarity : 30) / 100;
-    const sm = (cc.smoothness != null ? cc.smoothness : 20) / 100;
-    const inten = (cc.intensity != null ? cc.intensity : 100) / 100;
-    const sp = (cc.spill != null ? cc.spill : 50) / 100;
-    const maxDist = Math.sqrt(3 * 255 * 255) || 1;
-    const simEnd = sim;
-    const softEnd = sim + sm;
-    for (let i = 0; i < data.length; i += 4) {
-      const r = data[i], g = data[i + 1], b = data[i + 2];
-      const dr = r - kr, dg = g - kg, db = b - kb;
-      const dist = Math.sqrt(dr * dr + dg * dg + db * db) / maxDist;
-      let removal = 0;
-      if (dist <= simEnd) removal = 1;
-      else if (sm > 0 && dist <= softEnd) removal = 1 - (dist - simEnd) / sm;
-      removal *= inten;
-      if (removal > 0) {
-        const keep = 1 - removal;
-        data[i]     = Math.round(r * keep);
-        data[i + 1] = Math.round(g * keep);
-        data[i + 2] = Math.round(b * keep);
-        data[i + 3] = Math.round(data[i + 3] * keep);
-      }
-      if (sp > 0 && removal < 1 && dist < softEnd + 0.15) {
-        const prox = 1 - Math.min(1, dist / (softEnd + 0.15));
-        const bl = sp * prox * 0.8;
-        const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-        data[i]     = Math.round(data[i]     * (1 - bl) + gray * bl);
-        data[i + 1] = Math.round(data[i + 1] * (1 - bl) + gray * bl);
-        data[i + 2] = Math.round(data[i + 2] * (1 - bl) + gray * bl);
-      }
-    }
-  }
   // Transition
   const transitioning = topDisplayClip && isTransitionActive(topDisplayClip, timelineTime);
   if (transitioning && prevFrameCanvas) {
@@ -307,12 +267,15 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime,
   try { ctx.filter = 'none'; } catch (_) {}
   ctx.globalAlpha = 1;
 
-  // Pixel effects — hierarchy
+  // ═══════════════════════════════════════════════════════════
+  //  Pixel effects — adjustment / colorWheel
+  //  (chroma already applied above per-clip)
+  // ═══════════════════════════════════════════════════════════
   const pixelEffects = [];
   for (let i = 0; i < effects.length; i++) {
     const st = effects[i].clip.effectState;
     if (!st) continue;
-    if (st.kind === 'adjustment' || st.kind === 'colorWheel' || st.kind === 'chroma') {
+    if (st.kind === 'adjustment' || st.kind === 'colorWheel') {
       pixelEffects.push(effects[i]);
     }
   }
@@ -330,11 +293,6 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime,
         clip: { effectState: { kind: 'colorWheel', colorWheel: g.colorWheel } }
       });
     }
-    if (g.chroma) {
-      pixelEffects.push({
-        clip: { effectState: { kind: 'chroma', chroma: g.chroma } }
-      });
-    }
   }
 
   if (pixelEffects.length) {
@@ -347,13 +305,15 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime,
         try {
           if (st.kind === 'adjustment') applyAdjustment(data, W, H, st.adjustments);
           else if (st.kind === 'colorWheel') applyColorWheel(data, W, H, st.colorWheel);
-          // 🆕 chroma skipped here — handled in drawCurrentFrame per-clip
         } catch (_) {}
       }
       try { ctx.putImageData(imgData, 0, 0); } catch (_) {}
     }
   }
-  // Text overlays
+
+  // ═══════════════════════════════════════════════════════════
+  //  Text overlays
+  // ═══════════════════════════════════════════════════════════
   const textClips = [];
   for (let i = 0; i < active.length; i++) {
     const c = active[i].clip;
@@ -374,7 +334,9 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime,
   }
 }
 
-// ─── Helpers ──────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+//  HELPERS
+// ═══════════════════════════════════════════════════════════════
 function isDisplayClip(c) {
   if (!c) return false;
   if (c.__textId) return true;
@@ -406,6 +368,22 @@ function getActiveVisualClipsAt(appState, time) {
   return active;
 }
 
+function applyLayerTransform(c, W, H, t) {
+  if (!t) return;
+  const aX = t.anchorX != null ? t.anchorX : 50;
+  const aY = t.anchorY != null ? t.anchorY : 50;
+  const pX = t.x != null ? t.x : 50;
+  const pY = t.y != null ? t.y : 50;
+  const ox = W * (aX / 100), oy = H * (aY / 100);
+  const offX = (pX - 50) / 100 * W;
+  const offY = (pY - 50) / 100 * H;
+  c.translate(ox + offX, oy + offY);
+  if (t.rotation) c.rotate(t.rotation * Math.PI / 180);
+  const sc = (t.scale != null ? t.scale : 100) / 100;
+  if (sc !== 1) c.scale(sc, sc);
+  c.translate(-ox, -oy);
+}
+
 function drawVideoContainFit(ctx, source, W, H, xform) {
   if (!source) return;
   const sw = source.displayWidth || source.videoWidth || source.naturalWidth || source.width;
@@ -419,7 +397,8 @@ function drawVideoContainFit(ctx, source, W, H, xform) {
     const cropT = (xform.cropT || 0) / 100;
     const cropB = (xform.cropB || 0) / 100;
     if (cropL || cropR || cropT || cropB) {
-      sx = sw * cropL; sy = sh * cropT;
+      sx = sw * cropL;
+      sy = sh * cropT;
       scw = sw * (1 - cropL - cropR);
       sch = sh * (1 - cropT - cropB);
     }
@@ -452,33 +431,72 @@ function buildCssFilter(f) {
   return p.join(' ');
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  🆕 MOTION — raw + combiner
+// ═══════════════════════════════════════════════════════════════
 function computeMotionRaw(m, time) {
   if (!m || !m.type) return null;
   const speed = m.speed || 1;
   const I = (m.intensity != null ? m.intensity : 100) / 100;
   const t = time * speed;
+
   switch (m.type) {
-    case 'shake': return { tx: Math.sin(t * 37) * 6 * I, ty: Math.cos(t * 41) * 6 * I, scale: 1, rot: 0 };
-    case 'bounce': return { tx: 0, ty: 0, scale: 1 + Math.abs(Math.sin(t * 4)) * 0.12 * I, rot: 0 };
-    case 'pulse': return { tx: 0, ty: 0, scale: 1 + Math.sin(t * 3) * 0.08 * I, rot: 0 };
-    case 'zoomPulse': return { tx: 0, ty: 0, scale: 1 + (Math.sin(t * 2) * 0.5 + 0.5) * 0.35 * I, rot: 0 };
-    case 'rotate': return { tx: 0, ty: 0, scale: 1, rot: Math.sin(t * 2) * 6 * I };
-    case 'glitch': return {
-      tx: (Math.random() - 0.5) * 14 * I, ty: (Math.random() - 0.5) * 8 * I,
-      scale: 1 + (Math.random() - 0.5) * 0.03 * I, rot: 0
-    };
+    case 'shake':
+      return { tx: Math.sin(t * 37) * 6 * I, ty: Math.cos(t * 41) * 6 * I, scale: 1, rot: 0 };
+    case 'bounce':
+      return { tx: 0, ty: 0, scale: 1 + Math.abs(Math.sin(t * 4)) * 0.12 * I, rot: 0 };
+    case 'pulse':
+      return { tx: 0, ty: 0, scale: 1 + Math.sin(t * 3) * 0.08 * I, rot: 0 };
+    case 'zoomPulse':
+      return { tx: 0, ty: 0, scale: 1 + (Math.sin(t * 2) * 0.5 + 0.5) * 0.35 * I, rot: 0 };
+    case 'rotate':
+      return { tx: 0, ty: 0, scale: 1, rot: Math.sin(t * 2) * 6 * I };
+    case 'glitch':
+      return {
+        tx: (Math.random() - 0.5) * 14 * I,
+        ty: (Math.random() - 0.5) * 8 * I,
+        scale: 1 + (Math.random() - 0.5) * 0.03 * I,
+        rot: 0
+      };
+    case 'flicker':
+      return {
+        tx: (Math.random() - 0.5) * 3 * I,
+        ty: (Math.random() - 0.5) * 3 * I,
+        scale: 1,
+        rot: 0
+      };
   }
   return null;
 }
 
+function combineMotions(list) {
+  if (!list || !list.length) return null;
+  if (list.length === 1) return list[0];
+
+  let tx = 0;
+  let ty = 0;
+  let scale = 1;
+  let rot = 0;
+
+  for (let i = 0; i < list.length; i++) {
+    const m = list[i];
+    if (!m) continue;
+    tx += m.tx || 0;
+    ty += m.ty || 0;
+    if (m.scale != null && m.scale !== 1) scale *= m.scale;
+    rot += m.rot || 0;
+  }
+
+  return { tx, ty, scale, rot };
+}
+
 // ═══════════════════════════════════════════════════════════════
-//  🆕 TEXT OVERLAY (with keyframe sampling)
+//  TEXT OVERLAY
 // ═══════════════════════════════════════════════════════════════
 function drawTextOverlay(ctx, W, H, ts, timelineTime, clip) {
   const fullContent = ts.content || '';
   if (!fullContent) return;
 
-  // Sample keyframes for position/scale/rotation
   let sampledX = ts.positionX != null ? ts.positionX : 50;
   let sampledY = ts.positionY != null ? ts.positionY : 50;
   let sampledScale = ts.scale != null ? ts.scale : 100;
@@ -528,7 +546,9 @@ function drawTextOverlay(ctx, W, H, ts, timelineTime, clip) {
   const userOpacity = (ts.opacity != null ? ts.opacity : 100) / 100;
   ctx.globalAlpha = userOpacity * animState.opacity;
 
-  if (animState.blur > 0) { try { ctx.filter = 'blur(' + (animState.blur * scaleFactor) + 'px)'; } catch (_) {} }
+  if (animState.blur > 0) {
+    try { ctx.filter = 'blur(' + (animState.blur * scaleFactor) + 'px)'; } catch (_) {}
+  }
 
   if (ts.shadowEnabled) {
     ctx.shadowColor = ts.shadowColor || '#000';
@@ -588,7 +608,12 @@ function computeTextAnimState(anim, elapsed, dur, fullText) {
     case 'shake': state.tx = Math.sin(elapsed * 40) * 6; break;
     case 'wave': state.ty = Math.sin(elapsed * 6) * 8; break;
     case 'bounceWave': state.ty = -Math.abs(Math.sin(elapsed * 4)) * 18; break;
-    case 'flicker': { const vals = [1, 0.25, 1, 0.5, 1, 0.15, 1, 0.4, 1, 0.2, 1]; const i = Math.min(vals.length - 1, Math.floor(p * vals.length)); state.opacity = vals[i]; break; }
+    case 'flicker': {
+      const vals = [1, 0.25, 1, 0.5, 1, 0.15, 1, 0.4, 1, 0.2, 1];
+      const i = Math.min(vals.length - 1, Math.floor(p * vals.length));
+      state.opacity = vals[i];
+      break;
+    }
     case 'cinematicBlur': { const e = Math.min(1, p / 0.6); state.blur = (1 - e) * 18; state.opacity = Math.min(1, p * 1.5); break; }
     case 'glitch': { state.tx = (Math.random() - 0.5) * 6; state.ty = (Math.random() - 0.5) * 4; break; }
     case 'typewriter': state.visibleChars = Math.floor(p * fullText.length); break;
@@ -598,7 +623,11 @@ function computeTextAnimState(anim, elapsed, dur, fullText) {
   return state;
 }
 
-function easeOutBack(t) { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); }
+function easeOutBack(t) {
+  const c1 = 1.70158, c3 = c1 + 1;
+  return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+}
+
 function easeOutBounce(t) {
   const n1 = 7.5625, d1 = 2.75;
   if (t < 1 / d1) return n1 * t * t;
@@ -608,7 +637,7 @@ function easeOutBounce(t) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  🆕 STICKER OVERLAY (with keyframe sampling)
+//  STICKER OVERLAY
 // ═══════════════════════════════════════════════════════════════
 function drawStickerOverlay(ctx, W, H, s, clip, timelineTime) {
   if (!s || !s.emoji) return;
@@ -642,7 +671,50 @@ function drawStickerOverlay(ctx, W, H, s, clip, timelineTime) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  ADJUSTMENT / COLOR WHEEL / CHROMA
+//  CHROMA ON PIXEL DATA
+// ═══════════════════════════════════════════════════════════════
+function applyChromaToData(data, w, h, c) {
+  if (!c || !c.keyColor) return;
+  const kr = c.keyColor.r, kg = c.keyColor.g, kb = c.keyColor.b;
+  const sim = (c.similarity != null ? c.similarity : 30) / 100;
+  const sm = (c.smoothness != null ? c.smoothness : 20) / 100;
+  const inten = (c.intensity != null ? c.intensity : 100) / 100;
+  const sp = (c.spill != null ? c.spill : 50) / 100;
+  const maxDist = Math.sqrt(3 * 255 * 255) || 1;
+  const simEnd = sim;
+  const softEnd = sim + sm;
+
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i], g = data[i + 1], b = data[i + 2];
+    const dr = r - kr, dg = g - kg, db = b - kb;
+    const dist = Math.sqrt(dr * dr + dg * dg + db * db) / maxDist;
+
+    let removal = 0;
+    if (dist <= simEnd) removal = 1;
+    else if (sm > 0 && dist <= softEnd) removal = 1 - (dist - simEnd) / sm;
+    removal *= inten;
+
+    if (removal > 0) {
+      const keep = 1 - removal;
+      data[i]     = Math.round(r * keep);
+      data[i + 1] = Math.round(g * keep);
+      data[i + 2] = Math.round(b * keep);
+      data[i + 3] = Math.round(data[i + 3] * keep);
+    }
+
+    if (sp > 0 && removal < 1 && dist < softEnd + 0.15) {
+      const prox = 1 - Math.min(1, dist / (softEnd + 0.15));
+      const bl = sp * prox * 0.8;
+      const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+      data[i]     = Math.round(data[i]     * (1 - bl) + gray * bl);
+      data[i + 1] = Math.round(data[i + 1] * (1 - bl) + gray * bl);
+      data[i + 2] = Math.round(data[i + 2] * (1 - bl) + gray * bl);
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  ADJUSTMENT / COLOR WHEEL — pixel ops
 // ═══════════════════════════════════════════════════════════════
 const COLOR_CHANNELS = [
   { key: 'reds',      center: 0,   range: 30 },
@@ -669,6 +741,16 @@ function rgbToHsl(r, g, b) {
     else h = ((r - g) / d + 4) * 60;
   }
   return [h, s * 100, l * 100];
+}
+
+function hslToRgb(h, s, l) {
+  h = ((h % 360) + 360) % 360;
+  s = Math.max(0, Math.min(100, s)) / 100;
+  l = Math.max(0, Math.min(100, l)) / 100;
+  const k = n => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = n => l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1));
+  return [Math.round(f(0) * 255), Math.round(f(8) * 255), Math.round(f(4) * 255)];
 }
 
 function getChannelWeight(hue, center, range) {
@@ -698,7 +780,8 @@ function applyAdjustment(data, w, h, s) {
 
   const colorVals = {};
   let hasColorChannels = false;
-  for (const ch of COLOR_CHANNELS) {
+  for (let ci = 0; ci < COLOR_CHANNELS.length; ci++) {
+    const ch = COLOR_CHANNELS[ci];
     const raw = c100(s[ch.key]);
     const v = raw / 100;
     colorVals[ch.key] = v;
@@ -727,35 +810,28 @@ function applyAdjustment(data, w, h, s) {
     if (tiA) { g -= tiA * 28; r += tiA * 12; b += tiA * 12; }
     r = clamp(r); g = clamp(g); b = clamp(b);
 
-     if (hasColorChannels) {
-      const [hue, sat, lightness] = rgbToHsl(r, g, b);
+    if (hasColorChannels) {
+      const hsl = rgbToHsl(r, g, b);
+      const hue = hsl[0], sat = hsl[1], lightness = hsl[2];
       if (sat > 1) {
         let satMul = 1;
         let hueShift = 0;
         let lightShift = 0;
-
-        for (const ch of COLOR_CHANNELS) {
+        for (let ci = 0; ci < COLOR_CHANNELS.length; ci++) {
+          const ch = COLOR_CHANNELS[ci];
           const val = colorVals[ch.key];
           if (Math.abs(val) < 0.005) continue;
-          const w = getChannelWeight(hue, ch.center, ch.range);
-          if (w > 0.01) {
-            // 🆕 Much stronger response
-            satMul    += val * w * 2.5;   // was 0.8 → 2.5
-            hueShift  += val * w * 18;    // was 3   → 18
-            lightShift += val * w * 8;    // new — brightness shift
+          const w2 = getChannelWeight(hue, ch.center, ch.range);
+          if (w2 > 0.01) {
+            satMul += val * w2 * 2.5;
+            hueShift += val * w2 * 18;
+            lightShift += val * w2 * 8;
           }
         }
-
         satMul = Math.max(0.05, Math.min(4, satMul));
         hueShift = Math.max(-60, Math.min(60, hueShift));
-
-        if (Math.abs(satMul - 1) > 0.005 ||
-            Math.abs(hueShift) > 0.3 ||
-            Math.abs(lightShift) > 0.3) {
-          const newHue = hue + hueShift;
-          const newSat = sat * satMul;
-          const newLight = lightness + lightShift;
-          const rgb2 = hslToRgb(newHue, newSat, newLight);
+        if (Math.abs(satMul - 1) > 0.005 || Math.abs(hueShift) > 0.3 || Math.abs(lightShift) > 0.3) {
+          const rgb2 = hslToRgb(hue + hueShift, sat * satMul, lightness + lightShift);
           r = rgb2[0]; g = rgb2[1]; b = rgb2[2];
         }
       }
@@ -765,7 +841,9 @@ function applyAdjustment(data, w, h, s) {
     if (noA) { const grain = (Math.random() - 0.5) * noA * 45; r += grain; g += grain; b += grain; }
     if (vgA) { const dx = px - cx, dy = py - cy; const d = Math.sqrt(dx * dx + dy * dy) / maxDist; const v = 1 - Math.max(0, d - 0.4) * vgA * 1.8; r *= v; g *= v; b *= v; }
 
-    data[i] = clamp(r); data[i + 1] = clamp(g); data[i + 2] = clamp(b);
+    data[i] = clamp(r);
+    data[i + 1] = clamp(g);
+    data[i + 2] = clamp(b);
   }
 }
 
@@ -849,51 +927,5 @@ function applyColorWheel(data, w, h, cw) {
     data[i]     = Math.max(0, Math.min(255, r));
     data[i + 1] = Math.max(0, Math.min(255, g));
     data[i + 2] = Math.max(0, Math.min(255, b));
-  }
-}
-
-function hslToRgb(h, s, l) {
-  h = ((h % 360) + 360) % 360;
-  s = Math.max(0, Math.min(100, s)) / 100;
-  l = Math.max(0, Math.min(100, l)) / 100;
-  const k = n => (n + h / 30) % 12;
-  const a = s * Math.min(l, 1 - l);
-  const f = n => l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1));
-  return [Math.round(f(0) * 255), Math.round(f(8) * 255), Math.round(f(4) * 255)];
-}
-
-function applyChroma(data, w, h, c) {
-  if (!c || !c.keyColor) return;
-  const kr = c.keyColor.r, kg = c.keyColor.g, kb = c.keyColor.b;
-  const sim = (c.similarity != null ? c.similarity : 30) / 100;
-  const sm = (c.smoothness != null ? c.smoothness : 20) / 100;
-  const inten = (c.intensity != null ? c.intensity : 100) / 100;
-  const sp = (c.spill != null ? c.spill : 50) / 100;
-  const maxDist = Math.sqrt(3 * 255 * 255) || 1;
-  const simEnd = sim;
-  const softEnd = sim + sm;
-  for (let i = 0; i < data.length; i += 4) {
-    const r = data[i], g = data[i + 1], b = data[i + 2];
-    const dr = r - kr, dg = g - kg, db = b - kb;
-    const dist = Math.sqrt(dr * dr + dg * dg + db * db) / maxDist;
-    let removal = 0;
-    if (dist <= simEnd) removal = 1;
-    else if (sm > 0 && dist <= softEnd) removal = 1 - (dist - simEnd) / sm;
-    removal *= inten;
-    if (removal > 0) {
-      const keep = 1 - removal;
-      data[i]     = Math.round(r * keep);
-      data[i + 1] = Math.round(g * keep);
-      data[i + 2] = Math.round(b * keep);
-      data[i + 3] = Math.round(data[i + 3] * keep);
-    }
-    if (sp > 0 && removal < 1 && dist < softEnd + 0.15) {
-      const prox = 1 - Math.min(1, dist / (softEnd + 0.15));
-      const bl = sp * prox * 0.8;
-      const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-      data[i]     = Math.round(data[i]     * (1 - bl) + gray * bl);
-      data[i + 1] = Math.round(data[i + 1] * (1 - bl) + gray * bl);
-      data[i + 2] = Math.round(data[i + 2] * (1 - bl) + gray * bl);
-    }
   }
 }

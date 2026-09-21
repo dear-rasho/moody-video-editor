@@ -274,7 +274,7 @@ const COLOR_MAP = {
   neon:      { brightness: 105, contrast: 125, saturation: 160 }
 };
 
-function buildEffectStateForKey(key) {
+export function buildEffectStateForKey(key) {
   const k = String(key || '').toLowerCase();
   const base = {
     brightness: 100, contrast: 100, saturation: 100, hue: 0,

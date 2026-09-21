@@ -4,7 +4,7 @@ import { placeClipAtTime } from '../layers/layersManager.js';
 import { resolveFontFamily, loadGoogleFont } from './fontLibrary.js';
 import { openKeyframeGraph } from '../workspace/keyframeGraph.js';
 import { clearKeyframes as clearAllKeyframes } from '../workspace/keyframeStore.js';
-import { runDetectBeats, runBeatsEditing } from './beatsEngine.js';
+import { runDetectBeats, runBeatsEditing, buildEffectStateForKey } from './beatsEngine.js';
 
 // ═══════════════════════════════════════════════════════════════
 //  CONSTANTS
@@ -2222,14 +2222,10 @@ export async function executePrompt(state) {
 
   if (state.effectPreset) {
     if (hasClips || _lastCreatedClips.length > 0) {
-      const baseFilters = {
-        brightness: 100, contrast: 100, saturation: 100, hue: 0,
-        grayscale: 0, sepia: 0, invert: 0, blur: 0, opacity: 100
-      };
       try {
-        const id = createEffectLayer('effect',
-          { presetKey: state.effectPreset, filters: baseFilters, motion: null },
-          capitalize(state.effectPreset));
+        // 🆕 Use the correct preset builder (includes motion for shake/pulse/zoom)
+        const fxState = buildEffectStateForKey(state.effectPreset);
+        const id = createEffectLayer('effect', fxState, capitalize(state.effectPreset));
         if (id) results.push('effect:' + state.effectPreset);
       } catch (e) { console.warn(e); }
     } else warnings.push('effect: clip daalein');
