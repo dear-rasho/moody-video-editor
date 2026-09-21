@@ -364,6 +364,38 @@ let examplesEl = null;
 //  INIT
 // ═══════════════════════════════════════════════════════════════
 export function initPromptUI() {
+    // 🆕 Inject picker styles
+  if (!document.getElementById('prompt-picker-styles')) {
+    const st = document.createElement('style');
+    st.id = 'prompt-picker-styles';
+    st.textContent = `
+      .prompt-picker-btn {
+        flex: 0 0 auto;
+        min-height: 46px;
+        padding: 0 14px;
+        background: var(--surface-2);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        font-size: 12px;
+        font-weight: 700;
+        cursor: pointer;
+        font-family: inherit;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        transition: all 0.12s ease;
+        -webkit-tap-highlight-color: transparent;
+        white-space: nowrap;
+      }
+      .prompt-picker-btn:active {
+        background: linear-gradient(135deg, #7c3aed 0%, #a78bfa 100%);
+        color: #fff;
+        border-color: #a78bfa;
+      }
+    `;
+    document.head.appendChild(st);
+  }
   inputEl = document.querySelector('#prompt-input');
   applyBtn = document.querySelector('#prompt-apply-btn');
   clearBtn = document.querySelector('#prompt-clear-btn');
@@ -429,6 +461,37 @@ export function initPromptUI() {
   }
 
   applyBtn.addEventListener('click', onApply);
+    // 🆕 Chroma color picker
+  const pickerBtn = document.createElement('button');
+  pickerBtn.id = 'prompt-chroma-picker';
+  pickerBtn.type = 'button';
+  pickerBtn.className = 'prompt-picker-btn';
+  pickerBtn.textContent = '🎨 Pick Color';
+  pickerBtn.title = 'Pick color from preview for chroma key';
+
+  const pickerInput = document.createElement('input');
+  pickerInput.type = 'color';
+  pickerInput.id = 'prompt-chroma-input';
+  pickerInput.style.cssText = 'position:absolute;left:-9999px;width:0;height:0;opacity:0;';
+
+  pickerBtn.addEventListener('click', () => pickerInput.click());
+
+  pickerInput.addEventListener('input', () => {
+    const hex = pickerInput.value;
+    const cur = inputEl.value.trim();
+    const cmd = 'chroma ' + hex;
+    // Append with comma if not empty
+    inputEl.value = cur ? (cur.replace(/,\s*$/, '') + ', ' + cmd) : cmd;
+    inputEl.focus();
+    showFeedback('🎨 Color picked: ' + hex + ' → appended to prompt', 'ok', 2500);
+  });
+
+  // Insert into action row
+  const actionRow = applyBtn.parentElement;
+  if (actionRow) {
+    actionRow.insertBefore(pickerBtn, applyBtn);
+  }
+  document.body.appendChild(pickerInput);
 
   inputEl.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
@@ -440,13 +503,22 @@ export function initPromptUI() {
 
 // ═══════════════════════════════════════════════════════════════
 //  RENDER CHIPS
-// ═══════════════════════════════════════════════════════════════
 function renderChips() {
   if (!examplesEl) return;
   examplesEl.replaceChildren();
 
   const cat = CATEGORIES.find(c => c.key === currentCat);
   if (!cat) return;
+
+  // 🆕 Special Picker chip — only for Chroma category
+  if (cat.key === 'chroma') {
+    const pickChip = document.createElement('button');
+    pickChip.type = 'button';
+    pickChip.className = 'prompt-chip prompt-chip-picker';
+    pickChip.innerHTML = '🎨 Pick Color from Clip';
+    pickChip.addEventListener('click', openChromaPicker);
+    examplesEl.appendChild(pickChip);
+  }
 
   cat.examples.forEach(text => {
     const chip = document.createElement('button');
@@ -469,7 +541,6 @@ function renderChips() {
   try { examplesEl.scrollLeft = 0; } catch (_) {}
 }
 
-// ═══════════════════════════════════════════════════════════════
 //  APPLY
 // ═══════════════════════════════════════════════════════════════
 async function onApply() {
@@ -793,6 +864,253 @@ function buildPromptFeedbackCopy(msg, type) {
   lines.push('=== END ===');
   return lines.join('\n');
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  🆕 CHROMA COLOR PICKER (in-prompt, manual-style loupe)
+// ═══════════════════════════════════════════════════════════════
+let chromaPickingActive = false;
+let chromaLoupeEl = null;
+let chromaPreviewCanvas = null;
+
+function injectChromaPickerCSS() {
+  if (document.getElementById('prompt-chroma-picker-styles')) return;
+  const s = document.createElement('style');
+  s.id = 'prompt-chroma-picker-styles';
+  s.textContent = `
+    .prompt-chip-picker {
+      background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%) !important;
+      color: #fff !important;
+      border-color: #22c55e !important;
+      font-weight: 800 !important;
+      box-shadow: 0 2px 8px rgba(34,197,94,0.4);
+    }
+    .prompt-chip-picker:active {
+      transform: scale(0.96);
+    }
+
+    /* Picking cursor on preview canvas */
+    #preview-canvas.prompt-chroma-picking {
+      cursor: crosshair !important;
+      touch-action: none;
+    }
+
+    /* Loupe */
+    .prompt-chroma-loupe {
+      position: fixed;
+      width: 78px;
+      height: 78px;
+      border-radius: 50%;
+      border: 3px solid #fff;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.7);
+      pointer-events: none;
+      z-index: 100003;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: #000;
+      transform: translate(14px, 14px);
+    }
+    .prompt-chroma-loupe.hidden { display: none; }
+    .prompt-chroma-loupe-color {
+      width: 100%; height: 100%;
+      border-radius: 50%;
+    }
+    .prompt-chroma-loupe-text {
+      position: absolute;
+      bottom: -22px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 10px;
+      font-weight: 700;
+      color: #fff;
+      background: rgba(0,0,0,0.8);
+      padding: 2px 8px;
+      border-radius: 10px;
+      white-space: nowrap;
+      font-family: inherit;
+      font-variant-numeric: tabular-nums;
+    }
+  `;
+  document.head.appendChild(s);
+}
+
+function openChromaPicker() {
+  injectChromaPickerCSS();
+
+  // Toggle OFF if already active
+  if (chromaPickingActive) {
+    closeChromaPicker();
+    return;
+  }
+
+  const canvas = document.querySelector('#preview-canvas');
+  if (!canvas) {
+    showFeedback('❌ Preview canvas not available', 'err', 2500);
+    return;
+  }
+
+  // Pause playback so canvas has a clean frame
+  const eng = window.__playbackEngine;
+  if (eng && typeof eng.pause === 'function') {
+    try { eng.pause(); } catch (_) {}
+  }
+
+  chromaPickingActive = true;
+  chromaPreviewCanvas = canvas;
+  canvas.classList.add('prompt-chroma-picking');
+
+  canvas.addEventListener('mousemove', onChromaHover);
+  canvas.addEventListener('mouseleave', onChromaLeave);
+  canvas.addEventListener('click', onChromaClick, true);
+  canvas.addEventListener('touchstart', onChromaTouchStart, { passive: false });
+  canvas.addEventListener('touchmove', onChromaTouchMove, { passive: false });
+  canvas.addEventListener('touchend', onChromaTouchEnd, { passive: false });
+
+  showFeedback('🎯 Tap on preview to pick color (tap chip again to cancel)', 'ok', 4000);
+}
+
+function closeChromaPicker() {
+  chromaPickingActive = false;
+  if (chromaPreviewCanvas) {
+    chromaPreviewCanvas.classList.remove('prompt-chroma-picking');
+    chromaPreviewCanvas.removeEventListener('mousemove', onChromaHover);
+    chromaPreviewCanvas.removeEventListener('mouseleave', onChromaLeave);
+    chromaPreviewCanvas.removeEventListener('click', onChromaClick, true);
+    chromaPreviewCanvas.removeEventListener('touchstart', onChromaTouchStart);
+    chromaPreviewCanvas.removeEventListener('touchmove', onChromaTouchMove);
+    chromaPreviewCanvas.removeEventListener('touchend', onChromaTouchEnd);
+  }
+  chromaPreviewCanvas = null;
+  hideChromaLoupe();
+}
+
+// ─── Coordinate conversion ──────────────────────────────────
+function clientToPixel(canvas, clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  const sx = canvas.width / (rect.width || 1);
+  const sy = canvas.height / (rect.height || 1);
+  const px = Math.floor((clientX - rect.left) * sx);
+  const py = Math.floor((clientY - rect.top) * sy);
+  if (px < 0 || py < 0 || px >= canvas.width || py >= canvas.height) return null;
+  return { px, py };
+}
+
+function readPixel(canvas, px, py) {
+  try {
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const d = ctx.getImageData(px, py, 1, 1).data;
+    return { r: d[0], g: d[1], b: d[2] };
+  } catch (_) { return null; }
+}
+
+function rgbToHex(rgb) {
+  const h = n => n.toString(16).padStart(2, '0');
+  return '#' + h(rgb.r) + h(rgb.g) + h(rgb.b);
+}
+
+// ─── Mouse events ───────────────────────────────────────────
+function onChromaHover(e) {
+  if (!chromaPickingActive) return;
+  const p = clientToPixel(chromaPreviewCanvas, e.clientX, e.clientY);
+  if (!p) { hideChromaLoupe(); return; }
+  const c = readPixel(chromaPreviewCanvas, p.px, p.py);
+  if (!c) { hideChromaLoupe(); return; }
+  showChromaLoupe(e.clientX, e.clientY, c);
+}
+function onChromaLeave() { hideChromaLoupe(); }
+function onChromaClick(e) {
+  if (!chromaPickingActive) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const p = clientToPixel(chromaPreviewCanvas, e.clientX, e.clientY);
+  if (!p) return;
+  const c = readPixel(chromaPreviewCanvas, p.px, p.py);
+  if (!c) return;
+  applyChromaPick(c);
+}
+
+// ─── Touch events ───────────────────────────────────────────
+function onChromaTouchStart(e) {
+  if (!chromaPickingActive) return;
+  e.preventDefault();
+  const t = e.touches[0];
+  const p = clientToPixel(chromaPreviewCanvas, t.clientX, t.clientY);
+  if (!p) return;
+  const c = readPixel(chromaPreviewCanvas, p.px, p.py);
+  if (!c) return;
+  showChromaLoupe(t.clientX, t.clientY, c);
+}
+function onChromaTouchMove(e) {
+  if (!chromaPickingActive) return;
+  e.preventDefault();
+  const t = e.touches[0];
+  const p = clientToPixel(chromaPreviewCanvas, t.clientX, t.clientY);
+  if (!p) { hideChromaLoupe(); return; }
+  const c = readPixel(chromaPreviewCanvas, p.px, p.py);
+  if (!c) return;
+  showChromaLoupe(t.clientX, t.clientY, c);
+}
+function onChromaTouchEnd(e) {
+  if (!chromaPickingActive) return;
+  e.preventDefault();
+  const t = e.changedTouches && e.changedTouches[0];
+  if (!t) return;
+  const p = clientToPixel(chromaPreviewCanvas, t.clientX, t.clientY);
+  if (!p) return;
+  const c = readPixel(chromaPreviewCanvas, p.px, p.py);
+  if (!c) return;
+  applyChromaPick(c);
+}
+
+// ─── Apply pick → insert into prompt input ──────────────────
+function applyChromaPick(rgb) {
+  const hex = rgbToHex(rgb);
+  const cur = inputEl ? inputEl.value.trim() : '';
+  const cmd = 'chroma ' + hex;
+
+  if (inputEl) {
+    if (cur) {
+      inputEl.value = cur.replace(/,\s*$/, '') + ', ' + cmd;
+    } else {
+      inputEl.value = cmd;
+    }
+    inputEl.focus();
+  }
+
+  closeChromaPicker();
+  showFeedback('🎨 Picked ' + hex + ' — added to prompt', 'ok', 3000);
+}
+
+// ─── Loupe ──────────────────────────────────────────────────
+function ensureChromaLoupe() {
+  if (chromaLoupeEl) return chromaLoupeEl;
+  chromaLoupeEl = document.createElement('div');
+  chromaLoupeEl.className = 'prompt-chroma-loupe hidden';
+  chromaLoupeEl.innerHTML =
+    '<div class="prompt-chroma-loupe-color"></div>' +
+    '<div class="prompt-chroma-loupe-text"></div>';
+  document.body.appendChild(chromaLoupeEl);
+  return chromaLoupeEl;
+}
+function showChromaLoupe(clientX, clientY, rgb) {
+  const el = ensureChromaLoupe();
+  el.classList.remove('hidden');
+  el.style.left = clientX + 'px';
+  el.style.top = clientY + 'px';
+  el.querySelector('.prompt-chroma-loupe-color').style.background =
+    'rgb(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ')';
+  el.querySelector('.prompt-chroma-loupe-text').textContent =
+    rgb.r + ',' + rgb.g + ',' + rgb.b;
+}
+function hideChromaLoupe() {
+  if (chromaLoupeEl) chromaLoupeEl.classList.add('hidden');
+}
+
+// ─── Cleanup on panel switch ────────────────────────────────
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) closeChromaPicker();
+});
 
 async function copyToClipboard(text) {
   try {

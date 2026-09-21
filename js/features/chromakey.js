@@ -25,12 +25,27 @@ const DEFAULTS = {
   intensity: 100,
   pickMode: false
 };
-
 let state = Object.assign({}, DEFAULTS);
-let editingLayer = null;
+let editingLayer = null; // kept for compatibility but unused
 let panelRefs = {};
 let loupeEl = null;
 let hoverColor = null;
+
+// 🆕 Get currently SELECTED clip (any visual clip)
+function getSelectedClip() {
+  const el = document.querySelector('.clip.selected');
+  if (!el) return null;
+  const label = el.dataset.track;
+  if (!label || label.charAt(0) !== 'V') return null;
+  const trackIdx = Number(label.slice(1)) - 1;
+  const clipIdx = Number(el.dataset.clip);
+  if (!Number.isFinite(trackIdx) || !Number.isFinite(clipIdx)) return null;
+  const appState = window.__appState;
+  if (!appState) return null;
+  const track = appState.timeline.visual[trackIdx];
+  if (!Array.isArray(track)) return null;
+  return track[clipIdx] || null;
+}
 
 // ═══════════════════════════════════════════════════════════════
 //  ROUTER INSTALL
@@ -203,15 +218,14 @@ function injectStyles() {
 //  ROUTER ENTRY
 // ═══════════════════════════════════════════════════════════════
 export function open({ router }) {
-  // Load state from existing chroma layer if selected
-  const sel = getSelectedEffectLayer('chroma');
-  if (sel && sel.clip.effectState && sel.clip.effectState.chroma) {
-    state = Object.assign({}, DEFAULTS, sel.clip.effectState.chroma);
-    editingLayer = sel;
+  // 🆕 Read chroma from currently SELECTED clip (via __grading)
+  const clip = getSelectedClip();
+  if (clip && clip.__grading && clip.__grading.chroma) {
+    state = Object.assign({}, DEFAULTS, clip.__grading.chroma);
   } else {
     state = Object.assign({}, DEFAULTS);
-    editingLayer = null;
   }
+  editingLayer = null; // 🆕 No effect layer anymore
 
   router.openLevel('chromakey', [], {
     title: 'Chroma Key',
@@ -239,10 +253,12 @@ export function renderTo(container) {
     return;
   }
 
-  if (editingLayer) {
+  // 🆕 Show selected clip info
+  const selClip = getSelectedClip();
+  if (selClip && selClip.__grading && selClip.__grading.chroma) {
     const badge = document.createElement('div');
     badge.className = 'ck-badge';
-    badge.textContent = '✏️ Editing: ' + (editingLayer.clip.name || 'Chroma Key');
+    badge.textContent = '✏️ Chroma on: ' + (selClip.name || 'clip').slice(0, 24);
     panel.appendChild(badge);
   }
 
@@ -344,14 +360,23 @@ export function renderTo(container) {
 
   panel.appendChild(shelf);
 
-  // Remove layer
-  if (editingLayer) {
+  // 🆕 Remove chroma from selected clip
+  const selClipNow = getSelectedClip();
+  if (selClipNow && selClipNow.__grading && selClipNow.__grading.chroma) {
     const removeBtn = document.createElement('button');
     removeBtn.type = 'button';
     removeBtn.className = 'ck-remove-btn';
-    removeBtn.textContent = '🗑 Remove Chroma Layer';
+    removeBtn.textContent = '🗑 Remove Chroma';
     removeBtn.addEventListener('click', () => {
-      removeLayer();
+      if (selClipNow.__grading) {
+        delete selClipNow.__grading.chroma;
+        if (Object.keys(selClipNow.__grading).length === 0) {
+          delete selClipNow.__grading;
+        }
+      }
+      state = Object.assign({}, DEFAULTS);
+      document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
+      document.dispatchEvent(new CustomEvent('effects:refresh'));
       renderTo(container);
     });
     panel.appendChild(removeBtn);
@@ -526,38 +551,31 @@ function hideLoupe() { if (loupeEl) loupeEl.classList.add('hidden'); }
 //  APPLY TO LAYER
 // ═══════════════════════════════════════════════════════════════
 function applyToLayer() {
-  if (!hasSelectedLayer()) return;
+  const clip = getSelectedClip();
+  if (!clip) return;
 
-  const payload = {
-    chroma: {
-      keyColor: state.keyColor,
-      similarity: state.similarity,
-      smoothness: state.smoothness,
-      spill: state.spill,
-      intensity: state.intensity
-    }
+  if (!clip.__grading) clip.__grading = {};
+  clip.__grading.chroma = {
+    keyColor: state.keyColor,
+    similarity: state.similarity,
+    smoothness: state.smoothness,
+    spill: state.spill,
+    intensity: state.intensity
   };
 
-  if (editingLayer && editingLayer.clip && editingLayer.clip.__effectId) {
-    updateEffectLayer(editingLayer.clip, payload);
-  } else {
-    const id = createEffectLayer('chroma', payload, 'Chroma Key');
-    editingLayer = findEffectLayerById(id);
-  }
+  document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
+  document.dispatchEvent(new CustomEvent('effects:refresh'));
 }
 
 function removeLayer() {
-  if (!editingLayer) return;
-  const appState = window.__appState;
-  if (!appState) return;
-  const tracks = appState.timeline.visual || [];
-  for (let t = 0; t < tracks.length; t++) {
-    const track = tracks[t];
-    if (!Array.isArray(track)) continue;
-    const idx = track.findIndex(c => c && c.__effectId === editingLayer.clip.__effectId);
-    if (idx >= 0) { track.splice(idx, 1); break; }
+  const clip = getSelectedClip();
+  if (!clip || !clip.__grading) return;
+
+  delete clip.__grading.chroma;
+  if (Object.keys(clip.__grading).length === 0) {
+    delete clip.__grading;
   }
-  editingLayer = null;
+
   document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
   document.dispatchEvent(new CustomEvent('effects:refresh'));
 }

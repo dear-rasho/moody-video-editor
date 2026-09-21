@@ -2245,12 +2245,19 @@ export async function executePrompt(state) {
   }
 
   if (state.chroma) {
-    if (hasClips || _lastCreatedClips.length > 0) {
-      try {
-        const id = createEffectLayer('chroma', { chroma: state.chroma }, 'Chroma Key');
-        if (id) results.push('chroma');
-      } catch (e) { console.warn(e); }
-    } else warnings.push('chroma: clip daalein');
+    // 🆕 Attach chroma to SELECTED clip only — no separate effect layer
+    const selClip = getSelectedClip(appState);
+    if (selClip) {
+      if (!selClip.__grading) selClip.__grading = {};
+      selClip.__grading.chroma = state.chroma;
+
+      results.push('chroma on "' + (selClip.name || 'clip').slice(0, 20) + '"');
+
+      document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
+      document.dispatchEvent(new CustomEvent('effects:refresh'));
+    } else {
+      warnings.push('chroma: select a clip first');
+    }
   }
 
   document.dispatchEvent(new CustomEvent('editor:timeline-changed'));

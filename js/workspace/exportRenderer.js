@@ -144,6 +144,60 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime,
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, W, H);
+  // 🆕 Get ALL active display clips (bottom → top)
+  const allDisplayClips = [];
+  for (let i = 0; i < active.length; i++) {
+    const ac = active[i].clip;
+    if (!ac || !ac.type) continue;
+    const isV = ac.type.indexOf('video/') === 0;
+    const isI = ac.type.indexOf('image/') === 0;
+    if (isV || isI) allDisplayClips.push({ clip: ac, trackIndex: active[i].trackIndex });
+  }
+  allDisplayClips.sort((a, b) => a.trackIndex - b.trackIndex);
+
+  // 🆕 Find chroma for top clip
+  let topChromaCfg = null;
+  for (let i = 0; i < effects.length; i++) {
+    const st = effects[i].clip.effectState;
+    if (st && st.kind === 'chroma' && st.chroma) topChromaCfg = st.chroma;
+  }
+  if (topDisplayClip && topDisplayClip.__grading && topDisplayClip.__grading.chroma) {
+    topChromaCfg = topDisplayClip.__grading.chroma;
+  }
+
+  // 🆕 Draw lower display clips OPAQUE
+  for (let i = 0; i < allDisplayClips.length - 1; i++) {
+    const dc = allDisplayClips[i];
+    const lc = dc.clip;
+    let lsrc = null;
+    if (lc.type.indexOf('image/') === 0) {
+      lsrc = getImageSync(lc.url);
+    } else if (lc.type.indexOf('video/') === 0) {
+      // only if this IS the matched video
+      if (lc === topVideoOrImageClip) lsrc = source;
+      else continue;
+    }
+    if (!lsrc) continue;
+
+    ctx.save();
+    const lxf = lc.__transform || null;
+    if (lxf) {
+      const aX = lxf.anchorX != null ? lxf.anchorX : 50;
+      const aY = lxf.anchorY != null ? lxf.anchorY : 50;
+      const pX = lxf.x != null ? lxf.x : 50;
+      const pY = lxf.y != null ? lxf.y : 50;
+      const ox = W * (aX / 100), oy = H * (aY / 100);
+      const offX = (pX - 50) / 100 * W;
+      const offY = (pY - 50) / 100 * H;
+      ctx.translate(ox + offX, oy + offY);
+      if (lxf.rotation) ctx.rotate(lxf.rotation * Math.PI / 180);
+      const sc = (lxf.scale != null ? lxf.scale : 100) / 100;
+      if (sc !== 1) ctx.scale(sc, sc);
+      ctx.translate(-ox, -oy);
+    }
+    drawVideoContainFit(ctx, lsrc, W, H, lxf);
+    ctx.restore();
+  }
 
   function drawCurrentFrame(c, w, h) {
     c.save();
@@ -173,9 +227,6 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime,
       c.translate(-originX, -originY);
     }
 
-    // 🆕 FIX: Only draw source if there IS an active display clip.
-    // If the video/image track is hidden (all tracks hidden),
-    // topVideoOrImageClip is null → DON'T draw the decoded frame.
     let drawSource = null;
     if (topVideoOrImageClip) {
       const t = topVideoOrImageClip.type || '';
@@ -187,11 +238,62 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime,
       }
     }
 
-    drawVideoContainFit(c, drawSource, w, h, layerXform);
+    // 🆕 Chroma: temp canvas → alpha reduction → composite
+    if (topChromaCfg && drawSource) {
+      const tc = document.createElement('canvas');
+      tc.width = w;
+      tc.height = h;
+      const tctx = tc.getContext('2d', { willReadFrequently: true });
+      drawVideoContainFit(tctx, drawSource, w, h, layerXform);
+      try {
+        const id = tctx.getImageData(0, 0, w, h);
+        applyChromaToData(id.data, w, h, topChromaCfg);
+        tctx.putImageData(id, 0, 0);
+      } catch (_) {}
+      c.drawImage(tc, 0, 0);
+    } else {
+      drawVideoContainFit(c, drawSource, w, h, layerXform);
+    }
     c.restore();
     try { c.filter = 'none'; } catch (_) {}
   }
 
+  // 🆕 Helper for chroma on raw data
+  function applyChromaToData(data, w, h, cc) {
+    if (!cc || !cc.keyColor) return;
+    const kr = cc.keyColor.r, kg = cc.keyColor.g, kb = cc.keyColor.b;
+    const sim = (cc.similarity != null ? cc.similarity : 30) / 100;
+    const sm = (cc.smoothness != null ? cc.smoothness : 20) / 100;
+    const inten = (cc.intensity != null ? cc.intensity : 100) / 100;
+    const sp = (cc.spill != null ? cc.spill : 50) / 100;
+    const maxDist = Math.sqrt(3 * 255 * 255) || 1;
+    const simEnd = sim;
+    const softEnd = sim + sm;
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i], g = data[i + 1], b = data[i + 2];
+      const dr = r - kr, dg = g - kg, db = b - kb;
+      const dist = Math.sqrt(dr * dr + dg * dg + db * db) / maxDist;
+      let removal = 0;
+      if (dist <= simEnd) removal = 1;
+      else if (sm > 0 && dist <= softEnd) removal = 1 - (dist - simEnd) / sm;
+      removal *= inten;
+      if (removal > 0) {
+        const keep = 1 - removal;
+        data[i]     = Math.round(r * keep);
+        data[i + 1] = Math.round(g * keep);
+        data[i + 2] = Math.round(b * keep);
+        data[i + 3] = Math.round(data[i + 3] * keep);
+      }
+      if (sp > 0 && removal < 1 && dist < softEnd + 0.15) {
+        const prox = 1 - Math.min(1, dist / (softEnd + 0.15));
+        const bl = sp * prox * 0.8;
+        const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+        data[i]     = Math.round(data[i]     * (1 - bl) + gray * bl);
+        data[i + 1] = Math.round(data[i + 1] * (1 - bl) + gray * bl);
+        data[i + 2] = Math.round(data[i + 2] * (1 - bl) + gray * bl);
+      }
+    }
+  }
   // Transition
   const transitioning = topDisplayClip && isTransitionActive(topDisplayClip, timelineTime);
   if (transitioning && prevFrameCanvas) {
@@ -245,13 +347,12 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime,
         try {
           if (st.kind === 'adjustment') applyAdjustment(data, W, H, st.adjustments);
           else if (st.kind === 'colorWheel') applyColorWheel(data, W, H, st.colorWheel);
-          else if (st.kind === 'chroma') applyChroma(data, W, H, st.chroma);
+          // 🆕 chroma skipped here — handled in drawCurrentFrame per-clip
         } catch (_) {}
       }
       try { ctx.putImageData(imgData, 0, 0); } catch (_) {}
     }
   }
-
   // Text overlays
   const textClips = [];
   for (let i = 0; i < active.length; i++) {

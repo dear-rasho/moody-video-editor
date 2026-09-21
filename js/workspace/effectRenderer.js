@@ -280,7 +280,16 @@ function applyVisualEffects(time) {
       });
     }
   }
+  // 🆕 Filter out chroma — handled in previewCanvas per-clip compositing
+  const filteredEffects = pixelEffects.filter(e => {
+    const st = e.clip && e.clip.effectState;
+    if (st && st.kind === 'chroma') return false;
+    return true;
+  });
+  pixelEffects.length = 0;
+  filteredEffects.forEach(e => pixelEffects.push(e));
 
+  if (!pixelEffects.length) return;
   if (!pixelEffects.length) return;
 
   let ctx = null;
