@@ -288,11 +288,71 @@ function buildEffectStateForKey(key) {
   }
   return { kind: 'effect', presetKey: k, filters: base, motion: MOTION_MAP.shake };
 }
+// ═══════════════════════════════════════════════════════════════
+//  🆕 BEATS FILTER PARSER
+//
+//  Accepts:
+//    "" or "all"                 → no filter (every beat)
+//    "hard" / "heavy" / "high"   → only HARD beats (≥66% of max)
+//    "med" / "medium" / "mid"    → only MEDIUM beats (33-66%)
+//    "soft" / "low" / "quiet"    → only SOFT beats (<33%)
+//    "hard,med" / "hard+med"     → multiple levels
+//    "0.3-0.5" / "0.3 to 0.5"    → numeric strength range
+// ═══════════════════════════════════════════════════════════════
+function parseBeatsFilter(raw) {
+  if (!raw || !String(raw).trim()) return { mode: 'all' };
+  const low = String(raw).trim().toLowerCase();
 
-// ═══════════════════════════════════════════════════════════════
-//  BEATS REPORT GENERATOR
-// ═══════════════════════════════════════════════════════════════
-function generateBeatsReport(clip, beats) {
+  // Numeric range: "0.3-0.5" or "0.3 to 0.5"
+  const rangeM = low.match(/^([\d.]+)\s*(?:-|to|–|—)\s*([\d.]+)$/);
+  if (rangeM) {
+    const a = parseFloat(rangeM[1]);
+    const b = parseFloat(rangeM[2]);
+    if (Number.isFinite(a) && Number.isFinite(b)) {
+      return {
+        mode: 'range',
+        min: Math.min(a, b),
+        max: Math.max(a, b)
+      };
+    }
+  }
+
+  // Named levels
+  const parts = low.split(/[\s,+&]+/).filter(Boolean);
+  const levels = new Set();
+  for (const p of parts) {
+    if (p === 'all' || p === 'every' || p === 'full') return { mode: 'all' };
+    if (p === 'hard' || p === 'heavy' || p === 'high' ||
+        p === 'strong' || p === 'loud') {
+      levels.add('hard');
+    } else if (p === 'med' || p === 'medium' || p === 'mid' ||
+               p === 'normal') {
+      levels.add('med');
+    } else if (p === 'soft' || p === 'low' || p === 'quiet' ||
+               p === 'light' || p === 'gentle') {
+      levels.add('soft');
+    }
+  }
+
+  if (levels.size === 0 || levels.size === 3) return { mode: 'all' };
+  return { mode: 'levels', levels: Array.from(levels) };
+}
+
+function formatFilterLabel(filter) {
+  if (!filter || filter.mode === 'all') return 'ALL beats';
+  if (filter.mode === 'range') {
+    return 'Strength ' + filter.min + ' – ' + filter.max;
+  }
+  const labels = filter.levels.map(l =>
+    l === 'hard' ? '🔴 HARD' :
+    l === 'med'  ? '🟡 MED'  :
+                   '🟢 SOFT'
+  );
+  return labels.join(' + ') + ' only';
+}
+
+// Beats Report
+function generateBeatsReport(clip, beats, filter, totalBeforeFilter) {
   const clipStart = Number.isFinite(clip.startTime) ? clip.startTime : 0;
   const clipSourceIn = Number.isFinite(clip.sourceIn) ? clip.sourceIn : 0;
 
@@ -335,6 +395,9 @@ function generateBeatsReport(clip, beats) {
     ? strengths.reduce((a, b) => a + b, 0) / strengths.length
     : 0;
 
+  // Use thresholds based on the FILTERED subset's max strength.
+  // This way, if user only asked for HARD beats, all shown beats
+  // will classify as HARD relative to each other.
   const HARD_THR = maxStrength * 0.66;
   const SOFT_THR = maxStrength * 0.33;
 
@@ -350,6 +413,16 @@ function generateBeatsReport(clip, beats) {
   lines.push('🥁 BEATS REPORT');
   lines.push('═══════════════════════════════════════════════');
   lines.push('Audio:           "' + (clip.name || 'Untitled').slice(0, 42) + '"');
+
+  // 🆕 Filter info
+  if (filter && filter.mode !== 'all') {
+    lines.push('Filter:          ' + formatFilterLabel(filter));
+    if (Number.isFinite(totalBeforeFilter)) {
+      lines.push('Detected total:  ' + totalBeforeFilter + ' beats');
+      lines.push('After filter:    ' + times.length + ' beats');
+    }
+  }
+
   lines.push('');
   lines.push('Total beats:     ' + times.length);
   lines.push('First beat:      ' + first.toFixed(2) + 's');
@@ -369,9 +442,9 @@ function generateBeatsReport(clip, beats) {
   lines.push('Avg strength:    ' + avgStrength.toFixed(4));
   lines.push('Min strength:    ' + minStrength.toFixed(4));
   lines.push('');
-  lines.push('🔴 HARD  (≥66%): ' + hardCount + ' beats   → use strong effects (shake, glitch, flash)');
-  lines.push('🟡 MED   (33-66%): ' + mediumCount + ' beats → use medium effects (zoom, pulse, bounce)');
-  lines.push('🟢 SOFT  (<33%):  ' + softCount + ' beats   → use soft effects (fade, dreamy, warm)');
+  lines.push('🔴 HARD  (≥66%): ' + hardCount + ' beats');
+  lines.push('🟡 MED   (33-66%): ' + mediumCount + ' beats');
+  lines.push('🟢 SOFT  (<33%):  ' + softCount + ' beats');
   lines.push('');
   lines.push('═══════════════════════════════════════════════');
   lines.push('BEAT TIMELINE   ( # | time | gap | level | str )');
@@ -408,22 +481,23 @@ function generateBeatsReport(clip, beats) {
   lines.push('3. 🔴 HARD beats → punchy effects (shake, glitch, flash).');
   lines.push('4. 🟡 MED beats → standard effects (zoom, pulse, bounce).');
   lines.push('5. 🟢 SOFT beats → gentle effects (fade, dreamy, warm).');
-  lines.push('6. Small min-gap beats need snappy effects.');
-  lines.push('7. Large max-gap beats can hold longer effects.');
+  lines.push('');
+  lines.push('To filter by level next time:');
+  lines.push('  detect beats hard');
+  lines.push('  detect beats medium');
+  lines.push('  detect beats soft');
+  lines.push('  detect beats hard,med');
+  lines.push('  detect beats 0.3-0.5');
   lines.push('');
   lines.push('Then run:');
   lines.push('  beats edit <effect1>, <effect2>, <effect3>, ...');
   lines.push('');
   lines.push('Strength-aware syntax:');
   lines.push('  beats edit hard: shake+glow ; rest: zoom, pulse, bounce');
-  lines.push('');
-  lines.push('Example for ' + times.length + ' beats:');
-  lines.push('  beats edit shake, zoom, pulse, glitch');
   lines.push('═══════════════════════════════════════════════');
 
   return lines.join('\n');
 }
-
 // ═══════════════════════════════════════════════════════════════
 //  STRENGTH-AWARE PARSER
 // ═══════════════════════════════════════════════════════════════
@@ -465,8 +539,7 @@ function parseBeatsEditString(raw) {
 
 // ═══════════════════════════════════════════════════════════════
 //  PUBLIC — Run detect beats
-// ═══════════════════════════════════════════════════════════════
-export async function runDetectBeats() {
+export async function runDetectBeats(filterRaw) {
   const appState = window.__appState;
   if (!appState) return { ok: false, error: 'App state missing' };
 
@@ -488,18 +561,61 @@ export async function runDetectBeats() {
     };
   }
 
-  audioClip.__beats = beats.map(b => ({ time: b.time, strength: b.strength }));
+  const totalDetected = beats.length;
+
+  // 🆕 Parse filter
+  const filter = parseBeatsFilter(filterRaw);
+
+  // 🆕 Compute thresholds on ALL detected beats (global)
+  let maxStrength = 0;
+  for (const b of beats) if (b.strength > maxStrength) maxStrength = b.strength;
+  const HARD_THR = maxStrength * 0.66;
+  const SOFT_THR = maxStrength * 0.33;
+
+  // 🆕 Apply filter
+  let filtered = beats;
+  if (filter.mode === 'levels') {
+    const lv = new Set(filter.levels);
+    filtered = beats.filter(b => {
+      const isHard = b.strength >= HARD_THR;
+      const isSoft = b.strength < SOFT_THR;
+      const isMed = !isHard && !isSoft;
+      if (lv.has('hard') && isHard) return true;
+      if (lv.has('med') && isMed) return true;
+      if (lv.has('soft') && isSoft) return true;
+      return false;
+    });
+  } else if (filter.mode === 'range') {
+    filtered = beats.filter(b =>
+      b.strength >= filter.min && b.strength <= filter.max
+    );
+  }
+
+  if (!filtered.length) {
+    return {
+      ok: false,
+      error: 'No beats match this filter (' + formatFilterLabel(filter) +
+             '). Try "detect beats" for all beats.'
+    };
+  }
+
+  // Save only the FILTERED beats to the clip
+  audioClip.__beats = filtered.map(b => ({ time: b.time, strength: b.strength }));
   audioClip.__beatsDetectedAt = Date.now();
+  audioClip.__beatsFilter = filter;
+  audioClip.__beatsTotalDetected = totalDetected;
 
   document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
   document.dispatchEvent(new CustomEvent('beats:changed'));
   scheduleBeatMarkers();
 
-  const report = generateBeatsReport(audioClip, beats);
+  const report = generateBeatsReport(audioClip, filtered, filter, totalDetected);
 
   return {
     ok: true,
-    beatsCount: beats.length,
+    beatsCount: filtered.length,
+    totalDetected: totalDetected,
+    filter: filter,
     clipName: audioClip.name || 'Audio',
     report: report
   };

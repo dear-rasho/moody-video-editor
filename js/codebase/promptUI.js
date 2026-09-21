@@ -303,20 +303,23 @@ const CATEGORIES = [
       'sticker ⭐'
     ]
   },
-    {
+     {
     key: 'beats',
     label: 'Beats',
     icon: '🥁',
     examples: [
       'detect beats',
+      'detect beats hard',
+      'detect beats medium',
+      'detect beats soft',
+      'detect beats hard,med',
+      'detect beats 0.3-0.5',
       'beats edit shake',
       'beats edit shake, zoom',
       'beats edit shake, zoom, pulse',
-      'beats edit zoom, pulse, glitch',
-      'beats edit bounce, shake',
-      'beats edit warm, cool, vivid',
-      'beats edit shake, flash, zoom',
-      'beats edit pulse, zoom, shake, glitch'
+      'beats edit hard: shake+glow ; rest: zoom, pulse, bounce',
+      'beats edit hard: shake+glow, bounce+flash ; med: zoom, pulse ; soft: fade, dreamy',
+      'beats edit zoom, pulse, glitch'
     ]
   },
   {

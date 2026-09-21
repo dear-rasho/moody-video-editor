@@ -1242,12 +1242,15 @@ function parseLayerTransitions(seg) {
 function trySpecialCommand(seg, state) {
   const low = seg.toLowerCase().trim();
 
-  // 🆕 Detect beats
-if (/^(?:detect\s*beats?|beats?\s*detect|find\s*beats?|identify\s*beats?)$/i.test(low)) {
-  state.detectBeats = true;
-  return true;
-}
-
+  // 🆕 Detect beats (with optional filter)
+  {
+    const dbM = low.match(/^(?:detect|find|identify)\s*beats?\s*(.*)$/i)
+             || low.match(/^beats?\s*detect\s*(.*)$/i);
+    if (dbM) {
+      state.detectBeats = { filter: (dbM[1] || '').trim() };
+      return true;
+    }
+  }
   if (/^(tighten\s*track|close\s*gaps?|magnet|no\s*gaps?)$/i.test(low)) {
     state.tightenTracks = true;
     return true;
@@ -1442,7 +1445,7 @@ export function parsePrompt(rawPrompt) {
     transitionAll: null,
     atTransitions: [],
     layerTransitions: null,
-    detectBeats: false,
+       detectBeats: null,
     beatsEdit: null
   };
 
@@ -1831,11 +1834,18 @@ export async function executePrompt(state) {
   if (state.autoGraph === true)  _autoOpenGraph = true;
   if (state.autoGraph === false) _autoOpenGraph = false;
 
-   // ═══ 🆕 BEATS — terminal (short-circuit) ═══════════════════
+  // ═══ 🆕 BEATS — terminal (short-circuit) ═══════════════════
   if (state.detectBeats) {
-    const r = await runDetectBeats();
+    const filterStr = (state.detectBeats && state.detectBeats.filter) || '';
+    const r = await runDetectBeats(filterStr);
     if (!r.ok) return { ok: false, error: r.error };
-    _showToast('🥁 ' + r.beatsCount + ' beats detected');
+
+    let toastMsg = '🥁 ' + r.beatsCount + ' beats detected';
+    if (r.totalDetected && r.totalDetected !== r.beatsCount) {
+      toastMsg += '  (from ' + r.totalDetected + ')';
+    }
+    _showToast(toastMsg);
+
     return {
       ok: true,
       results: ['detectBeats:' + r.beatsCount],

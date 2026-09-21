@@ -19,6 +19,8 @@ export function initTimelinePlayhead({
   getRulerContainer = () => null
 }) {
   let fps = 30;
+  let lastUserScrollTime = 0;
+  const USER_SCROLL_GRACE_MS = 1800;
 
   function formatTime(seconds) {
     if (!Number.isFinite(seconds)) seconds = 0;
@@ -37,15 +39,63 @@ export function initTimelinePlayhead({
   }
 
   // ═══════════════════════════════════════════════════════════
-  //  🆕 CORE FIX: Playhead position ab ruler markers ke
-  //     SAME formula se compute hoti hai:
-  //
-  //       ruler marker for time T  =  LABEL_WIDTH + T * pxPerSecond
-  //       playhead position       =  LABEL_WIDTH + time * pxPerSecond
-  //
-  //     Pehle playhead DOM scrollWidth padhta tha — jo zoom
-  //     change pe stale hota tha. Ab scaler se direct leta hai.
+  //  🆕 USER SCROLL TRACKER
+  //  Detects when user manually scrolls / pans timeline.
+  //  During that grace period, auto-scroll won't fight them.
   // ═══════════════════════════════════════════════════════════
+  function markUserScroll() {
+    lastUserScrollTime = Date.now();
+  }
+  if (viewport) {
+    viewport.addEventListener('wheel', markUserScroll, { passive: true });
+    viewport.addEventListener('touchstart', markUserScroll, { passive: true });
+    viewport.addEventListener('touchmove', markUserScroll, { passive: true });
+    viewport.addEventListener('pointerdown', markUserScroll, { passive: true });
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  //  🆕 AUTO-SCROLL — keep playhead visible in viewport
+  //
+  //  • During playback → playhead pinned at ~30% of content area
+  //  • When paused     → only recenter if playhead went off-screen
+  //  • User scrolls    → respected (no fight for 1.8s)
+  // ═══════════════════════════════════════════════════════════
+  function keepPlayheadVisible(playheadX) {
+    if (!viewport) return;
+    const vw = viewport.clientWidth;
+    if (vw <= 0) return;
+
+    const contentStart = LABEL_WIDTH;
+    const contentWidth = Math.max(0, vw - LABEL_WIDTH);
+    if (contentWidth <= 0) return;
+
+    const isPlaying = !!(engine && typeof engine.isPlaying === 'function' && engine.isPlaying());
+    const userScrolledRecently = (Date.now() - lastUserScrollTime) < USER_SCROLL_GRACE_MS;
+
+    // Respect user's recent scroll while paused
+    if (userScrolledRecently && !isPlaying) return;
+
+    const currentScroll = viewport.scrollLeft;
+    const visualX = playheadX - currentScroll;
+
+    const safeMin = contentStart + 16;
+    const safeMax = vw - 16;
+    const isVisible = visualX >= safeMin && visualX <= safeMax;
+
+    // Paused + playhead visible → no scroll needed
+    if (!isPlaying && isVisible) return;
+
+    // Target: playhead at 30% of content area
+    const targetVisualX = contentStart + contentWidth * 0.30;
+    const targetScroll = playheadX - targetVisualX;
+    const maxScroll = Math.max(0, viewport.scrollWidth - vw);
+    const clamped = Math.max(0, Math.min(maxScroll, targetScroll));
+
+    if (Math.abs(currentScroll - clamped) > 1) {
+      viewport.scrollLeft = clamped;
+    }
+  }
+
   function setProgress(currentTime, duration) {
     const safeDuration = Math.max(0, Number(duration) || 0);
     const safeTime = Math.max(0, Math.min(Number(currentTime) || 0, safeDuration));
@@ -56,6 +106,9 @@ export function initTimelinePlayhead({
     element.style.left = Math.max(LABEL_WIDTH, nextLeft) + 'px';
 
     updateTimeDisplay(safeTime, safeDuration);
+
+    // 🆕 Keep playhead visible during playback / seeks
+    keepPlayheadVisible(nextLeft);
   }
 
   // ─── Click-to-seek (exact position) ────────────────────────
@@ -65,7 +118,6 @@ export function initTimelinePlayhead({
     const duration = engine.getDuration();
     if (duration <= 0) return;
 
-    // Ignore clicks on interactive elements
     if (event.target.closest &&
         (event.target.closest('.clip') ||
          event.target.closest('.trim-handle') ||
@@ -78,29 +130,24 @@ export function initTimelinePlayhead({
     const rect = matrix.getBoundingClientRect();
     const clickX = event.clientX - rect.left;
 
-    // If clicked in label area, ignore
     if (clickX < LABEL_WIDTH) return;
 
-    // 🆕 SAME formula as ruler — exact pixel → time mapping
     const pps = getPixelsPerSecond();
     if (pps <= 0) return;
 
     let newTime = (clickX - LABEL_WIDTH) / pps;
     newTime = Math.max(0, Math.min(duration, newTime));
 
-    // Frame-snap
     const frameDur = 1 / fps;
     newTime = Math.round(newTime / frameDur) * frameDur;
     newTime = Math.max(0, Math.min(duration, newTime));
 
-    // 🆕 Force pause before seek (user gesture)
     if (typeof engine.pause === 'function') {
       try { engine.pause(); } catch (_) {}
     }
     engine.seek(newTime);
   }
 
-  // Pointerdown for immediate feedback
   matrix.addEventListener('pointerdown', function (e) {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     seekFromClick(e);
@@ -129,10 +176,7 @@ export function initTimelinePlayhead({
     setProgress(d.time || 0, d.duration || 0);
   });
 
-  // ═══════════════════════════════════════════════════════════
-  //  🆕 FIX: Zoom change pe playhead ko force-update karo
-  //     (double RAF — DOM settle hone ke baad chalta hai)
-  // ═══════════════════════════════════════════════════════════
+  // ─── Zoom change → re-sync playhead ────────────────────────
   document.addEventListener('timeline:scale-changed', function () {
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
@@ -149,7 +193,6 @@ export function initTimelinePlayhead({
 
   updateTimeDisplay(0, 0);
 
-  // Initial sync
   if (engine) {
     requestAnimationFrame(() => {
       setProgress(engine.getTime(), engine.getDuration());
