@@ -1,7 +1,6 @@
 // ================================================================
 //  js/features/index.js
 //  Central registry.
-//  Crop removed — functionality lives in Transform panel.
 // ================================================================
 
 import * as music           from './music.js';
@@ -25,6 +24,7 @@ import * as chromakey       from './chromakey.js';
 import * as reverse         from './reverse.js';
 import * as adjustments     from './adjustments.js';
 import * as colorWheel      from './colorWheel.js';
+import * as beats           from './beats.js';
 
 export {
   music,
@@ -47,5 +47,6 @@ export {
   chromakey,
   reverse,
   adjustments,
-  colorWheel
+  colorWheel,
+  beats
 };

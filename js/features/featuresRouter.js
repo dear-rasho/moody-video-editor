@@ -28,8 +28,9 @@ const FEATURE_META = {
   speed:        { label: 'Speed',       icon: '⏩' },
   chromakey:    { label: 'Chroma Key',  icon: '🟢' },
   reverse:      { label: 'Reverse',     icon: '↩️' },
-  adjustments:  { label: 'Adjust',      icon: '🎚️' },
+   adjustments:  { label: 'Adjust',      icon: '🎚️' },
   colorWheel:   { label: 'Color Wheel', icon: '🌈' },
+  beats:        { label: 'Beats',       icon: '🥁' },
   export:       { label: 'Export',      icon: '💾' }
 };
 
@@ -156,7 +157,8 @@ const router = {
       speedPanel:       './speed.js',
       trimPanel:        './trim.js',
       transformPanel:   './transform.js',
-      transitionsPanel: './transitions.js'
+      transitionsPanel: './transitions.js',
+      beatsPanel:       './beats.js'
     };
 
     if (view.renderMode && CUSTOM_PANELS[view.renderMode]) {

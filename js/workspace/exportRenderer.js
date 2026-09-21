@@ -72,7 +72,7 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime,
   if (!appState) { drawVideoContainFit(ctx, source, W, H, null); return; }
   const active = getActiveVisualClipsAt(appState, timelineTime);
 
-  // 🆕 Top VIDEO/IMAGE track — text/sticker ignored for effect hierarchy
+  // Top VIDEO/IMAGE track — text/sticker ignored for effect hierarchy
   let topDisplayTrack = -1;
   for (let i = active.length - 1; i >= 0; i--) {
     const c = active[i].clip;
@@ -173,15 +173,17 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime,
       c.translate(-originX, -originY);
     }
 
-    // 🆕 IMAGE HANDLING
-    let drawSource = source;
-    if (topVideoOrImageClip && topVideoOrImageClip.type &&
-        topVideoOrImageClip.type.indexOf('image/') === 0) {
-      const img = getImageSync(topVideoOrImageClip.url);
-      if (img) {
-        drawSource = img;
-      } else {
-        drawSource = null;
+    // 🆕 FIX: Only draw source if there IS an active display clip.
+    // If the video/image track is hidden (all tracks hidden),
+    // topVideoOrImageClip is null → DON'T draw the decoded frame.
+    let drawSource = null;
+    if (topVideoOrImageClip) {
+      const t = topVideoOrImageClip.type || '';
+      if (t.indexOf('image/') === 0) {
+        const img = getImageSync(topVideoOrImageClip.url);
+        drawSource = img || null;
+      } else if (t.indexOf('video/') === 0) {
+        drawSource = source;
       }
     }
 
@@ -203,7 +205,7 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime,
   try { ctx.filter = 'none'; } catch (_) {}
   ctx.globalAlpha = 1;
 
-   // Pixel effects — hierarchy
+  // Pixel effects — hierarchy
   const pixelEffects = [];
   for (let i = 0; i < effects.length; i++) {
     const st = effects[i].clip.effectState;
@@ -213,7 +215,7 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime,
     }
   }
 
-  // 🆕 Clip-attached grading
+  // Clip-attached grading
   if (topDisplayClip && topDisplayClip.__grading) {
     const g = topDisplayClip.__grading;
     if (g.adjustments && Object.keys(g.adjustments).length > 0) {
