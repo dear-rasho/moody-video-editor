@@ -453,16 +453,19 @@ h2 {
 }
 
 .timeline-ruler-spacer {
-  position: absolute;
+  /* 🆕 sticky on BOTH axes so it stays at top-left corner */
+  position: sticky;
   top: 0;
   left: 0;
   width: 80px;
+  min-width: 80px;
   height: 100%;
   background: var(--surface-2);
   border-right: 1px solid var(--border);
   box-sizing: border-box;
   z-index: 500;
   pointer-events: none;
+  flex: 0 0 80px;
 }
 
 .ruler-marker {
@@ -531,6 +534,7 @@ h2 {
   display: flex;
   flex-direction: column;
   min-width: 760px;
+  overflow: visible;   /* 🆕 ensure sticky children work */
 }
 
 .track {
@@ -539,7 +543,8 @@ h2 {
   border-bottom: 1px solid var(--border);
   cursor: grab;
   position: relative;
-  overflow: hidden;
+  /* 🆕 overflow: visible so .track-label position:sticky works */
+  overflow: visible;
 }
 .track:active { cursor: grabbing; }
 .track.drag-over {
@@ -553,9 +558,9 @@ h2 {
   width: 80px;
   min-width: 80px;
   box-sizing: border-box;
-  position: sticky;
+  position: sticky;      /* 🆕 sticks to left */
   left: 0;
-  z-index: 500;
+  z-index: 510;          /* 🆕 above clips and content */
   background: var(--surface-2);
   border-right: 1px solid var(--border);
   padding: 4px;
@@ -565,6 +570,7 @@ h2 {
   align-items: center;
   gap: 3px;
   box-shadow: 4px 0 12px rgba(0,0,0,0.5);
+  will-change: left;     /* 🆕 GPU-friendly */
 }
 
 .layer-toggle {
