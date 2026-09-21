@@ -125,6 +125,47 @@ export function createEffectLayer(kind, state, name) {
 
   return id;
 }
+// ═══════════════════════════════════════════════════════════════
+//  🆕 CREATE EFFECT LAYER AT EXACT RANGE
+//  Creates a new effect layer that starts at `startTime` and lasts
+//  `duration` seconds. Multiple effects on same time → different
+//  tracks (stacked, no overlap).
+// ═══════════════════════════════════════════════════════════════
+export function createEffectLayerAtRange(kind, state, name, startTime, duration) {
+  const appState = getState();
+  if (!appState) return null;
+
+  const start = Math.max(0, Number.isFinite(startTime) ? startTime : 0);
+  const dur = (Number.isFinite(duration) && duration > 0)
+    ? duration
+    : DEFAULT_EFFECT_DURATION;
+
+  const id = 'fx-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
+
+  const clipData = {
+    name: name || getKindLabel(kind),
+    url: 'effect://' + id,
+    type: 'effect/plain',
+    __effectId: id,
+    effectState: Object.assign({ kind: kind }, state),
+    startTime: start,
+    duration: dur,
+    sourceIn: 0,
+    __trimmed: true
+  };
+
+  if (!Array.isArray(appState.timeline.visual)) appState.timeline.visual = [];
+
+  placeClipAtTime(appState.timeline.visual, clipData, start);
+  document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
+
+  // Auto-select the new layer
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => selectEffectLayerByUrl(clipData.url));
+  });
+
+  return id;
+}
 
 // ─── Update ───────────────────────────────────────────────────
 export function updateEffectLayer(clip, updates) {

@@ -506,14 +506,89 @@ function applyColorWheel(data, w, h, cw) {
   if (!cw) return;
   const tones = cw.tones || {};
   const hdr = (cw.hdrWhite != null ? cw.hdrWhite : 100) / 100;
+
+  const useShadows    = tones.shadows    && tones.shadows.intensity > 0 && tones.shadows.s > 0;
+  const useMidtones   = tones.midtones   && tones.midtones.intensity > 0 && tones.midtones.s > 0;
+  const useHighlights = tones.highlights && tones.highlights.intensity > 0 && tones.highlights.s > 0;
+
   for (let i = 0; i < data.length; i += 4) {
     let r = data[i], g = data[i + 1], b = data[i + 2];
-    if (hdr > 1) { const boost = (hdr - 1) * 100; r = Math.min(255, r + boost); g = Math.min(255, g + boost); b = Math.min(255, b + boost); }
-    const br = (r + g + b) / 3 / 255;
-    if (tones.shadows && tones.shadows.intensity > 0) { const wt = Math.max(0, 1 - br * 2); if (wt > 0) { const rgb = hslToRgb(tones.shadows.h, tones.shadows.s, 50); const bl = wt * (tones.shadows.intensity / 100) * 0.5; r += (rgb[0] - r) * bl; g += (rgb[1] - g) * bl; b += (rgb[2] - b) * bl; } }
-    if (tones.midtones && tones.midtones.intensity > 0) { const wt = 1 - Math.abs(br - 0.5) * 2; if (wt > 0) { const rgb = hslToRgb(tones.midtones.h, tones.midtones.s, 50); const bl = wt * (tones.midtones.intensity / 100) * 0.5; r += (rgb[0] - r) * bl; g += (rgb[1] - g) * bl; b += (rgb[2] - b) * bl; } }
-    if (tones.highlights && tones.highlights.intensity > 0) { const wt = Math.max(0, br * 2 - 1); if (wt > 0) { const rgb = hslToRgb(tones.highlights.h, tones.highlights.s, 50); const bl = wt * (tones.highlights.intensity / 100) * 0.5; r += (rgb[0] - r) * bl; g += (rgb[1] - g) * bl; b += (rgb[2] - b) * bl; } }
-    data[i] = Math.max(0, Math.min(255, r));
+
+    // HDR white boost
+    if (hdr > 1) {
+      const boost = (hdr - 1) * 127;
+      r = Math.min(255, r + boost);
+      g = Math.min(255, g + boost);
+      b = Math.min(255, b + boost);
+    }
+
+    // Luminance (0..1) — used for tone weight
+    const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+
+    // ═══════════════════════════════════════════════════════
+    //  Accumulate weighted hue shift + saturation from each tone
+    // ═══════════════════════════════════════════════════════
+    let weightSum = 0;
+    let targetHueSum = 0;     // hue in degrees, weighted
+    let targetSatSum = 0;     // saturation 0..100, weighted
+
+    if (useShadows) {
+      const tw = Math.max(0, 1 - lum * 2);
+      const w2 = tw * (tones.shadows.intensity / 100);
+      if (w2 > 0) {
+        targetHueSum += tones.shadows.h * w2;
+        targetSatSum += tones.shadows.s * w2;
+        weightSum += w2;
+      }
+    }
+    if (useMidtones) {
+      const tw = Math.max(0, 1 - Math.abs(lum - 0.5) * 2);
+      const w2 = tw * (tones.midtones.intensity / 100);
+      if (w2 > 0) {
+        targetHueSum += tones.midtones.h * w2;
+        targetSatSum += tones.midtones.s * w2;
+        weightSum += w2;
+      }
+    }
+    if (useHighlights) {
+      const tw = Math.max(0, lum * 2 - 1);
+      const w2 = tw * (tones.highlights.intensity / 100);
+      if (w2 > 0) {
+        targetHueSum += tones.highlights.h * w2;
+        targetSatSum += tones.highlights.s * w2;
+        weightSum += w2;
+      }
+    }
+
+    if (weightSum > 0.001) {
+      const avgHue = ((targetHueSum / weightSum) % 360 + 360) % 360;
+      const avgSat = Math.min(100, targetSatSum / weightSum);
+      const strength = Math.min(1, weightSum);
+
+      // Convert pixel to HSL
+      const hsl = rgbToHsl(r, g, b);
+      const ph = hsl[0];   // 0..360
+      const ps = hsl[1];   // 0..100
+      const pl = hsl[2];   // 0..100
+
+      // 🆕 Hue shift towards target hue (shortest path)
+      let hDiff = avgHue - ph;
+      while (hDiff > 180) hDiff -= 360;
+      while (hDiff < -180) hDiff += 360;
+      const newHue = ph + hDiff * strength * 0.85;
+
+      // 🆕 Saturation boost proportional to wheel distance + strength
+      const satMul = 1 + (avgSat / 100) * strength * 0.9;
+      const newSat = Math.min(100, ps * satMul);
+
+      // Lightness kept stable — real grading preserves luminance
+      const rgb2 = hslToRgb(newHue, newSat, pl);
+      r = rgb2[0];
+      g = rgb2[1];
+      b = rgb2[2];
+    }
+
+    data[i]     = Math.max(0, Math.min(255, r));
     data[i + 1] = Math.max(0, Math.min(255, g));
     data[i + 2] = Math.max(0, Math.min(255, b));
   }

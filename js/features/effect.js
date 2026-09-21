@@ -9,6 +9,7 @@ import {
   getSelectedEffectLayer,
   hasSelectedLayer,
   createEffectLayer,
+  createEffectLayerAtRange,
   updateEffectLayer,
   findEffectLayerById
 } from '../workspace/effectLayer.js';
@@ -108,16 +109,16 @@ function injectStyles() {
   `;
   document.head.appendChild(s);
 }
-
 export function open({ router }) {
-  editingLayer = getSelectedEffectLayer('effect');
+  // 🆕 No editingLayer — always create new on preset click
+  editingLayer = null;
+
   router.openLevel('effect', [], {
     title: 'Effects',
     level: 2,
     renderMode: 'effectPanel'
   });
 }
-
 export function renderTo(container) {
   injectStyles();
   container.replaceChildren();
@@ -136,9 +137,11 @@ export function renderTo(container) {
     badge.textContent = '✏️ Editing: ' + (editingLayer.clip.name || 'Effect');
     panel.appendChild(badge);
   }
-
-  const activeKey = editingLayer && editingLayer.clip.effectState
-    ? editingLayer.clip.effectState.presetKey : null;
+  // 🆕 Highlight currently selected effect's preset (if any)
+  const currentSel = getSelectedEffectLayer('effect');
+  const activeKey = currentSel && currentSel.clip && currentSel.clip.effectState
+    ? currentSel.clip.effectState.presetKey
+    : null;
 
   panel.appendChild(buildSectionLabel('Motion (Animated)'));
   panel.appendChild(buildShelf(
@@ -154,20 +157,22 @@ export function renderTo(container) {
     false
   ));
 
-  if (editingLayer) {
+  // 🆕 Show remove button when an effect layer is selected
+  const selectedFx = getSelectedEffectLayer('effect');
+  if (selectedFx && selectedFx.clip) {
     const actions = document.createElement('div');
     actions.className = 'ef-actions';
 
     const removeBtn = document.createElement('button');
     removeBtn.type = 'button';
     removeBtn.className = 'ef-btn danger';
-    removeBtn.textContent = '🗑 Remove Effect Layer';
+    removeBtn.textContent = '🗑 Remove "' +
+      (selectedFx.clip.name || 'Effect').slice(0, 20) + '"';
     removeBtn.addEventListener('click', removeCurrentLayer);
 
     actions.appendChild(removeBtn);
     panel.appendChild(actions);
   }
-
   container.appendChild(panel);
 }
 
@@ -221,6 +226,13 @@ function applyPreset(preset) {
     return;
   }
 
+  // 🆕 Compute range: playhead → clip end
+  const range = computeEffectRange();
+  if (!range) {
+    showToast('Move playhead onto a clip first', false);
+    return;
+  }
+
   const baseFilters = {
     brightness: 100, contrast: 100, saturation: 100, hue: 0,
     grayscale: 0, sepia: 0, invert: 0, blur: 0, opacity: 100
@@ -233,33 +245,135 @@ function applyPreset(preset) {
     motion: preset.motion || null
   };
 
-  if (editingLayer) {
-    updateEffectLayer(editingLayer.clip, payload);
-    showToast('Updated ' + preset.label);
+  // 🆕 ALWAYS create a NEW effect layer (never update existing)
+  const state = Object.assign({ kind: 'effect' }, payload);
+  const id = createEffectLayerAtRange(
+    'effect',
+    state,
+    preset.label,
+    range.start,
+    range.duration
+  );
+
+  if (id) {
+    showToast('Added ' + preset.label + ' · ' + range.duration.toFixed(2) + 's');
   } else {
-    const state = Object.assign({ kind: 'effect' }, payload);
-    const id = createEffectLayer('effect', state, preset.label);
-    editingLayer = findEffectLayerById(id);
-    showToast('Added ' + preset.label + ' layer');
+    showToast('Failed to add effect', false);
+    return;
   }
 
   document.dispatchEvent(new CustomEvent('effects:refresh'));
 
-  const c = document.querySelector('#feature-shelf');
-  if (c) renderTo(c);
+  // Re-render after auto-select (double rAF)
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    const c = document.querySelector('#feature-shelf');
+    if (c) renderTo(c);
+  }));
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  🆕 Compute effect range: playhead → clip end
+//  Prefers top display clip at playhead.
+//  Falls back to selected visual clip.
+// ═══════════════════════════════════════════════════════════════
+function computeEffectRange() {
+  const appState = window.__appState;
+  if (!appState) return null;
+
+  const eng = window.__playbackEngine;
+  const playhead = eng && typeof eng.getTime === 'function' ? eng.getTime() : 0;
+
+  const tracks = appState.timeline.visual || [];
+  const hidden = appState.timeline.hiddenVisualTracks || new Set();
+
+  // 1. Try to find display clip at playhead
+  let clipAtPlayhead = null;
+  for (let t = tracks.length - 1; t >= 0; t--) {
+    if (hidden.has(t)) continue;
+    const track = tracks[t];
+    if (!Array.isArray(track)) continue;
+    for (let c = 0; c < track.length; c++) {
+      const clip = track[c];
+      if (!clip || !clip.type) continue;
+      const isV = clip.type.indexOf('video/') === 0;
+      const isI = clip.type.indexOf('image/') === 0;
+      if (!isV && !isI) continue;
+      const s = Number.isFinite(clip.startTime) ? clip.startTime : 0;
+      const d = Number.isFinite(clip.duration) ? clip.duration : 0;
+      if (playhead >= s && playhead < s + d) {
+        clipAtPlayhead = clip;
+        break;
+      }
+    }
+    if (clipAtPlayhead) break;
+  }
+
+  // 2. Fallback: selected clip if it's a display clip
+  let target = clipAtPlayhead;
+  if (!target) {
+    const el = document.querySelector('.clip.selected');
+    if (el) {
+      const label = el.dataset.track;
+      const clipIdx = Number(el.dataset.clip);
+      if (label && label.charAt(0) === 'V' && Number.isFinite(clipIdx)) {
+        const ti = Number(label.slice(1)) - 1;
+        const tr = tracks[ti];
+        if (Array.isArray(tr)) {
+          const c = tr[clipIdx];
+          if (c && c.type &&
+              (c.type.indexOf('video/') === 0 || c.type.indexOf('image/') === 0)) {
+            target = c;
+          }
+        }
+      }
+    }
+  }
+
+  if (!target) return null;
+
+  const clipStart = Number.isFinite(target.startTime) ? target.startTime : 0;
+  const clipDur = Number.isFinite(target.duration) ? target.duration : 3;
+  const clipEnd = clipStart + clipDur;
+
+  // Start = later of (clipStart, playhead), clamped inside clip
+  let start = Math.max(clipStart, Math.min(playhead, clipEnd - 0.15));
+  let end = clipEnd;
+
+  if (end - start < 0.15) {
+    start = clipStart;
+    end = clipEnd;
+  }
+
+  return { start, end, duration: Math.max(0.15, end - start) };
 }
 
 function removeCurrentLayer() {
-  if (!editingLayer) return;
-  const clip = editingLayer.clip;
+  // 🆕 Look for currently selected effect layer
+  const sel = getSelectedEffectLayer('effect');
+  if (!sel || !sel.clip) {
+    showToast('No effect layer selected', false);
+    return;
+  }
+
+  const clip = sel.clip;
   const appState = window.__appState;
 
   const allTracks = (appState && appState.timeline.visual) || [];
+  let removed = false;
   for (let t = 0; t < allTracks.length; t++) {
     const track = allTracks[t];
     if (!Array.isArray(track)) continue;
     const idx = track.findIndex(c => c && c.__effectId === clip.__effectId);
-    if (idx >= 0) { track.splice(idx, 1); break; }
+    if (idx >= 0) {
+      track.splice(idx, 1);
+      removed = true;
+      break;
+    }
+  }
+
+  if (!removed) {
+    showToast('Effect layer not found', false);
+    return;
   }
 
   editingLayer = null;
