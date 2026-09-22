@@ -71,152 +71,113 @@ const SYNONYMS = {
 };
 
 // 🆕 Transition aliases — ONCE at top
-const TRANSITION_ALIASES = {
-  // ─── Basic ──────────────────────────────────────────────
-  'none': 'none',
-  'fade': 'fade',
-  'dissolve': 'dissolve',
-  'fade black': 'fadeBlack', 'fadeblack': 'fadeBlack',
-  'fade white': 'fadeWhite', 'fadewhite': 'fadeWhite',
-  'blur': 'blur',
+// ═══════════════════════════════════════════════════════════════
+//  🆕 AUTO-GENERATED TRANSITION ALIASES
+//  Prevents typos by generating aliases programmatically from
+//  the TRANSITIONS list. Manual aliases added for short forms.
+// ═══════════════════════════════════════════════════════════════
+import { TRANSITIONS as ALL_TRANSITIONS } from '../workspace/transitionEngine.js';
 
-  // ─── Push ───────────────────────────────────────────────
-  'pushleft': 'pushLeft', 'push left': 'pushLeft',
-  'pushright': 'pushRight', 'push right': 'pushRight',
-  'pushup': 'pushUp', 'push up': 'pushUp',
-  'pushdown': 'pushDown', 'push down': 'pushDown',
+const TRANSITION_ALIASES = (function () {
+  const map = {};
 
-  // ─── Slide Over ─────────────────────────────────────────
-  'slideoverleft': 'slideOverLeft', 'slide over left': 'slideOverLeft',
-  'slideoverright': 'slideOverRight', 'slide over right': 'slideOverRight',
-  'slideovertop': 'slideOverTop', 'slide over top': 'slideOverTop',
-  'slideoverbottom': 'slideOverBottom', 'slide over bottom': 'slideOverBottom',
+  // ─── Auto-register from transition keys ────────────────
+  (ALL_TRANSITIONS || []).forEach(function (tr) {
+    const k = tr && tr.key;
+    if (!k) return;
 
-  // ─── Slide In ───────────────────────────────────────────
-  'slide': 'slideLeft',
-  'slideleft': 'slideLeft', 'slide left': 'slideLeft',
-  'slideright': 'slideRight', 'slide right': 'slideRight',
-  'slideup': 'slideUp', 'slide up': 'slideUp',
-  'slidedown': 'slideDown', 'slide down': 'slideDown',
+    if (k === 'none') {
+      map['none'] = 'none';
+      map['null'] = 'none';
+      return;
+    }
 
-  // ─── Wipes ──────────────────────────────────────────────
-  'wipeleft': 'wipeLeft', 'wipe left': 'wipeLeft',
-  'wiperight': 'wipeRight', 'wipe right': 'wipeRight',
-  'wipehorizontal': 'wipeHorizontal', 'wipe horizontal': 'wipeHorizontal',
-  'wipevertical': 'wipeVertical', 'wipe vertical': 'wipeVertical',
-  'wipedigonaltl': 'wipeDiagonalTL', 'wipe diagonal tl': 'wipeDiagonalTL',
-  'wipedigonalbr': 'wipeDiagonalBR', 'wipe diagonal br': 'wipeDiagonalBR',
-  'splitwipevertical': 'splitWipeVertical', 'split wipe vertical': 'splitWipeVertical',
-  'splitwipehorizontal': 'splitWipeHorizontal', 'split wipe horizontal': 'splitWipeHorizontal',
-  'checkerboardwipe': 'checkerboardWipe', 'checkerboard': 'checkerboardWipe',
-  'venetianblinds': 'venetianBlinds', 'venetian': 'venetianBlinds', 'blinds': 'venetianBlinds',
-  'clockwipe': 'clockWipe', 'clock': 'clockWipe',
-  'wedgewipe': 'wedgeWipe', 'wedge': 'wedgeWipe',
-  'irisbox': 'irisBox', 'iris box': 'irisBox',
-  'iriscross': 'irisCross', 'iris cross': 'irisCross',
-  'iris': 'irisBox',
-  'circlein': 'circleIn', 'circle in': 'circleIn', 'circle': 'circleIn',
+    // 1. Exact key as-is:           'wipeDiagonalTL'
+    map[k] = k;
 
-  // ─── Zooms ──────────────────────────────────────────────
-  'zoom': 'zoomIn',
-  'zoomin': 'zoomIn', 'zoom in': 'zoomIn',
-  'zoomout': 'zoomOut', 'zoom out': 'zoomOut',
-  'smoothzoomin': 'smoothZoomIn', 'smooth zoom in': 'smoothZoomIn',
-  'smoothzoomout': 'smoothZoomOut', 'smooth zoom out': 'smoothZoomOut',
-  'crosszoom': 'crossZoom', 'cross zoom': 'crossZoom',
-  'zoomblur': 'zoomBlur', 'zoom blur': 'zoomBlur',
+    // 2. All lowercase, no spaces:  'wipediagonaltl'
+    const lower = k.toLowerCase();
+    map[lower] = k;
 
-  // ─── Spins ──────────────────────────────────────────────
-  'spin': 'spinCW',
-  'spincw': 'spinCW', 'spin cw': 'spinCW',
-  'spinccw': 'spinCCW', 'spin ccw': 'spinCCW',
-  'spinzoomcombo': 'spinZoomCombo', 'spin zoom combo': 'spinZoomCombo',
-  'radialblurspin': 'radialBlurSpin', 'radial blur spin': 'radialBlurSpin',
-  'swirldistort': 'swirlDistort', 'swirl distort': 'swirlDistort', 'swirl': 'swirlDistort',
+    // 3. CamelCase → spaced lowercase:  'wipe diagonal tl'
+    const spaced = k.replace(/([A-Z])/g, ' $1').toLowerCase().trim();
+    map[spaced] = k;
 
-  // ─── 3D ─────────────────────────────────────────────────
-  'cubeflipleft': 'cubeFlipLeft', 'cube flip left': 'cubeFlipLeft',
-  'cubeflipright': 'cubeFlipRight', 'cube flip right': 'cubeFlipRight',
-  'cube': 'cubeFlipLeft',
-  'pageflip': 'pageFlip', 'page flip': 'pageFlip',
-  'doorswing': 'doorSwing', 'door swing': 'doorSwing', 'door': 'doorSwing',
-  'cardflip': 'cardFlip', 'card flip': 'cardFlip', 'card': 'cardFlip',
-  'flyby': 'flyBy', 'fly by': 'flyBy', 'fly': 'flyBy',
-  'ztumble': 'zTumble', 'z tumble': 'zTumble',
-  'elasticzoomspin': 'elasticZoomSpin', 'elastic zoom spin': 'elasticZoomSpin',
-  'elastic': 'elasticZoomSpin',
+    // 4. Lowercase with spaces removed (redundant but safe)
+    map[lower.replace(/\s+/g, '')] = k;
+  });
 
-  // ─── Glitch ─────────────────────────────────────────────
-  'rgbsplit': 'rgbSplit', 'rgb split': 'rgbSplit', 'rgb': 'rgbSplit',
-  'hlinejitter': 'hLineJitter', 'h-line jitter': 'hLineJitter', 'h line jitter': 'hLineJitter',
-  'digitalblock': 'digitalBlock', 'digital block': 'digitalBlock', 'digital': 'digitalBlock',
-  'vcrstatic': 'vcrStatic', 'vcr static': 'vcrStatic', 'vcr': 'vcrStatic',
-  'datamosh': 'dataMosh', 'data mosh': 'dataMosh', 'moshing': 'dataMosh',
-  'flickerflash': 'flickerFlash', 'flicker flash': 'flickerFlash', 'flicker': 'flickerFlash',
-  'slicedistort': 'sliceDistort', 'slice distort': 'sliceDistort', 'slice': 'sliceDistort',
-  'matrixscanline': 'matrixScanline', 'matrix scanline': 'matrixScanline', 'matrix': 'matrixScanline',
-  'signalloss': 'signalLoss', 'signal loss': 'signalLoss', 'signal': 'signalLoss',
-  'pixelsortwipe': 'pixelSortWipe', 'pixel sort wipe': 'pixelSortWipe',
-  'hwfreezejitter': 'hwFreezeJitter', 'hw freeze jitter': 'hwFreezeJitter', 'freezejitter': 'hwFreezeJitter',
-  'chromaticdisp': 'chromaticDisp', 'chromatic': 'chromaticDisp',
-  'waveglitch': 'waveGlitch', 'wave glitch': 'waveGlitch',
-  'microstrobe': 'microStrobe', 'micro strobe': 'microStrobe', 'strobe': 'microStrobe',
-  'glitchdissolve': 'glitchDissolve', 'glitch dissolve': 'glitchDissolve', 'glitch': 'glitchDissolve',
+  // ─── Manual short-form aliases ─────────────────────────
+  const SHORT = {
+    'fade black': 'fadeBlack', 'fadeblack': 'fadeBlack',
+    'fade white': 'fadeWhite', 'fadewhite': 'fadeWhite',
+    'slide': 'slideLeft',
+    'zoom': 'zoomIn',
+    'circle': 'circleIn', 'circle in': 'circleIn',
+    'blur': 'blur',
+    'spin': 'spinCW',
+    'cube': 'cubeFlipLeft',
+    'card': 'cardFlip',
+    'door': 'doorSwing',
+    'fly': 'flyBy',
+    'rgb': 'rgbSplit',
+    'vcr': 'vcrStatic',
+    'glitch': 'glitchDissolve',
+    'slice': 'sliceDistort',
+    'matrix': 'matrixScanline',
+    'signal': 'signalLoss',
+    'strobe': 'microStrobe',
+    'dip': 'dipToColor',
+    'gaussian': 'gaussianBlurCross',
+    'bokeh': 'bokehBlurDissolve',
+    'melt': 'meltDissolve',
+    'smudge': 'softSmudge',
+    'rainbow': 'rainbowPrism', 'prism': 'rainbowPrism',
+    'vignette': 'softVignetteFade',
+    'solarize': 'solarizeWipe',
+    'ripple': 'waterRipple',
+    'acid': 'acidMelt',
+    'turbulent': 'turbulentSwirl',
+    'liquid': 'liquidFluidWipe',
+    'magnify': 'magnifyingWave',
+    'shatter': 'glassShatter',
+    'fractal': 'fractalNoiseTwist',
+    'twirl': 'twirlZoom',
+    'stretch': 'stretchDistort',
+    'morph': 'morphTrans',
+    'vortex': 'vortexPull',
+    'spherical': 'sphericalWarp',
+    'heart': 'heartExpand',
+    'star': 'starWipe',
+    'diamond': 'diamondMask',
+    'hex': 'hexagonTiles', 'hexagon': 'hexagonTiles',
+    'slats': 'diagonalSlats',
+    'triangle': 'triangleFan',
+    'spiral': 'spiralMatrix',
+    'brush': 'paintBrush',
+    'ink': 'inkSplash', 'splash': 'inkSplash',
+    'swirl': 'swirlDistort',
+    'elastic': 'elasticZoomSpin',
+    'chromatic': 'chromaticDisp',
+    'zoom in': 'zoomIn', 'zoomin': 'zoomIn',
+    'zoom out': 'zoomOut', 'zoomout': 'zoomOut',
+    'wipe left': 'wipeLeft', 'wipeleft': 'wipeLeft',
+    'wipe right': 'wipeRight', 'wiperight': 'wipeRight',
+    'slide left': 'slideLeft', 'slideleft': 'slideLeft',
+    'slide right': 'slideRight', 'slideright': 'slideRight',
+    'slide up': 'slideUp', 'slideup': 'slideUp',
+    'slide down': 'slideDown', 'slidedown': 'slideDown'
+  };
 
-  // ─── Fades ──────────────────────────────────────────────
-  'diptocolor': 'dipToColor', 'dip to color': 'dipToColor', 'dip': 'dipToColor',
-  'gaussianblurcross': 'gaussianBlurCross', 'gaussian blur': 'gaussianBlurCross', 'gaussian': 'gaussianBlurCross',
-  'dirblurleft': 'dirBlurLeft', 'dir blur left': 'dirBlurLeft',
-  'dirblurright': 'dirBlurRight', 'dir blur right': 'dirBlurRight',
-  'bokehblurdissolve': 'bokehBlurDissolve', 'bokeh dissolve': 'bokehBlurDissolve', 'bokeh': 'bokehBlurDissolve',
-  'nonadditivedissolve': 'nonAdditiveDissolve', 'non additive': 'nonAdditiveDissolve',
-  'filmdissolve': 'filmDissolve', 'film dissolve': 'filmDissolve',
-  'randomblocksdissolve': 'randomBlocksDissolve', 'random blocks': 'randomBlocksDissolve',
-  'meltdissolve': 'meltDissolve', 'melt dissolve': 'meltDissolve', 'melt': 'meltDissolve',
-  'softsmudge': 'softSmudge', 'soft smudge': 'softSmudge', 'smudge': 'softSmudge',
+  Object.keys(SHORT).forEach(function (alias) {
+    if (map[alias] === undefined) map[alias] = SHORT[alias];
+  });
 
-  // ─── Light ──────────────────────────────────────────────
-  'lensflareflash': 'lensFlareFlash', 'lens flare': 'lensFlareFlash',
-  'lightleakorange': 'lightLeakOrange', 'light leak': 'lightLeakOrange',
-  'neonglowburn': 'neonGlowBurn', 'neon glow': 'neonGlowBurn',
-  'filmburn': 'filmBurn', 'film burn': 'filmBurn',
-  'exposureflash': 'exposureFlash', 'exposure flash': 'exposureFlash', 'exposure': 'exposureFlash',
-  'colorinvertflash': 'colorInvertFlash', 'color invert': 'colorInvertFlash',
-  'rainbowprism': 'rainbowPrism', 'rainbow prism': 'rainbowPrism', 'rainbow': 'rainbowPrism', 'prism': 'rainbowPrism',
-  'softvignettefade': 'softVignetteFade', 'soft vignette': 'softVignetteFade', 'vignette': 'softVignetteFade',
-  'solarizewipe': 'solarizeWipe', 'solarize wipe': 'solarizeWipe', 'solarize': 'solarizeWipe',
-  'lightwipe': 'lightWipe', 'light wipe': 'lightWipe',
+  return map;
+})();
 
-  // ─── Liquid ─────────────────────────────────────────────
-  'waterripple': 'waterRipple', 'water ripple': 'waterRipple', 'ripple': 'waterRipple',
-  'acidmelt': 'acidMelt', 'acid melt': 'acidMelt', 'acid': 'acidMelt',
-  'turbulentswirl': 'turbulentSwirl', 'turbulent swirl': 'turbulentSwirl', 'turbulent': 'turbulentSwirl',
-  'wavewarph': 'waveWarpH', 'wave warp': 'waveWarpH',
-  'liquidfluidwipe': 'liquidFluidWipe', 'liquid fluid wipe': 'liquidFluidWipe', 'liquid wipe': 'liquidFluidWipe', 'liquid': 'liquidFluidWipe',
-  'magnifyingwave': 'magnifyingWave', 'magnifying wave': 'magnifyingWave', 'magnify': 'magnifyingWave',
-  'glassshatter': 'glassShatter', 'glass shatter': 'glassShatter', 'shatter': 'glassShatter',
-  'fractalnoisetwist': 'fractalNoiseTwist', 'fractal twist': 'fractalNoiseTwist', 'fractal': 'fractalNoiseTwist',
-  'twirlzoom': 'twirlZoom', 'twirl zoom': 'twirlZoom', 'twirl': 'twirlZoom',
-  'stretchdistort': 'stretchDistort', 'stretch distort': 'stretchDistort', 'stretch': 'stretchDistort',
-  'morphtrans': 'morphTrans', 'morph': 'morphTrans',
-  'pageroll': 'pageRoll', 'page roll': 'pageRoll',
-  'rippledissolve': 'rippleDissolve', 'ripple dissolve': 'rippleDissolve',
-  'vortexpull': 'vortexPull', 'vortex pull': 'vortexPull', 'vortex': 'vortexPull',
-  'sphericalwarp': 'sphericalWarp', 'spherical warp': 'sphericalWarp', 'spherical': 'sphericalWarp',
-
-  // ─── Shapes ─────────────────────────────────────────────
-  'heartexpand': 'heartExpand', 'heart expand': 'heartExpand', 'heart': 'heartExpand',
-  'starwipe': 'starWipe', 'star wipe': 'starWipe', 'star': 'starWipe',
-  'diamondmask': 'diamondMask', 'diamond': 'diamondMask',
-  'multicirclegrid': 'multiCircleGrid', 'multi circle': 'multiCircleGrid',
-  'hexagontiles': 'hexagonTiles', 'hexagon': 'hexagonTiles', 'hex': 'hexagonTiles',
-  'diagonalslats': 'diagonalSlats', 'diagonal slats': 'diagonalSlats', 'slats': 'diagonalSlats',
-  'trianglefan': 'triangleFan', 'triangle fan': 'triangleFan', 'triangle': 'triangleFan',
-  'spiralmatrix': 'spiralMatrix', 'spiral matrix': 'spiralMatrix', 'spiral': 'spiralMatrix',
-  'paintbrush': 'paintBrush', 'paint brush': 'paintBrush', 'brush': 'paintBrush',
-  'inksplash': 'inkSplash', 'ink splash': 'inkSplash', 'ink': 'inkSplash', 'splash': 'inkSplash'
-};
-
+// Debug — console mein dekh sakte ho
+console.log('[codebaseEngine] Transition aliases:', Object.keys(TRANSITION_ALIASES).length);
 // ═══════════════════════════════════════════════════════════════
 //  STATE
 // ═══════════════════════════════════════════════════════════════
