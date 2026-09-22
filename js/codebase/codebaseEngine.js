@@ -5,6 +5,7 @@ import { resolveFontFamily, loadGoogleFont } from './fontLibrary.js';
 import { openKeyframeGraph } from '../workspace/keyframeGraph.js';
 import { clearKeyframes as clearAllKeyframes } from '../workspace/keyframeStore.js';
 import { runDetectBeats, runBeatsEditing, buildEffectStateForKey } from './beatsEngine.js';
+import { runDuplicate } from './duplicateEngine.js';
 
 // ═══════════════════════════════════════════════════════════════
 //  CONSTANTS
@@ -1339,7 +1340,89 @@ function parseLayerTransitions(seg) {
 function trySpecialCommand(seg, state) {
   const low = seg.toLowerCase().trim();
 
-  // 🆕 Detect beats (with optional filter)
+  // ═══════════════════════════════════════════════════════════
+  //  🆕 DUPLICATE COMMANDS
+  //  Syntax:
+  //    duplicate                → selected clips
+  //    duplicate 3              → selected, 3 times
+  //    duplicate all            → all V1 clips
+  //    duplicate all 2          → all V1, 2 layers
+  //    duplicate layer v1       → specific layer
+  //    duplicate layer v1 3     → specific layer, 3 times
+  //    duplicate layer a1       → audio layer
+  // ═══════════════════════════════════════════════════════════
+  {
+    const dM = low.match(/^duplicate(?:\s+(.+))?$/i);
+    if (dM) {
+      const rest = (dM[1] || '').trim();
+
+      // "duplicate" alone → selected, count 1
+      if (!rest) {
+        state.duplicate = { mode: 'selected', count: 1 };
+        return true;
+      }
+
+      // "duplicate layer vN" / "duplicate layer aN"
+      const layerM = rest.match(/^layer\s+([a-z]\d+)$/i);
+      if (layerM) {
+        state.duplicate = {
+          mode: 'layer',
+          layerKey: layerM[1].toUpperCase(),
+          count: 1
+        };
+        return true;
+      }
+
+      // "duplicate all"
+      if (/^(all|everything)$/i.test(rest)) {
+        state.duplicate = { mode: 'all', count: 1 };
+        return true;
+      }
+
+      // "duplicate selected"
+      if (/^(selected|selection)$/i.test(rest)) {
+        state.duplicate = { mode: 'selected', count: 1 };
+        return true;
+      }
+
+      // "duplicate 3" (selected + count)
+      const cntM = rest.match(/^(\d+)$/);
+      if (cntM) {
+        const c = parseInt(cntM[1], 10);
+        state.duplicate = {
+          mode: 'selected',
+          count: Math.max(1, Math.min(10, c))
+        };
+        return true;
+      }
+
+      // "duplicate all 3" / "duplicate layer v1 3"
+      const cntAllM = rest.match(/^(.+?)\s+(\d+)$/);
+      if (cntAllM) {
+        const inner = cntAllM[1].trim().toLowerCase();
+        const c = Math.max(1, Math.min(10, parseInt(cntAllM[2], 10)));
+
+        if (inner === 'all' || inner === 'everything') {
+          state.duplicate = { mode: 'all', count: c };
+          return true;
+        }
+
+        const lyrM = inner.match(/^layer\s+([a-z]\d+)$/i);
+        if (lyrM) {
+          state.duplicate = {
+            mode: 'layer',
+            layerKey: lyrM[1].toUpperCase(),
+            count: c
+          };
+          return true;
+        }
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  //  DETECT BEATS (with optional filter)
+  // ═══════════════════════════════════════════════════════════
   {
     const dbM = low.match(/^(?:detect|find|identify)\s*beats?\s*(.*)$/i)
              || low.match(/^beats?\s*detect\s*(.*)$/i);
@@ -1348,17 +1431,27 @@ function trySpecialCommand(seg, state) {
       return true;
     }
   }
+
+  // ═══════════════════════════════════════════════════════════
+  //  TIGHTEN / MAGNET
+  // ═══════════════════════════════════════════════════════════
   if (/^(tighten\s*track|close\s*gaps?|magnet|no\s*gaps?)$/i.test(low)) {
     state.tightenTracks = true;
     return true;
   }
 
+  // ═══════════════════════════════════════════════════════════
+  //  LAYER TRANSITIONS (pattern)
+  // ═══════════════════════════════════════════════════════════
   const layerTransM = parseLayerTransitions(low);
   if (layerTransM) {
     state.layerTransitions = layerTransM;
     return true;
   }
 
+  // ═══════════════════════════════════════════════════════════
+  //  TRANSITION ALL
+  // ═══════════════════════════════════════════════════════════
   const transAllM = low.match(/^(?:transition\s+all|all\s+transitions?|transitions?\s+between\s+all)\s+(fade\s*black|fade\s*white|fade|dissolve|slide\s*left|slide\s*right|slide\s*up|slide\s*down|zoom\s*in|zoom\s*out|wipe\s*left|wipe\s*right|circle\s*in)(?:\s+([\d.]+))?$/i);
   if (transAllM) {
     const raw = transAllM[1].toLowerCase().replace(/\s+/g, '');
@@ -1371,10 +1464,16 @@ function trySpecialCommand(seg, state) {
     };
     const key = typeMap[raw] || 'fade';
     const duration = transAllM[2] ? parseFloat(transAllM[2]) : 0.5;
-    state.transitionAll = { type: key, duration: Math.max(0.1, Math.min(3, duration)) };
+    state.transitionAll = {
+      type: key,
+      duration: Math.max(0.1, Math.min(3, duration))
+    };
     return true;
   }
 
+  // ═══════════════════════════════════════════════════════════
+  //  TRANSITION AT
+  // ═══════════════════════════════════════════════════════════
   const atM = low.match(
     /^transition\s+at\s+([\d.]+)\s*s?\s+(fade\s*black|fade\s*white|fade|dissolve|slide\s*left|slide\s*right|slide\s*up|slide\s*down|zoom\s*in|zoom\s*out|wipe\s*left|wipe\s*right|circle\s*in)\s*([\d.]+)?$/i
   );
@@ -1397,17 +1496,24 @@ function trySpecialCommand(seg, state) {
     return true;
   }
 
+  // ═══════════════════════════════════════════════════════════
+  //  GRAPH COMMANDS
+  // ═══════════════════════════════════════════════════════════
   if (/^(graph\s*on|auto\s*graph|show\s*graph\s*on)$/i.test(low)) {
-    state.autoGraph = true; return true;
+    state.autoGraph = true;
+    return true;
   }
   if (/^(graph\s*off|auto\s*graph\s*off|no\s*graph)$/i.test(low)) {
-    state.autoGraph = false; return true;
+    state.autoGraph = false;
+    return true;
   }
   if (/^(graph|show\s*graph|open\s*graph|keyframe\s*graph|kf\s*graph)$/i.test(low)) {
-    state.openGraph = true; return true;
+    state.openGraph = true;
+    return true;
   }
   if (/^(clear\s*keyframes?|delete\s*keyframes?|remove\s*keyframes?|reset\s*keyframes?)$/i.test(low)) {
-    state.clearKeyframes = true; return true;
+    state.clearKeyframes = true;
+    return true;
   }
 
   return false;
@@ -1543,7 +1649,9 @@ export function parsePrompt(rawPrompt) {
     atTransitions: [],
     layerTransitions: null,
        detectBeats: null,
-    beatsEdit: null
+    beatsEdit: null,
+    autoText: null,
+    duplicate: null
   };
 
   let prompt = rawPrompt.toLowerCase().trim();
@@ -2006,6 +2114,7 @@ export async function executePrompt(state) {
   if (state.autoGraph === false) _autoOpenGraph = false;
 
   // ═══ 🆕 BEATS — terminal (short-circuit) ═══════════════════
+  // ═══ 🆕 BEATS — terminal (short-circuit) ═══════════════════
   if (state.detectBeats) {
     const filterStr = (state.detectBeats && state.detectBeats.filter) || '';
     const r = await runDetectBeats(filterStr);
@@ -2025,7 +2134,6 @@ export async function executePrompt(state) {
   }
 
   if (state.beatsEdit) {
-    // 🆕 Pass raw string (new syntax) OR pattern array (old)
     const input = state.beatsEdit.raw || state.beatsEdit.pattern;
     const r = await runBeatsEditing(input);
     if (!r.ok) return { ok: false, error: r.error };
@@ -2036,6 +2144,16 @@ export async function executePrompt(state) {
     };
   }
 
+  // ═══ 🆕 DUPLICATE ══════════════════════════════════════════
+  if (state.duplicate) {
+    const r = runDuplicate(state.duplicate);
+    if (!r.ok) return { ok: false, error: r.error };
+    _showToast('📋 ' + r.count + ' clip' + (r.count === 1 ? '' : 's') + ' duplicated');
+    return {
+      ok: true,
+      results: ['duplicate:' + r.count + ' into ' + r.layers + ' layer(s)']
+    };
+  }
   // ═══ Regular commands ═════════════════════════════════════
   const results = [];
   const warnings = [];

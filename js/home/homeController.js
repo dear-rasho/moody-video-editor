@@ -74,10 +74,10 @@ export function initAiPromptHelper() {
   const copyBtn = document.querySelector('#ai-prompt-copy-btn');
   if (!textEl || !copyBtn) return;
 
-   const PROMPT_TEXT =
+  const PROMPT_TEXT =
 `You are helping me write commands for a video editor's prompt panel.
 
-The editor supports TWO formats + BEATS mode:
+The editor supports TWO formats + BEATS mode + TRANSITIONS + ANIMATIONS.
 
 ═══════════════════════════════════════════════
 FORMAT 1 — TIMESTAMPED LAYERS (recommended)
@@ -89,165 +89,11 @@ Optional first line:
 Then ONE block per layer, using [MM:SS - MM:SS]:
 
   [00:00 - 00:05] "Your text" animation typewriter, position center, color white
-  [00:05 - 00:08] "Second" animation bounce, position bottom, color yellow
-  [00:08 - 00:15] brightness 130, saturation 140
-  [00:15 - 00:18] sticker 🔥 at 50 30
-  [00:18 - 00:22] audio echo
-  [00:22 - 00:28] vintage
-  [00:28 - 00:35] "Next" font handwriting size 40 color ramp #ff0066 to #0066ff
-
-═══════════════════════════════════════════════
-TEXT LAYER PROPERTIES (after quoted text)
-═══════════════════════════════════════════════
-
-  animation <name>     typewriter, bounceIn, fadeIn, fadeUp, fadeDown,
-                       slideLeft, slideRight, slideUp, slideDown, popIn,
-                       zoomIn, zoomOut, glitch, pulse, wave, flip3DX,
-                       flip3DY, rotate3D, flicker, shake, cinematicBlur,
-                       scribble, decoder
-                       (aliases: bounce→bounceIn, fade→fadeIn,
-                        slide→slideUp, zoom→zoomIn, pop→popIn)
-
-  position <name>      top, bottom, center, left, right
-  position <X> <Y>     coords 0-100, e.g. 50 30
-  color <name|#hex>    white, black, red, gold, #ff0066
-  color ramp #A to #B  gradient
-  font <name|category> specific font OR category
-  size <number>        font size px (default 36)
-  bold | italic        style flags
-  shadow               drop shadow on
-  stroke <w> <#hex>    text outline
-  align left|center|right
-  scale <number>       text scale %
-  rotation <number>    degrees
-  opacity <number>     0-100
-
-FONT CATEGORIES:
-  music, educational, titles, handwriting, modern, bold,
-  retro, elegant, playful, mono, cinematic, minimal
-
-═══════════════════════════════════════════════
-MULTI-STYLE TEXT (per-word styling)
-═══════════════════════════════════════════════
-
-Use [seg "word" props] for each styled segment:
-
-  [00:00 - 00:05] [seg "i am" font handwriting size 20 color whitish] [seg "fine" font music size 60 color ramp #00FF87 to #60EFFF] position center
-
-Each segment can have its own font, size, color, gradient.
-Segments stack on separate lines.
-
-═══════════════════════════════════════════════
-OTHER LAYER TYPES
-═══════════════════════════════════════════════
-
-STICKER:
-  [MM:SS - MM:SS] sticker 🔥 at 50 30
-
-ADJUSTMENT (values 100-300 = filter scale; -100 to 100 = adjustment scale):
-  [MM:SS - MM:SS] brightness 130, saturation 140
-  Keys: brightness, contrast, exposure, whites, blacks, shadows,
-        highlights, clarity, saturation, vibrance, temperature,
-        tint, noise, sharpen, vignette
-  Color channels: reds, oranges, yellows, greens, cyans, blues,
-                  purples, magentas, skintones
-
-FILTER:
-  [MM:SS - MM:SS] blur 5
-  [MM:SS - MM:SS] grayscale 80
-
-EFFECT PRESET:
-  [MM:SS - MM:SS] vintage
-  Presets: shake, bounce, pulse, zoomPulse, glitch, wobble,
-           warm, cool, vintage, cinematic, bw, dreamy, vivid,
-           faded, dramatic, negative, softGlow, noir
-
-COLOR WHEEL:
-  [MM:SS - MM:SS] shadows red 50 40
-  [MM:SS - MM:SS] hdr 120
-
-CHROMA KEY:
-  [MM:SS - MM:SS] green screen
-
-AUDIO FX:
-  [MM:SS - MM:SS] audio echo
-  Keys: studio, warm, bright, vocal, podcast, deep, monster,
-        chipmunk, baby, robot, echo, reverb, cave, stadium,
-        telephone, underwater, whisper, radio
-
-═══════════════════════════════════════════════
-LAYER TRANSITIONS (comma-separated, per-layer)
-═══════════════════════════════════════════════
-
-Transitions apply to the START of each clip on a layer.
-The FIRST clip of a layer is skipped (it has no preceding clip).
-
-BASIC:
-  layer v1 transitions fade, dissolve, slide left, zoom
-  transitions fade, dissolve, slide          (uses selected clip's layer)
-
-  Each type applies to clip #2, #3, #4, ... in order.
-
-WITH DURATION:
-  layer v1 transitions fade 0.5, dissolve 0.8, zoom 1
-  Duration range: 0.1-3.0s. Default: 0.5s
-
-SKIP A JUNCTION:
-  layer v1 transitions dissolve, null, slide, null, zoom
-  Use null / none / skip / - to skip.
-
-LOOP:
-  layer v1 transitions fade, dissolve loop
-  Pattern repeats across all clips.
-
-TRANSITION TYPES:
-  fade, dissolve, fade black, fade white,
-  slide left, slide right, slide up, slide down,
-  zoom in, zoom out,
-  wipe left, wipe right, circle in, blur
-
-SHORTCUTS:
-  transition all <type> [<dur>]              → all layers, all junctions
-  transition at <time> <type> [<dur>]        → clips starting at <time>±0.2s
-
-═══════════════════════════════════════════════
-🥁 BEATS EDITING (audio-driven)
-═══════════════════════════════════════════════
-
-STEP 1 — DETECT BEATS (on selected AUDIO clip):
-  detect beats
-
-  The audio clip gets analyzed. Beat timestamps are saved inside the clip.
-
-STEP 2 — BEATS EDIT (with selected VISUAL clips):
-  beats edit <effect1>, <effect2>, <effect3>, ...
-
-  What happens:
-  1. Selected visual clips get distributed across the audio's beat times.
-     - If clips < beats → clips loop (auto-cloned)
-     - If clips > beats → extra clips unused
-     - Each clip duration = average gap between beats
-  2. A new effect track is created ABOVE the clips.
-  3. Effects are applied cyclically on each beat:
-       beat 0 → effect1, beat 1 → effect2, beat 2 → effect3, beat 3 → effect1, ...
-
-EFFECT KEYS for beats edit:
-  Motion:  shake, bounce, pulse, zoom, glitch, wobble, rotate, flicker
-  Color:   warm, cool, vivid, bw, noir, vintage, cinematic, flash, fade, dreamy
-
-EXAMPLES:
-  beats edit shake
-  beats edit shake, zoom
-  beats edit shake, zoom, pulse
-  beats edit zoom, pulse, glitch
-  beats edit warm, cool, vivid
-  beats edit shake, flash, zoom
-  beats edit pulse, zoom, shake, glitch
-
-TYPICAL WORKFLOW:
-  1. Import audio + images.
-  2. Select the audio clip → "detect beats"
-  3. Multi-select visual clips (⏩ button) → "beats edit shake, zoom, pulse"
+  [00:05 - 00:08] brightness 130, saturation 140
+  [00:08 - 00:15] sticker 🔥 at 50 30
+  [00:15 - 00:18] audio echo
+  [00:18 - 00:22] vintage
+  [00:22 - 00:28] "Next" font handwriting size 40 color ramp #ff0066 to #0066ff
 
 ═══════════════════════════════════════════════
 FORMAT 2 — SIMPLE (no timestamps, at playhead)
@@ -264,23 +110,372 @@ FORMAT 2 — SIMPLE (no timestamps, at playhead)
   trim left
 
 ═══════════════════════════════════════════════
+TEXT LAYER PROPERTIES (after quoted text)
+═══════════════════════════════════════════════
+
+  animation <name>     See "ANIMATIONS" section (100+)
+  position <name>      top, bottom, center, left, right
+  position <X> <Y>     coords 0-100, e.g. 50 30
+  color <name|#hex>    white, black, red, gold, #ff0066
+  color ramp #A to #B  gradient
+  font <name|category> specific font OR category
+  size <number>        font size px (default 36)
+  bold | italic        style flags
+  shadow               drop shadow on
+  stroke <w> <#hex>    text outline
+  align left|center|right
+  scale <number>       text scale %
+  rotation <number>    degrees
+  opacity <number>     0-100
+
+═══════════════════════════════════════════════
+FONT CATEGORIES
+═══════════════════════════════════════════════
+
+  custom        → 22 bundled offline fonts (Shockwave, Pricedown, Fighter Attack, etc.)
+  system        → Arial, Segoe UI, Helvetica, etc.
+  serif         → Times New Roman, Georgia, etc.
+  mono          → Courier New, Consolas, etc.
+  display       → Impact, Bebas Neue, Anton, etc.
+  handwriting   → Comic Sans, Brush Script, Dancing Script, etc.
+  elegant       → Playfair Display, Cormorant, etc.
+  modern        → Poppins, Montserrat, Inter, etc.
+  titles        → Poppins, Montserrat, Cinzel, etc.
+  music         → Bebas Neue, Anton, etc.
+  playful       → Comic Sans, Fredoka, etc.
+  retro         → Lobster, Pacifico, etc.
+  educational   → Open Sans, Lato, etc.
+  cinematic     → Cinzel, Playfair Display, etc.
+  minimal       → Inter, Roboto, DM Sans, etc.
+
+LOCAL FONTS (offline, best quality):
+  Shockwave, Pricedown, Fighter Attack, Legendary Brush, Funky Groove,
+  Eighties, Funkora, Christmas Music, Chopin Script, Rockybilly,
+  Musiclife, Orchard Song, Gwathlyn, Amita, Bangela, Brisound,
+  Daffiys, Kaway, Komika, Forceless Demo, Rengkox, Rumburak
+
+═══════════════════════════════════════════════
+MULTI-STYLE TEXT (per-word)
+═══════════════════════════════════════════════
+
+  [00:00 - 00:05] [seg "i am" font handwriting size 20 color whitish] [seg "fine" font music size 60 color ramp #00FF87 to #60EFFF] position center
+
+═══════════════════════════════════════════════
+ANIMATIONS (100+ names)
+═══════════════════════════════════════════════
+
+BASIC: typewriter, decoder, fadeIn, fadeUp, fadeDown, slideLeft, slideRight,
+       slideUp, slideDown, popIn, bounceIn, flicker, cinematicBlur
+
+REVEALS: wordReveal, characterRise, maskVertical, maskHorizontal, centerOut,
+         lineDraw, blurryReveal, smokeDissolve, trailFade
+
+GLITCH: glitch, rgbSplit, sliceGlitch, blockGlitch, staticNoise, vcrDistort,
+        shakeJitter, cyberpunk, matrixRain, interlaced
+
+WAVES: wave, bounceWave, sineWave, liquidMelt, flagWave, waterRipple,
+       heatWave, elasticWave, pulsingWave, turbulent, circularWave
+
+BOUNCES: overshootPop, elasticDrop, jellyBounce, microBounce, stompBounce,
+         squeezeStretch, float, diagonalJump, gravityFall, heavyLanding,
+         doubleBounce, bouncySpin, snapBack, springString, sideKick
+
+SLIDERS: flyDiagonalTL, flyDiagonalBR, crossSlide, accelSlide, decelSlide,
+         splitSlide, zigzagSlide, smoothGlide, infiniteScroll, pushSlide
+
+ROTATIONS: flip3DX, flip3DY, rotate3D, yAxisFlip, xAxisFlip, vortexSpin,
+           zAxisSpin, spiralIn, tornado, skewSpin, pendulum, propeller,
+           barrelRoll, cubeRoll, gentleTilt, twister
+
+ZOOMS: zoomIn, zoomOut, cinematicZoom, hyperZoomOut, pulseScale,
+       elasticZoom, lensFlareZoom, shrinkReveal, popScale, depthZoom, snapZoom
+
+SPECIAL: scribble, neonGlow, gradientShift, ghostTrail, silhouette,
+         explosion, implosion, pulse, shake
+
+═══════════════════════════════════════════════
+ADJUSTMENT KEYS
+═══════════════════════════════════════════════
+
+brightness, contrast, exposure, whites, blacks, shadows, highlights,
+clarity, saturation, vibrance, temperature, tint, noise, sharpen, vignette
+
+Color channels: reds, oranges, yellows, greens, cyans, blues,
+                purples, magentas, skintones
+
+Format:   brightness 120, saturation 130, shadows 30
+
+═══════════════════════════════════════════════
+FILTER KEYS
+═══════════════════════════════════════════════
+
+grayscale, sepia, invert, blur, hue, opacity
+
+Format:   grayscale 80, blur 5, invert 100
+
+═══════════════════════════════════════════════
+COLOR WHEELS
+═══════════════════════════════════════════════
+
+Format:   shadows <color> <sat> <intensity>
+          midtones <color> <sat> <intensity>
+          highlights <color> <sat> <intensity>
+          hdr <0-200>
+
+Colors: red, orange, yellow, lime, green, teal, cyan, sky, blue,
+        indigo, purple, violet, magenta, pink, rose, gold, white, black
+
+Examples:
+  shadows teal 65 70, midtones sky 30 25, highlights orange 55 65, hdr 105
+  (classic teal-and-orange cinematic grade)
+
+═══════════════════════════════════════════════
+EFFECT PRESETS (color grades + motion)
+═══════════════════════════════════════════════
+
+COLOR GRADES:
+  warm, cool, vintage, cinematic, bw, dreamy, vivid, faded, dramatic,
+  negative, softGlow, noir, tealOrange, hollywood, blockbuster, filmLook,
+  drama, epic, thriller, bleach, bleachBypass, sepiaMem, retro8mm, kodak,
+  polaroid, oldFilm, antique, monochrome, filmNoir, cyberpunk, vaporwave,
+  synthwave, plasma, electric, techno, neonCity, gold, sunrise, sunset,
+  goldenHour, amber, ember, copper, autumn, moonlight, midnight, ice,
+  frost, ocean, sky, deepBlue, moody, darkDrama, grunge, gritty, somber,
+  infrared, matrix, thermal, xray, negativeSoft, duotone, spectrum,
+  hyperSat, softFocus, pastel, creamy, haze, bloom, ethereal, hdr,
+  punchy, dynamic, vividHard, contrastMax, sepia, brownTone, coffee,
+  flashWhite, flashSoft, lightBurst, overexpose
+
+MOTION (also usable standalone):
+  shake, tremor, quake, earthquake, hit, impact, jolt, rumble, vibration,
+  micro, jitter, chaos, turbulent, bounce, punch, kick, throb, beat, drop,
+  spring, elastic, boing, headbang, pulse, heartbeat, breath, pump, thump,
+  drum, zoomPulse, zoomHard, zoomSoft, push, pull, rush, slam, wobble,
+  swing, sway, rock, spin, roll, whirl, pendulum, tilt, drift, glitch,
+  noise, digital, rgbSplit, pixel, stutter, tear, vhs, staticFx, tracking,
+  datamosh, signalLoss, flicker, strobe, flashFast, tv, lightning, blink, spark
+
+═══════════════════════════════════════════════
+OVERLAY EFFECTS (30+ visual layers)
+═══════════════════════════════════════════════
+
+PARTICLES:
+  rain, snow, dust, sparks, embers, stars, bokeh, fireFlies
+
+ATMOSPHERE:
+  fog, smoke, haze, mist
+
+NOISE / TEXTURE:
+  noise, filmGrain, blackNoise, whiteNoise, scanlines, staticTV
+
+LIGHT:
+  lightLeak, lensFlare, bloom, sunburst, godRays
+
+FLICKER:
+  flicker, strobe, pulseFx, blink
+
+TONE WASH:
+  blueLake, warmWash, coolWash, tealWash, roseWash
+
+EDGES:
+  sharpenEdges, edgeGlow
+
+MISC:
+  vignette, blackBars, vhsLines, glitchBars
+
+═══════════════════════════════════════════════
+TRANSITIONS (100+ names)
+═══════════════════════════════════════════════
+
+BASIC:
+  fade, dissolve, fade black, fade white, blur
+
+PUSH:
+  pushLeft, pushRight, pushUp, pushDown
+
+SLIDE OVER:
+  slideOverLeft, slideOverRight, slideOverTop, slideOverBottom
+
+SLIDE IN:
+  slide left, slide right, slide up, slide down
+
+WIPES:
+  wipe left, wipe right, wipeHorizontal, wipeVertical,
+  wipeDiagonalTL, wipeDiagonalBR, splitWipeVertical, splitWipeHorizontal,
+  checkerboardWipe, venetianBlinds, clockWipe, wedgeWipe,
+  irisBox, irisCross, circle in
+
+ZOOMS:
+  zoom in, zoom out, smoothZoomIn, smoothZoomOut, crossZoom, zoomBlur
+
+SPINS:
+  spinCW, spinCCW, spinZoomCombo, radialBlurSpin, swirlDistort
+
+3D:
+  cubeFlipLeft, cubeFlipRight, pageFlip, doorSwing, cardFlip,
+  flyBy, zTumble, elasticZoomSpin
+
+GLITCH:
+  rgbSplit, hLineJitter, digitalBlock, vcrStatic, dataMosh,
+  flickerFlash, sliceDistort, matrixScanline, signalLoss,
+  pixelSortWipe, hwFreezeJitter, chromaticDisp, waveGlitch,
+  microStrobe, glitchDissolve
+
+FADES / DISSOLVES:
+  dipToColor, gaussianBlurCross, dirBlurLeft, dirBlurRight,
+  bokehBlurDissolve, nonAdditiveDissolve, filmDissolve,
+  randomBlocksDissolve, meltDissolve, softSmudge
+
+LIGHT & COLOR:
+  lensFlareFlash, lightLeakOrange, neonGlowBurn, filmBurn,
+  exposureFlash, colorInvertFlash, rainbowPrism, softVignetteFade,
+  solarizeWipe, lightWipe
+
+LIQUID & WARP:
+  waterRipple, acidMelt, turbulentSwirl, waveWarpH, liquidFluidWipe,
+  magnifyingWave, glassShatter, fractalNoiseTwist, twirlZoom,
+  stretchDistort, morphTrans, pageRoll, rippleDissolve,
+  vortexPull, sphericalWarp
+
+SHAPES:
+  heartExpand, starWipe, diamondMask, multiCircleGrid, hexagonTiles,
+  diagonalSlats, triangleFan, spiralMatrix, paintBrush, inkSplash
+
+HOW TO USE:
+  layer <Vn|An> transitions <name1>, <name2>, <name3>, ...
+  transitions <name1>, <name2>, ...               (uses selected clip)
+
+Rules:
+  • The FIRST clip on a layer is skipped (no preceding clip)
+  • Each transition applies to the START of clips 2, 3, 4, ...
+  • Add "loop" at end to repeat the pattern across all clips
+  • Use "auto" for random variety — no repeats back-to-back
+  • Add duration: <name> 0.5 (default 0.5s, range 0.1-3.0s)
+
+Examples:
+  layer v1 transitions fade, dissolve, slide left, zoom
+  layer v1 transitions pushLeft, pushRight, spinCW, vortexPull, heartExpand
+  layer v1 transitions rgbSplit 0.3, glitchDissolve 0.4, filmBurn 0.5
+  layer v1 transitions auto                          (random variety)
+  layer v1 transitions auto loop                     (random, loops)
+  layer v1 transitions fade, dissolve loop           (pattern loops)
+
+SHORTCUTS:
+  transition all <type> [<dur>]         → all layers, all junctions
+  transition at <time> <type> [<dur>]   → clips starting at <time>±0.2s
+
+═══════════════════════════════════════════════
+🥁 BEATS EDITING (audio-driven)
+═══════════════════════════════════════════════
+
+STEP 1 — DETECT BEATS (on selected AUDIO clip):
+  detect beats
+  detect beats hard              (only HARD beats)
+  detect beats medium            (only MEDIUM beats)
+  detect beats soft              (only SOFT beats)
+  detect beats hard,med          (HARD + MEDIUM)
+  detect beats med,soft          (MEDIUM + SOFT)
+  detect beats 0.3-0.5           (numeric strength range)
+
+  Synonyms: heavy/strong/loud → hard, mid/normal → med,
+            low/quiet/light → soft
+
+STEP 2 — BEATS EDIT (with selected VISUAL clips):
+  beats edit <effect1>, <effect2>, ...
+
+  What happens:
+  1. Selected visual clips get distributed across beat times
+  2. If clips < beats → clips auto-clone and loop
+  3. New effect track created ABOVE clips
+  4. Effects cycle per beat
+
+STRENGTH-AWARE SYNTAX:
+  beats edit hard: shake+glow ; rest: zoom, pulse, bounce
+
+  Sections separated by ;
+  Groups: hard: / med: / soft: / rest:
+  + stacks effects on SAME beat
+  , cycles effects across beats
+
+EXAMPLES:
+  beats edit shake, zoom, pulse
+  beats edit hard: shake+glow ; rest: zoom, pulse, bounce
+  beats edit hard: shake+glow, bounce+flash ; med: zoom, pulse ; soft: fade, dreamy
+  beats edit null, null, shake, null, null, zoom       (effect every 3rd beat)
+  beats edit null, null, shake+glow ; rest: null       (only every 3rd, hard only)
+
+═══════════════════════════════════════════════
+📋 DUPLICATE CLIPS
+═══════════════════════════════════════════════
+
+  duplicate                    → duplicate selected clip(s)
+  duplicate 3                  → duplicate selected 3 times
+  duplicate all                → duplicate all clips on V1
+  duplicate all 2              → duplicate all, 2 layers
+  duplicate layer v1           → duplicate all clips on V1
+  duplicate layer v2 3         → duplicate V2 clips 3 times
+  duplicate layer a1           → duplicate A1 audio clips
+
+  Selected clips can be:
+    • Single clip (just select it)
+    • Multiple clips (⏩ / ⏪ multi-select)
+    • Whole layer (use "duplicate all" or "duplicate layer v1")
+
+  Result: copies go to the NEXT track above, with fresh IDs.
+
+═══════════════════════════════════════════════
+CHROMA KEY
+═══════════════════════════════════════════════
+
+  green screen
+  blue screen
+  chroma #00ff00
+  chroma #00ff00 similarity 30
+  chroma #0000ff intensity 80
+
+═══════════════════════════════════════════════
+AUDIO FX KEYS
+═══════════════════════════════════════════════
+
+studio, warm, bright, vocal, podcast, deep, monster, chipmunk, baby,
+robot, echo, reverb, cave, stadium, telephone, underwater, whisper, radio
+
+Format: audio echo
+        audio monster, reverb    (stack multiple)
+
+═══════════════════════════════════════════════
+STICKER
+═══════════════════════════════════════════════
+
+  sticker 🔥
+  sticker 🔥 at 50 30
+  sticker 😀 at 20 80 size 150
+
+═══════════════════════════════════════════════
 EXAMPLES
 ═══════════════════════════════════════════════
 
-Intro:
+Intro with transitions:
   ratio 9:16
   [00:00 - 00:05] "Welcome" animation typewriter, position center, color white
-  [00:05 - 00:08] "Bounce" animation bounce, position bottom, color yellow
-
-Transitions (4 clips on V1):
-  layer v1 transitions fade 0.5, dissolve 0.8, slide left 0.6, zoom 1
+  [00:05 - 00:08] brightness 130, saturation 140
+  layer v1 transitions pushLeft, spinCW, vortexPull
 
 Beats workflow:
-  Step 1 (select audio):  detect beats
-  Step 2 (select visuals): beats edit shake, zoom, pulse
+  Step 1 (audio selected):   detect beats hard
+  Step 2 (visuals selected): beats edit hard: shake+glow ; rest: zoom, pulse, bounce
 
-Mixed:
-  brightness 120, layer v1 transitions fade, dissolve, slide, zoom, saturation 140
+Cinematic grade:
+  brightness 95, contrast 115, shadows -20, highlights 15, vibrance 20, vignette 35, shadows teal 65 70, midtones sky 30 25, highlights orange 55 65, hdr 105
+
+Animation stack:
+  ratio 9:16
+  [00:00 - 00:03] "Rise" font titles size 92 bold, animation overshootPop, color ramp #ffcc00 to #ff0066, shadow
+  [00:01 - 00:03] "ABOVE" font modern size 32, animation flip3DY, color #60EFFF
+  [00:02 - 00:03] "NOISE" font handwriting size 88, animation vortexSpin, color gold
+
+Overlay weather:
+  rain, blueLake, vignette 40
 
 ═══════════════════════════════════════════════
 RULES
@@ -292,7 +487,8 @@ RULES
 4. Properties are comma-separated.
 5. Layer transitions: put the ENTIRE comma-list inside ONE command.
 6. Beats edit: effect names separated by commas, in ONE command.
-7. Transition names with spaces (not hyphens): "slide left" ✓, "slide-left" ✗
+7. Transition names with spaces (not hyphens): "slide left" ✓
+8. Do NOT exceed 3 seconds per effect unless user specifies otherwise.
 
 MY REQUEST: [yahan apna request likho]
 

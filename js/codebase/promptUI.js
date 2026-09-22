@@ -346,6 +346,22 @@ const CATEGORIES = [
       'audio whisper',
       'audio radio'
     ]
+  },  {
+    key: 'duplicate',
+    label: 'Duplicate',
+    icon: '📋',
+    examples: [
+      'duplicate',
+      'duplicate selected',
+      'duplicate all',
+      'duplicate all 2',
+      'duplicate all 3',
+      'duplicate layer v1',
+      'duplicate layer v1 2',
+      'duplicate layer v2 3',
+      'duplicate 2',
+      'duplicate 3'
+    ]
   }
 ];
 
@@ -590,13 +606,18 @@ async function onApply() {
     const hasDetectBeats = !!state.detectBeats;
     const hasBeatsEdit = !!state.beatsEdit;
 
+    // 🆕 NEW FLAGS
+    const hasDuplicate = !!state.duplicate;
+    const hasAutoText = !!state.autoText;
+
     hasSomething = hasAdjust || hasFilters || hasEffect || hasSpeed ||
                    hasTransition || hasTexts || hasStickers || hasWheel ||
                    hasChroma || hasTransforms || hasKeyframes ||
                    hasAudioFx || hasTrim || hasTextProps ||
                    hasTransitionAll || hasTighten || hasClearKf ||
                    hasOpenGraph || hasAutoGraph || hasAtTransitions ||
-                   hasLayerTransitions || hasDetectBeats || hasBeatsEdit;
+                   hasLayerTransitions || hasDetectBeats || hasBeatsEdit ||
+                   hasDuplicate || hasAutoText;
   }
 
   if (!hasSomething) {
@@ -604,20 +625,12 @@ async function onApply() {
     return;
   }
 
-  // 🆕 Await async (beats detection needs time)
+  // Await async executePrompt (beats detection needs time)
   let result;
   try {
     result = await executePrompt(state);
   } catch (e) {
     showFeedback('❌ Execute failed: ' + (e.message || 'unknown'), 'err');
-    return;
-  }
-    // ═══════════════════════════════════════════════════════════
-  //  🆕 BEATS REPORT — show full copyable report
-  // ═══════════════════════════════════════════════════════════
-  if (result.ok && result.beatsReport) {
-    showFeedback(result.beatsReport, 'ok', 60000);
-    inputEl.value = '';
     return;
   }
 
@@ -630,6 +643,13 @@ async function onApply() {
       }
     }
     showFeedback(msg, 'err');
+    return;
+  }
+
+  // 🆕 BEATS REPORT — show full copyable report
+  if (result.ok && result.beatsReport) {
+    showFeedback(result.beatsReport, 'ok', 60000);
+    inputEl.value = '';
     return;
   }
 
@@ -667,7 +687,6 @@ async function onApply() {
   inputEl.value = '';
   inputEl.blur();
 }
-
 // ═══════════════════════════════════════════════════════════════
 //  FEEDBACK
 // ═══════════════════════════════════════════════════════════════
