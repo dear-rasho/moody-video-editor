@@ -13,6 +13,7 @@
 
 import { hasAnyKeyframes, sampleAll } from './keyframeStore.js';
 import { isTransitionActive, getTransitionProgress, renderTransitionBlend } from './transitionEngine.js';
+import { drawOverlay } from './overlayRenderer.js';
 
 // ═══════════════════════════════════════════════════════════════
 //  IMAGE CACHE
@@ -324,12 +325,19 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime,
     try { drawTextOverlay(ctx, W, H, textClips[i].clip.textState, timelineTime, textClips[i].clip); }
     catch (_) {}
   }
-
   // Stickers
   for (let i = 0; i < active.length; i++) {
     const c = active[i].clip;
     if (c.__stickerId && c.stickerState) {
       try { drawStickerOverlay(ctx, W, H, c.stickerState, c, timelineTime); } catch (_) {}
+    }
+  }
+
+  // 🆕 Overlay effects — draw on top
+  for (let i = 0; i < effects.length; i++) {
+    const st = effects[i].clip.effectState;
+    if (st && st.overlay && st.overlay.type) {
+      try { drawOverlay(ctx, W, H, timelineTime, st.overlay); } catch (_) {}
     }
   }
 }

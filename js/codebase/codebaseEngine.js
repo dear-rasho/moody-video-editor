@@ -1172,10 +1172,11 @@ function createEffectWithDuration(kind, state, name, startTime, duration) {
 }
 
 function resetPlayhead() {
+  // 🆕 Only pause — do NOT seek back to 0.
+  // Playhead stays where the user had it before applying the prompt.
   const eng = window.__playbackEngine;
   if (!eng) return;
   try { if (typeof eng.pause === 'function') eng.pause(); } catch (_) {}
-  try { if (typeof eng.seek === 'function') eng.seek(0); } catch (_) {}
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -2158,9 +2159,19 @@ export async function executePrompt(state) {
       if (state.transforms.scale != null) targetClip.textState.scale = state.transforms.scale;
       if (state.transforms.rotation != null) targetClip.textState.rotation = state.transforms.rotation;
     }
+
+    // 🆕 Auto-keyframe if clip already has keyframes
+    const ks = window.__keyframeStore;
+    if (ks && typeof ks.autoKeyframeIfActive === 'function' && ks.hasAnyKeyframes(targetClip)) {
+      const eng = window.__playbackEngine;
+      const t = eng && typeof eng.getTime === 'function' ? eng.getTime() : 0;
+      tfKeys.forEach(function (prop) {
+        ks.autoKeyframeIfActive(targetClip, prop, t, state.transforms[prop]);
+      });
+    }
+
     results.push('transform');
   }
-
   if (state.keyframes.length > 0 && targetClip) {
     const eng = window.__playbackEngine;
     const now = eng && typeof eng.getTime === 'function' ? eng.getTime() : 0;

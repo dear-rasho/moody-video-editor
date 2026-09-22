@@ -242,36 +242,272 @@ function capitalize(s) {
 
 // ═══════════════════════════════════════════════════════════════
 //  EFFECT MAPS
-// ═══════════════════════════════════════════════════════════════
 const MOTION_MAP = {
-  shake:     { type: 'shake',     intensity: 90,  speed: 1.2 },
-  bounce:    { type: 'bounce',    intensity: 100, speed: 1.4 },
-  pulse:     { type: 'pulse',     intensity: 100, speed: 1.2 },
-  zoom:      { type: 'zoomPulse', intensity: 100, speed: 1.0 },
-  zoomPulse: { type: 'zoomPulse', intensity: 100, speed: 1.0 },
-  zoomin:    { type: 'zoomPulse', intensity: 100, speed: 1.0 },
-  glitch:    { type: 'glitch',    intensity: 100, speed: 2.0 },
-  wobble:    { type: 'rotate',    intensity: 80,  speed: 1.0 },
-  rotate:    { type: 'rotate',    intensity: 80,  speed: 1.0 },
-  flicker:   { type: 'glitch',    intensity: 60,  speed: 3.0 }
+  // ═══ SHAKE FAMILY (jolt, hit, tremor, quake) ═══
+  shake:       { type: 'shake',     intensity: 90,  speed: 1.2 },
+  tremor:      { type: 'shake',     intensity: 140, speed: 1.5 },
+  quake:       { type: 'shake',     intensity: 180, speed: 1.8 },
+  earthquake:  { type: 'shake',     intensity: 220, speed: 2.0 },
+  hit:         { type: 'shake',     intensity: 130, speed: 2.2 },
+  impact:      { type: 'shake',     intensity: 150, speed: 1.6 },
+  jolt:        { type: 'shake',     intensity: 120, speed: 2.5 },
+  rumble:      { type: 'shake',     intensity: 160, speed: 1.3 },
+  vibration:   { type: 'shake',     intensity: 60,  speed: 3.0 },
+  micro:       { type: 'shake',     intensity: 40,  speed: 4.0 },
+  jitter:      { type: 'shake',     intensity: 70,  speed: 3.5 },
+  quiver:      { type: 'shake',     intensity: 50,  speed: 3.8 },
+  shudder:     { type: 'shake',     intensity: 110, speed: 2.8 },
+  chaos:       { type: 'shake',     intensity: 170, speed: 2.6 },
+  turbulent:   { type: 'shake',     intensity: 130, speed: 3.2 },
+
+  // ═══ BOUNCE FAMILY (kick, punch, drop, spring) ═══
+  bounce:      { type: 'bounce',    intensity: 100, speed: 1.4 },
+  punch:       { type: 'bounce',    intensity: 130, speed: 1.8 },
+  kick:        { type: 'bounce',    intensity: 140, speed: 2.2 },
+  throb:       { type: 'bounce',    intensity: 90,  speed: 1.0 },
+  beat:        { type: 'bounce',    intensity: 110, speed: 1.6 },
+  drop:        { type: 'bounce',    intensity: 120, speed: 1.3 },
+  spring:      { type: 'bounce',    intensity: 150, speed: 1.9 },
+  elastic:     { type: 'bounce',    intensity: 130, speed: 1.5 },
+  boing:       { type: 'bounce',    intensity: 160, speed: 2.1 },
+  hop:         { type: 'bounce',    intensity: 120, speed: 1.7 },
+  jump:        { type: 'bounce',    intensity: 140, speed: 1.9 },
+  jumpcut:     { type: 'bounce',    intensity: 100, speed: 2.5 },
+  headbang:    { type: 'bounce',    intensity: 150, speed: 1.5 },
+  bounceHard:  { type: 'bounce',    intensity: 180, speed: 1.6 },
+  bounceSoft:  { type: 'bounce',    intensity: 70,  speed: 1.1 },
+
+  // ═══ PULSE FAMILY (heartbeat, breath, pump) ═══
+  pulse:       { type: 'pulse',     intensity: 100, speed: 1.2 },
+  heartbeat:   { type: 'pulse',     intensity: 130, speed: 0.6 },
+  heart:       { type: 'pulse',     intensity: 120, speed: 0.7 },
+  breath:      { type: 'pulse',     intensity: 80,  speed: 0.5 },
+  breathe:     { type: 'pulse',     intensity: 75,  speed: 0.5 },
+  pump:        { type: 'pulse',     intensity: 110, speed: 1.8 },
+  pulseHard:   { type: 'pulse',     intensity: 150, speed: 1.6 },
+  pulseSoft:   { type: 'pulse',     intensity: 60,  speed: 0.9 },
+  thump:       { type: 'pulse',     intensity: 140, speed: 0.8 },
+  drum:        { type: 'pulse',     intensity: 120, speed: 2.0 },
+
+  // ═══ ZOOM FAMILY (push, pull, rush, slam) ═══
+  zoom:        { type: 'zoomPulse', intensity: 100, speed: 1.0 },
+  zoomin:      { type: 'zoomPulse', intensity: 100, speed: 1.0 },
+  zoomout:     { type: 'zoomPulse', intensity: 90,  speed: 1.0 },
+  zoomPulse:   { type: 'zoomPulse', intensity: 100, speed: 1.0 },
+  zoomHard:    { type: 'zoomPulse', intensity: 180, speed: 1.2 },
+  zoomSoft:    { type: 'zoomPulse', intensity: 60,  speed: 0.8 },
+  push:        { type: 'zoomPulse', intensity: 140, speed: 1.1 },
+  pull:        { type: 'zoomPulse', intensity: 120, speed: 0.9 },
+  rush:        { type: 'zoomPulse', intensity: 160, speed: 1.5 },
+  slam:        { type: 'zoomPulse', intensity: 200, speed: 1.8 },
+  breathe2:    { type: 'zoomPulse', intensity: 70,  speed: 0.6 },
+  zoomBreathe: { type: 'zoomPulse', intensity: 80,  speed: 0.7 },
+
+  // ═══ ROTATE FAMILY (swing, sway, spin, whirl) ═══
+  wobble:      { type: 'rotate',    intensity: 80,  speed: 1.0 },
+  rotate:      { type: 'rotate',    intensity: 80,  speed: 1.0 },
+  swing:       { type: 'rotate',    intensity: 100, speed: 1.2 },
+  sway:        { type: 'rotate',    intensity: 50,  speed: 0.8 },
+  rock:        { type: 'rotate',    intensity: 90,  speed: 1.0 },
+  spin:        { type: 'rotate',    intensity: 200, speed: 2.0 },
+  roll:        { type: 'rotate',    intensity: 120, speed: 1.4 },
+  whirl:       { type: 'rotate',    intensity: 180, speed: 1.8 },
+  pendulum:    { type: 'rotate',    intensity: 110, speed: 0.9 },
+  tilt:        { type: 'rotate',    intensity: 60,  speed: 0.7 },
+  drift:       { type: 'rotate',    intensity: 40,  speed: 0.4 },
+  swaySoft:    { type: 'rotate',    intensity: 30,  speed: 0.6 },
+  rollHard:    { type: 'rotate',    intensity: 160, speed: 1.6 },
+
+  // ═══ GLITCH FAMILY (rgb, vhs, static, tear) ═══
+  glitch:      { type: 'glitch',    intensity: 100, speed: 2.0 },
+  noise:       { type: 'glitch',    intensity: 120, speed: 2.5 },
+  digital:     { type: 'glitch',    intensity: 100, speed: 3.0 },
+  rgb:         { type: 'glitch',    intensity: 90,  speed: 2.2 },
+  rgbSplit:    { type: 'glitch',    intensity: 85,  speed: 2.1 },
+  pixel:       { type: 'glitch',    intensity: 80,  speed: 2.8 },
+  stutter:     { type: 'glitch',    intensity: 140, speed: 4.0 },
+  tear:        { type: 'glitch',    intensity: 110, speed: 3.2 },
+  vhs:         { type: 'glitch',    intensity: 130, speed: 2.0 },
+  staticFx:    { type: 'glitch',    intensity: 150, speed: 3.5 },
+  tracking:    { type: 'glitch',    intensity: 100, speed: 2.4 },
+  moshing:     { type: 'glitch',    intensity: 120, speed: 2.6 },
+  datamosh:    { type: 'glitch',    intensity: 110, speed: 2.3 },
+  vcr:         { type: 'glitch',    intensity: 100, speed: 1.8 },
+  signalLoss:  { type: 'glitch',    intensity: 160, speed: 3.8 },
+
+  // ═══ FLICKER FAMILY (strobe, volt, bolt) ═══
+  flicker:     { type: 'glitch',    intensity: 60,  speed: 3.0 },
+  strobe:      { type: 'glitch',    intensity: 90,  speed: 5.0 },
+  flashFast:   { type: 'glitch',    intensity: 70,  speed: 6.0 },
+  tv:          { type: 'glitch',    intensity: 50,  speed: 2.5 },
+  volt:        { type: 'glitch',    intensity: 80,  speed: 4.5 },
+  bolt:        { type: 'glitch',    intensity: 100, speed: 3.8 },
+  lightning:   { type: 'glitch',    intensity: 120, speed: 4.2 },
+  blink:       { type: 'glitch',    intensity: 40,  speed: 7.0 },
+  pulsate:     { type: 'glitch',    intensity: 55,  speed: 3.5 },
+  spark:       { type: 'glitch',    intensity: 75,  speed: 4.8 }
 };
 
 const COLOR_MAP = {
-  warm:      { brightness: 108, contrast: 105, saturation: 115 },
-  cool:      { brightness: 100, contrast: 108, saturation: 95 },
-  vivid:     { brightness: 102, contrast: 112, saturation: 145 },
-  bw:        { grayscale: 100, contrast: 110 },
-  noir:      { grayscale: 100, contrast: 135, brightness: 92 },
-  vintage:   { brightness: 98, contrast: 92, saturation: 80, sepia: 25 },
-  cinematic: { brightness: 98, contrast: 118, saturation: 90 },
-  flash:     { brightness: 180, contrast: 115, saturation: 100 },
-  fade:      { brightness: 100, contrast: 85, saturation: 90 },
-  dreamy:    { brightness: 105, contrast: 92, saturation: 105, blur: 0.6 },
-  // Glow / lighting family
-  glow:      { brightness: 125, contrast: 105, saturation: 120, blur: 0.5 },
-  lighting:  { brightness: 140, contrast: 110, saturation: 115 },
-  sparkle:   { brightness: 130, contrast: 108, saturation: 140 },
-  neon:      { brightness: 105, contrast: 125, saturation: 160 }
+  // ═══ ORIGINAL ═══
+  warm:        { brightness: 108, contrast: 105, saturation: 115 },
+  cool:        { brightness: 100, contrast: 108, saturation: 95 },
+  vivid:       { brightness: 102, contrast: 112, saturation: 145 },
+  bw:          { grayscale: 100, contrast: 110 },
+  noir:        { grayscale: 100, contrast: 135, brightness: 92 },
+  vintage:     { brightness: 98, contrast: 92, saturation: 80, sepia: 25 },
+  cinematic:   { brightness: 98, contrast: 118, saturation: 90 },
+  flash:       { brightness: 180, contrast: 115, saturation: 100 },
+  fade:        { brightness: 100, contrast: 85, saturation: 90 },
+  dreamy:      { brightness: 105, contrast: 92, saturation: 105, blur: 0.6 },
+  glow:        { brightness: 125, contrast: 105, saturation: 120, blur: 0.5 },
+  lighting:    { brightness: 140, contrast: 110, saturation: 115 },
+  sparkle:     { brightness: 130, contrast: 108, saturation: 140 },
+  neon:        { brightness: 105, contrast: 125, saturation: 160 },
+
+  // ═══ CINEMATIC ═══
+  tealOrange:  { brightness: 100, contrast: 115, saturation: 110 },
+  hollywood:   { brightness: 98, contrast: 120, saturation: 105 },
+  blockbuster: { brightness: 102, contrast: 118, saturation: 115 },
+  cinematicDark:{ brightness: 90, contrast: 130, saturation: 95 },
+  cinematicLight:{ brightness: 112, contrast: 108, saturation: 105 },
+  movieStyle:  { brightness: 100, contrast: 122, saturation: 100 },
+  filmLook:    { brightness: 96, contrast: 116, saturation: 92 },
+  drama:       { brightness: 92, contrast: 128, saturation: 88 },
+  epic:        { brightness: 100, contrast: 125, saturation: 110 },
+  thriller:    { brightness: 88, contrast: 135, saturation: 85 },
+
+  // ═══ FILM / VINTAGE ═══
+  bleach:      { brightness: 105, contrast: 140, saturation: 55 },
+  bleachBypass:{ brightness: 102, contrast: 145, saturation: 50 },
+  sepiaMem:    { brightness: 100, contrast: 100, saturation: 65, sepia: 55 },
+  sepiaDeep:   { brightness: 95, contrast: 105, saturation: 60, sepia: 75 },
+  retro8mm:    { brightness: 102, contrast: 108, saturation: 75, sepia: 30 },
+  film8mm:     { brightness: 100, contrast: 115, saturation: 80, sepia: 20 },
+  kodak:       { brightness: 102, contrast: 110, saturation: 118, sepia: 8 },
+  polaroid:    { brightness: 105, contrast: 95, saturation: 90, sepia: 15 },
+  oldFilm:     { brightness: 95, contrast: 108, saturation: 70, sepia: 40 },
+  antique:     { brightness: 92, contrast: 105, saturation: 75, sepia: 60 },
+
+  // ═══ MONOCHROME ═══
+  monochrome:  { grayscale: 100, contrast: 120 },
+  graySoft:    { grayscale: 100, contrast: 90, brightness: 105 },
+  grayHard:    { grayscale: 100, contrast: 145 },
+  inkwell:     { grayscale: 100, contrast: 160, brightness: 90 },
+  silverScreen:{ grayscale: 100, contrast: 125, brightness: 100 },
+  filmNoir:    { grayscale: 100, contrast: 155, brightness: 88 },
+
+  // ═══ NEON / CYBERPUNK ═══
+  cyberpunk:   { brightness: 105, contrast: 120, saturation: 170 },
+  vaporwave:   { brightness: 102, contrast: 108, saturation: 165 },
+  synthwave:   { brightness: 100, contrast: 125, saturation: 155 },
+  plasma:      { brightness: 108, contrast: 115, saturation: 175 },
+  electric:    { brightness: 105, contrast: 122, saturation: 180 },
+  techno:      { brightness: 100, contrast: 130, saturation: 165 },
+  neonCity:    { brightness: 102, contrast: 118, saturation: 175 },
+  retrowave:   { brightness: 100, contrast: 112, saturation: 160 },
+
+  // ═══ WARM TONES ═══
+  gold:        { brightness: 108, contrast: 108, saturation: 130 },
+  sunrise:     { brightness: 110, contrast: 100, saturation: 125 },
+  sunset:      { brightness: 105, contrast: 105, saturation: 140 },
+  goldenHour:  { brightness: 112, contrast: 102, saturation: 135 },
+  honey:       { brightness: 108, contrast: 100, saturation: 120 },
+  amber:       { brightness: 105, contrast: 105, saturation: 125 },
+  ember:       { brightness: 100, contrast: 115, saturation: 135 },
+  copper:      { brightness: 102, contrast: 108, saturation: 128 },
+  rust:        { brightness: 98, contrast: 112, saturation: 130 },
+  autumn:      { brightness: 100, contrast: 105, saturation: 140 },
+
+  // ═══ COOL TONES ═══
+  moonlight:   { brightness: 95, contrast: 110, saturation: 90 },
+  midnight:    { brightness: 85, contrast: 120, saturation: 95 },
+  ice:         { brightness: 110, contrast: 105, saturation: 100 },
+  frost:       { brightness: 108, contrast: 108, saturation: 95 },
+  ocean:       { brightness: 100, contrast: 110, saturation: 120 },
+  sky:         { brightness: 105, contrast: 100, saturation: 115 },
+  arctic:      { brightness: 100, contrast: 108, saturation: 90 },
+  glacier:     { brightness: 105, contrast: 112, saturation: 95 },
+  deepBlue:    { brightness: 90, contrast: 115, saturation: 130 },
+  coldSteel:   { brightness: 95, contrast: 118, saturation: 85 },
+
+  // ═══ COLORFUL ═══
+  pink:        { brightness: 105, contrast: 105, saturation: 130 },
+  rose:        { brightness: 105, contrast: 102, saturation: 125 },
+  lavender:    { brightness: 105, contrast: 105, saturation: 120 },
+  purple:      { brightness: 100, contrast: 110, saturation: 140 },
+  violet:      { brightness: 98, contrast: 112, saturation: 145 },
+  magenta:     { brightness: 102, contrast: 108, saturation: 150 },
+  cyan:        { brightness: 105, contrast: 108, saturation: 130 },
+  coral:       { brightness: 105, contrast: 105, saturation: 135 },
+  tangerine:   { brightness: 105, contrast: 108, saturation: 145 },
+  lime:        { brightness: 105, contrast: 105, saturation: 140 },
+
+  // ═══ MOODY / DARK ═══
+  moody:       { brightness: 90, contrast: 118, saturation: 85 },
+  darkDrama:   { brightness: 85, contrast: 130, saturation: 80 },
+  shadow:      { brightness: 80, contrast: 125, saturation: 95 },
+  grunge:      { brightness: 95, contrast: 135, saturation: 70 },
+  harsh:       { brightness: 95, contrast: 140, saturation: 105 },
+  gritty:      { brightness: 92, contrast: 132, saturation: 88 },
+  somber:      { brightness: 88, contrast: 115, saturation: 75 },
+  moodLight:   { brightness: 102, contrast: 112, saturation: 100 },
+
+  // ═══ SPECIAL FX ═══
+  infrared:    { brightness: 105, contrast: 115, saturation: 160, invert: 20 },
+  matrix:      { brightness: 95, contrast: 120, saturation: 130 },
+  thermal:     { brightness: 108, contrast: 125, saturation: 180 },
+  xray:        { brightness: 100, contrast: 150, saturation: 10, invert: 30 },
+  negative:    { invert: 100, contrast: 115 },
+  duotone:     { brightness: 100, contrast: 125, saturation: 110 },
+  solarize:    { invert: 30, contrast: 130, saturation: 120 },
+  invertSoft:  { invert: 50, contrast: 105 },
+  spectrum:    { brightness: 105, contrast: 115, saturation: 175 },
+  hyperSat:    { brightness: 102, contrast: 108, saturation: 190 },
+
+  // ═══ SOFT / DREAMY ═══
+  softFocus:   { brightness: 108, contrast: 95, saturation: 108, blur: 0.8 },
+  dreamySoft:  { brightness: 110, contrast: 90, saturation: 105, blur: 1.0 },
+  glowSoft:    { brightness: 115, contrast: 92, saturation: 112, blur: 0.6 },
+  pastel:      { brightness: 112, contrast: 88, saturation: 95 },
+  creamy:      { brightness: 108, contrast: 92, saturation: 100, sepia: 10 },
+  haze:        { brightness: 110, contrast: 85, saturation: 100, blur: 0.7 },
+  mist:        { brightness: 108, contrast: 88, saturation: 105, blur: 0.9 },
+  bloom:       { brightness: 118, contrast: 95, saturation: 115, blur: 0.4 },
+  ethereal:    { brightness: 112, contrast: 90, saturation: 115, blur: 0.8 },
+
+  // ═══ HDR / CONTRAST ═══
+  hdr:         { brightness: 105, contrast: 135, saturation: 125 },
+  hdrSoft:     { brightness: 102, contrast: 125, saturation: 115 },
+  punchy:      { brightness: 100, contrast: 130, saturation: 140 },
+  dynamic:     { brightness: 105, contrast: 128, saturation: 130 },
+  vividHard:   { brightness: 102, contrast: 120, saturation: 170 },
+  contrastMax: { brightness: 95, contrast: 155, saturation: 120 },
+  superPunch:  { brightness: 102, contrast: 145, saturation: 155 },
+
+  // ═══ SEPIA / BROWN ═══
+  sepia:       { sepia: 100 },
+  sepiaLight:  { sepia: 50, brightness: 105 },
+  sepiaWarm:   { sepia: 75, brightness: 103, contrast: 105 },
+  brownTone:   { sepia: 85, brightness: 98, contrast: 108 },
+  cocoa:       { sepia: 70, brightness: 100, saturation: 90 },
+  coffee:      { sepia: 60, brightness: 95, contrast: 110 },
+  wood:        { sepia: 80, brightness: 100, contrast: 102 },
+
+  // ═══ GRAYSCALE VARIANTS ═══
+  grayscale:   { grayscale: 100 },
+  bwContrast:  { grayscale: 100, contrast: 130 },
+  bwSoft:      { grayscale: 100, contrast: 95, brightness: 105 },
+  bwHard:      { grayscale: 100, contrast: 145, brightness: 95 },
+  bwDark:      { grayscale: 100, contrast: 140, brightness: 85 },
+  bwLight:     { grayscale: 100, contrast: 100, brightness: 115 },
+
+  // ═══ FLASH / LIGHT ═══
+  flashWhite:  { brightness: 200, contrast: 100, saturation: 100 },
+  flashSoft:   { brightness: 150, contrast: 108, saturation: 110 },
+  lightBurst:  { brightness: 175, contrast: 105, saturation: 120 },
+  overexpose:  { brightness: 165, contrast: 95, saturation: 105 },
+  brightPop:   { brightness: 125, contrast: 115, saturation: 140 }
 };
 
 export function buildEffectStateForKey(key) {

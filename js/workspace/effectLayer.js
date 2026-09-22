@@ -2,9 +2,9 @@
 //  js/workspace/effectLayer.js
 //  Effect layer CRUD.
 //
-//  FIX: Default duration = FULL timeline end, so chroma/filter/
-//       adjustment/colorwheel apply to the WHOLE video by default.
-//       User can trim/move them like any other layer.
+//  Rule: Effects START at the playhead, END at the current clip's end
+//  (or timeline end if no clip under playhead).
+//  User can drag/resize the effect layer afterward.
 // ================================================================
 
 import { placeClipAtTime } from '../layers/layersManager.js';
@@ -13,7 +13,9 @@ export const DEFAULT_EFFECT_DURATION = 3;
 
 function getState() { return window.__appState; }
 
-// ─── Compute timeline end (ignore other effect/fx layers) ─────
+// ═══════════════════════════════════════════════════════════════
+//  COMPUTE TIMELINE END (ignore effect/fx layers)
+// ═══════════════════════════════════════════════════════════════
 function computeTimelineEnd() {
   const appState = getState();
   if (!appState) return 0;
@@ -28,7 +30,7 @@ function computeTimelineEnd() {
     for (let c = 0; c < track.length; c++) {
       const clip = track[c];
       if (!clip) continue;
-      if (clip.__effectId) continue;    // ignore other effect layers
+      if (clip.__effectId) continue;
       if (clip.__audioFxId) continue;
       if (clip.__soundId) continue;
       const s = Number.isFinite(clip.startTime) ? clip.startTime : 0;
@@ -40,7 +42,57 @@ function computeTimelineEnd() {
   return maxEnd;
 }
 
-// ─── Selection helpers ────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+//  🆕 COMPUTE EFFECT RANGE FROM PLAYHEAD
+//    Start = playhead
+//    End   = clip end at playhead (fallback: timeline end)
+// ═══════════════════════════════════════════════════════════════
+function computeEffectRangeFromPlayhead() {
+  const appState = getState();
+  if (!appState) return { start: 0, duration: DEFAULT_EFFECT_DURATION };
+
+  const eng = window.__playbackEngine;
+  const playhead = eng && typeof eng.getTime === 'function' ? eng.getTime() : 0;
+
+  // Find top display clip at playhead (video/image)
+  let clipEnd = -1;
+  const tracks = appState.timeline.visual || [];
+  const hidden = appState.timeline.hiddenVisualTracks || new Set();
+
+  for (let t = tracks.length - 1; t >= 0; t--) {
+    if (hidden.has(t)) continue;
+    const track = tracks[t];
+    if (!Array.isArray(track)) continue;
+    for (let c = 0; c < track.length; c++) {
+      const clip = track[c];
+      if (!clip || !clip.type) continue;
+      const isV = clip.type.indexOf('video/') === 0;
+      const isI = clip.type.indexOf('image/') === 0;
+      if (!isV && !isI) continue;
+      const s = Number.isFinite(clip.startTime) ? clip.startTime : 0;
+      const d = Number.isFinite(clip.duration) ? clip.duration : 0;
+      if (playhead >= s && playhead < s + d) {
+        clipEnd = s + d;
+        break;
+      }
+    }
+    if (clipEnd > 0) break;
+  }
+
+  // Fallback: timeline end, or playhead + default
+  if (clipEnd < 0) {
+    const tlEnd = computeTimelineEnd();
+    clipEnd = tlEnd > playhead + 0.15 ? tlEnd : (playhead + DEFAULT_EFFECT_DURATION);
+  }
+
+  const start = Math.max(0, playhead);
+  const dur = Math.max(0.15, clipEnd - start);
+  return { start: start, duration: dur };
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  SELECTION HELPERS
+// ═══════════════════════════════════════════════════════════════
 export function hasSelectedLayer() {
   return !!document.querySelector('.clip.selected');
 }
@@ -89,15 +141,14 @@ export function findEffectLayerById(id) {
   return null;
 }
 
-// ─── Create ───────────────────────────────────────────────────
-//  🆕 Default: startTime = 0, duration = FULL timeline end
+// ═══════════════════════════════════════════════════════════════
+//  🆕 CREATE — starts at PLAYHEAD, ends at clip end
+// ═══════════════════════════════════════════════════════════════
 export function createEffectLayer(kind, state, name) {
   const appState = getState();
   if (!appState) return null;
 
-  // Compute full timeline duration
-  const timelineEnd = computeTimelineEnd();
-  const dur = timelineEnd > 0 ? timelineEnd : DEFAULT_EFFECT_DURATION;
+  const range = computeEffectRangeFromPlayhead();
 
   const id = 'fx-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
 
@@ -107,29 +158,29 @@ export function createEffectLayer(kind, state, name) {
     type: 'effect/plain',
     __effectId: id,
     effectState: Object.assign({ kind: kind }, state),
-    startTime: 0,                    // 🆕 start from 0
-    duration: dur,                   // 🆕 full timeline
+    startTime: range.start,
+    duration: range.duration,
     sourceIn: 0,
     __trimmed: true
   };
 
   if (!Array.isArray(appState.timeline.visual)) appState.timeline.visual = [];
 
-  placeClipAtTime(appState.timeline.visual, clipData, 0);
+  placeClipAtTime(appState.timeline.visual, clipData, range.start);
   document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
 
   // Auto-select the newly created layer
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => selectEffectLayerByUrl(clipData.url));
+  requestAnimationFrame(function () {
+    requestAnimationFrame(function () {
+      selectEffectLayerByUrl(clipData.url);
+    });
   });
 
   return id;
 }
+
 // ═══════════════════════════════════════════════════════════════
-//  🆕 CREATE EFFECT LAYER AT EXACT RANGE
-//  Creates a new effect layer that starts at `startTime` and lasts
-//  `duration` seconds. Multiple effects on same time → different
-//  tracks (stacked, no overlap).
+//  CREATE AT EXACT RANGE
 // ═══════════════════════════════════════════════════════════════
 export function createEffectLayerAtRange(kind, state, name, startTime, duration) {
   const appState = getState();
@@ -159,15 +210,18 @@ export function createEffectLayerAtRange(kind, state, name, startTime, duration)
   placeClipAtTime(appState.timeline.visual, clipData, start);
   document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
 
-  // Auto-select the new layer
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => selectEffectLayerByUrl(clipData.url));
+  requestAnimationFrame(function () {
+    requestAnimationFrame(function () {
+      selectEffectLayerByUrl(clipData.url);
+    });
   });
 
   return id;
 }
 
-// ─── Update ───────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+//  UPDATE
+// ═══════════════════════════════════════════════════════════════
 export function updateEffectLayer(clip, updates) {
   if (!clip || !clip.__effectId) return;
   clip.effectState = Object.assign({}, clip.effectState, updates);
@@ -175,7 +229,9 @@ export function updateEffectLayer(clip, updates) {
   document.dispatchEvent(new CustomEvent('effects:refresh'));
 }
 
-// ─── Select by URL ────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+//  SELECT BY URL
+// ═══════════════════════════════════════════════════════════════
 export function selectEffectLayerByUrl(url) {
   const appState = getState();
   if (!appState || !url) return false;

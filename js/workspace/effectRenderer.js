@@ -2,10 +2,17 @@
 //  js/workspace/effectRenderer.js
 //  Visual effects on preview canvas — HIERARCHY-AWARE.
 //  Rule: Effect at track Ti applies to ALL display clips BELOW it.
+//
+//  Supports:
+//   - CSS filters (from effect/filter layers)
+//   - Motion (shake, pulse, zoom, etc.) — combined from stacked layers
+//   - Pixel effects (adjustment, colorWheel, chroma)
+//   - Overlay effects (rain, snow, noise, light leaks, etc.)
 // ================================================================
 
 import { isIdentity } from './transformApplier.js';
 import { hasAnyKeyframes, sampleAll } from './keyframeStore.js';
+import { drawOverlay } from './overlayRenderer.js';
 
 const CSS_ID = 'effect-renderer-styles';
 
@@ -51,14 +58,7 @@ export function initEffectRenderer() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  🆕 DEBOUNCED REFRESH
-//
-//  Problem: prompt se 5 layers banti hain → 7 events fire hote
-//  hain → 7 RAFs scheduled → applyVisualEffects 7 baar chalti
-//  hai → pixel effects COMPOUND ho jate hain → pehla look kharab
-//
-//  Fix: Sirf EK RAF ko chalne do, aur usme base redraw karke
-//  ek hi baar effects apply karo.
+//  DEBOUNCED REFRESH
 // ═══════════════════════════════════════════════════════════════
 let pendingRefresh = false;
 
@@ -66,20 +66,17 @@ function onPausedRefresh() {
   const eng = window.__playbackEngine;
   if (eng && eng.isPlaying && eng.isPlaying()) return;
 
-  // Redraw immediately (visual feedback ke liye)
   const preview = window.__previewCanvasInstance;
   if (preview && typeof preview.redraw === 'function') {
     try { preview.redraw(); } catch (_) {}
   }
 
-  // Agar already pending hai to skip — sirf ek hi RAF chalega
   if (pendingRefresh) return;
   pendingRefresh = true;
 
   requestAnimationFrame(function () {
     pendingRefresh = false;
 
-    // Fresh base redraw karo (compounding rokne ke liye)
     const preview2 = window.__previewCanvasInstance;
     if (preview2 && typeof preview2.redraw === 'function') {
       try { preview2.redraw(); } catch (_) {}
@@ -90,6 +87,7 @@ function onPausedRefresh() {
     applyVisualEffects(t2);
   });
 }
+
 // ═══════════════════════════════════════════════════════════════
 //  HELPERS
 // ═══════════════════════════════════════════════════════════════
@@ -135,10 +133,6 @@ function getActiveVisualClips(time) {
   return active;
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  🆕 ONLY video/image counts as "base display" for effects.
-//  Text/sticker are overlays — they don't block effect hierarchy.
-// ═══════════════════════════════════════════════════════════════
 function getTopDisplayTrackIndex(time) {
   const active = getActiveVisualClips(time);
   for (let i = active.length - 1; i >= 0; i--) {
@@ -171,6 +165,21 @@ function applyVisualEffects(time) {
 
   const topDisplayTrack = getTopDisplayTrackIndex(time);
 
+  // ═══════════════════════════════════════════════════════════
+  //  🆕 ALWAYS draw overlays first — independent of display track
+  // ═══════════════════════════════════════════════════════════
+  const allActive = getActiveVisualClips(time);
+  const activeOverlays = [];
+  for (let i = 0; i < allActive.length; i++) {
+    const c = allActive[i].clip;
+    if (!c || !c.__effectId) continue;
+    const st = c.effectState;
+    if (st && st.overlay && st.overlay.type) {
+      activeOverlays.push(st.overlay);
+    }
+  }
+
+  // If NO display track and NO overlays → clear and return
   if (topDisplayTrack < 0) {
     if (currentCssFilter !== '') {
       canvas.style.removeProperty('filter');
@@ -179,6 +188,20 @@ function applyVisualEffects(time) {
     if (currentMotionKey !== '') {
       canvas.style.removeProperty('transform');
       currentMotionKey = '';
+    }
+
+    // But still draw overlays on top
+    if (activeOverlays.length > 0) {
+      let octx = null;
+      try { octx = canvas.getContext('2d', { willReadFrequently: true }); }
+      catch (_) { octx = canvas.getContext('2d'); }
+      if (octx && canvas.width > 0 && canvas.height > 0) {
+        const W = canvas.width;
+        const H = canvas.height;
+        for (let oi = 0; oi < activeOverlays.length; oi++) {
+          try { drawOverlay(octx, W, H, time, activeOverlays[oi]); } catch (_) {}
+        }
+      }
     }
     return;
   }
@@ -215,7 +238,7 @@ function applyVisualEffects(time) {
     currentMotionKey = motionStr;
   }
 
-  // 3) LAYER TRANSFORM — video/image ONLY
+  // 3) LAYER TRANSFORM
   const preview = window.__previewCanvasInstance;
   if (preview && typeof preview.setLayerTransform === 'function') {
     const active = getActiveVisualClips(time);
@@ -250,17 +273,16 @@ function applyVisualEffects(time) {
     }
   }
 
-   // 4) PIXEL EFFECTS — merge hierarchy + clip-attached grading
+  // 4) PIXEL EFFECTS
   const pixelEffects = [];
   for (let i = 0; i < effects.length; i++) {
     const st = effects[i].clip.effectState;
     if (!st) continue;
-    if (st.kind === 'adjustment' || st.kind === 'colorWheel' || st.kind === 'chroma') {
+    if (st.kind === 'adjustment' || st.kind === 'colorWheel') {
       pixelEffects.push(effects[i]);
     }
   }
 
-  // 🆕 Clip-attached grading (from selected clip via prompt)
   const topClip = getTopDisplayClipObject(time);
   if (topClip && topClip.__grading) {
     const g = topClip.__grading;
@@ -274,48 +296,46 @@ function applyVisualEffects(time) {
         clip: { effectState: { kind: 'colorWheel', colorWheel: g.colorWheel } }
       });
     }
-    if (g.chroma) {
-      pixelEffects.push({
-        clip: { effectState: { kind: 'chroma', chroma: g.chroma } }
-      });
+  }
+
+  if (pixelEffects.length) {
+    let ctx = null;
+    try { ctx = canvas.getContext('2d', { willReadFrequently: true }); }
+    catch (_) { ctx = canvas.getContext('2d'); }
+    if (ctx && canvas.width > 0 && canvas.height > 0) {
+      let imgData = null;
+      try { imgData = ctx.getImageData(0, 0, canvas.width, canvas.height); }
+      catch (_) { imgData = null; }
+
+      if (imgData) {
+        const W = canvas.width;
+        const H = canvas.height;
+        const data = imgData.data;
+        for (let i = 0; i < pixelEffects.length; i++) {
+          const st = pixelEffects[i].clip.effectState;
+          try {
+            if (st.kind === 'adjustment') applyAdjustment(data, W, H, st.adjustments);
+            else if (st.kind === 'colorWheel') applyColorWheel(data, W, H, st.colorWheel);
+          } catch (_) {}
+        }
+        try { ctx.putImageData(imgData, 0, 0); } catch (_) {}
+      }
     }
   }
-  // 🆕 Filter out chroma — handled in previewCanvas per-clip compositing
-  const filteredEffects = pixelEffects.filter(e => {
-    const st = e.clip && e.clip.effectState;
-    if (st && st.kind === 'chroma') return false;
-    return true;
-  });
-  pixelEffects.length = 0;
-  filteredEffects.forEach(e => pixelEffects.push(e));
 
-  if (!pixelEffects.length) return;
-  if (!pixelEffects.length) return;
-
-  let ctx = null;
-  try { ctx = canvas.getContext('2d', { willReadFrequently: true }); }
-  catch (_) { ctx = canvas.getContext('2d'); }
-  if (!ctx) return;
-  if (canvas.width <= 0 || canvas.height <= 0) return;
-
-  let imgData;
-  try { imgData = ctx.getImageData(0, 0, canvas.width, canvas.height); }
-  catch (_) { return; }
-
-  const W = canvas.width;
-  const H = canvas.height;
-  const data = imgData.data;
-
-  for (let i = 0; i < pixelEffects.length; i++) {
-    const st = pixelEffects[i].clip.effectState;
-    try {
-      if (st.kind === 'adjustment') applyAdjustment(data, W, H, st.adjustments);
-      else if (st.kind === 'colorWheel') applyColorWheel(data, W, H, st.colorWheel);
-      else if (st.kind === 'chroma') applyChroma(data, W, H, st.chroma);
-    } catch (_) {}
+  // 5) OVERLAYS — draw ALL active overlays (from any track)
+  if (activeOverlays.length > 0) {
+    let octx = null;
+    try { octx = canvas.getContext('2d', { willReadFrequently: true }); }
+    catch (_) { octx = canvas.getContext('2d'); }
+    if (octx && canvas.width > 0 && canvas.height > 0) {
+      const W = canvas.width;
+      const H = canvas.height;
+      for (let oi = 0; oi < activeOverlays.length; oi++) {
+        try { drawOverlay(octx, W, H, time, activeOverlays[oi]); } catch (_) {}
+      }
+    }
   }
-
-  try { ctx.putImageData(imgData, 0, 0); } catch (_) {}
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -377,7 +397,8 @@ function computeMotion(m, time) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  🆕 COLOR CHANNEL HELPERS (HSL-based)
+//  COLOR CHANNELS
+// ═══════════════════════════════════════════════════════════════
 const COLOR_CHANNELS = [
   { key: 'reds',      center: 0,   range: 45 },
   { key: 'oranges',   center: 30,  range: 45 },
@@ -438,7 +459,6 @@ function applyAdjustment(data, w, h, s) {
   const tiA = (s.tint || 0) / 100, noA = (s.noise || 0) / 100;
   const shpA = (s.sharpen || 0) / 100, vgA = (s.vignette || 0) / 100;
 
-  // Color channels
   const colorVals = {};
   let hasColorChannels = false;
   for (const ch of COLOR_CHANNELS) {
@@ -469,7 +489,6 @@ function applyAdjustment(data, w, h, s) {
     if (tiA) { g -= tiA * 28; r += tiA * 12; b += tiA * 12; }
     r = clamp(r); g = clamp(g); b = clamp(b);
 
-    // Per-color-channel HSL adjustment
     if (hasColorChannels) {
       const [hue, sat, lightness] = rgbToHsl(r, g, b);
       if (sat > 2) {
@@ -478,10 +497,10 @@ function applyAdjustment(data, w, h, s) {
         for (const ch of COLOR_CHANNELS) {
           const val = colorVals[ch.key];
           if (Math.abs(val) < 0.01) continue;
-          const w = getChannelWeight(hue, ch.center, ch.range);
-          if (w > 0.01) {
-            satMul += val * w * 0.8;
-            hueShift += val * w * 3;
+          const w2 = getChannelWeight(hue, ch.center, ch.range);
+          if (w2 > 0.01) {
+            satMul += val * w2 * 0.8;
+            hueShift += val * w2 * 3;
           }
         }
         if (Math.abs(satMul - 1) > 0.01 || Math.abs(hueShift) > 0.5) {
@@ -500,7 +519,7 @@ function applyAdjustment(data, w, h, s) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  COLOR WHEEL
+//  COLOR WHEEL — HSL-based real grading
 // ═══════════════════════════════════════════════════════════════
 function applyColorWheel(data, w, h, cw) {
   if (!cw) return;
@@ -514,7 +533,6 @@ function applyColorWheel(data, w, h, cw) {
   for (let i = 0; i < data.length; i += 4) {
     let r = data[i], g = data[i + 1], b = data[i + 2];
 
-    // HDR white boost
     if (hdr > 1) {
       const boost = (hdr - 1) * 127;
       r = Math.min(255, r + boost);
@@ -522,15 +540,11 @@ function applyColorWheel(data, w, h, cw) {
       b = Math.min(255, b + boost);
     }
 
-    // Luminance (0..1) — used for tone weight
     const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
 
-    // ═══════════════════════════════════════════════════════
-    //  Accumulate weighted hue shift + saturation from each tone
-    // ═══════════════════════════════════════════════════════
     let weightSum = 0;
-    let targetHueSum = 0;     // hue in degrees, weighted
-    let targetSatSum = 0;     // saturation 0..100, weighted
+    let targetHueSum = 0;
+    let targetSatSum = 0;
 
     if (useShadows) {
       const tw = Math.max(0, 1 - lum * 2);
@@ -565,27 +579,19 @@ function applyColorWheel(data, w, h, cw) {
       const avgSat = Math.min(100, targetSatSum / weightSum);
       const strength = Math.min(1, weightSum);
 
-      // Convert pixel to HSL
       const hsl = rgbToHsl(r, g, b);
-      const ph = hsl[0];   // 0..360
-      const ps = hsl[1];   // 0..100
-      const pl = hsl[2];   // 0..100
+      const ph = hsl[0], ps = hsl[1], pl = hsl[2];
 
-      // 🆕 Hue shift towards target hue (shortest path)
       let hDiff = avgHue - ph;
       while (hDiff > 180) hDiff -= 360;
       while (hDiff < -180) hDiff += 360;
       const newHue = ph + hDiff * strength * 0.85;
 
-      // 🆕 Saturation boost proportional to wheel distance + strength
       const satMul = 1 + (avgSat / 100) * strength * 0.9;
       const newSat = Math.min(100, ps * satMul);
 
-      // Lightness kept stable — real grading preserves luminance
       const rgb2 = hslToRgb(newHue, newSat, pl);
-      r = rgb2[0];
-      g = rgb2[1];
-      b = rgb2[2];
+      r = rgb2[0]; g = rgb2[1]; b = rgb2[2];
     }
 
     data[i]     = Math.max(0, Math.min(255, r));
@@ -614,13 +620,9 @@ function applyChroma(data, w, h, c) {
   const softEnd = sim + sm;
 
   for (let i = 0; i < data.length; i += 4) {
-    const r = data[i];
-    const g = data[i + 1];
-    const b = data[i + 2];
+    const r = data[i], g = data[i + 1], b = data[i + 2];
 
-    const dr = r - kr;
-    const dg = g - kg;
-    const db = b - kb;
+    const dr = r - kr, dg = g - kg, db = b - kb;
     const dist = Math.sqrt(dr * dr + dg * dg + db * db) / maxDist;
 
     let removal = 0;
@@ -648,8 +650,7 @@ function applyChroma(data, w, h, c) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  🆕 Get top display clip OBJECT at time
-//  Used to read clip-attached color grading
+//  GET TOP DISPLAY CLIP OBJECT
 // ═══════════════════════════════════════════════════════════════
 function getTopDisplayClipObject(time) {
   const appState = getState();

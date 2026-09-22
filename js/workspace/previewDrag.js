@@ -196,25 +196,15 @@ export function initPreviewDrag() {
 // ═══════════════════════════════════════════════════════════════
 function setKeyframeAware(clip, kfProp, newValue) {
   if (!clip) return;
-  if (!clip.__keyframes) return;
-  const kfs = clip.__keyframes[kfProp];
-  if (!Array.isArray(kfs) || kfs.length === 0) return;
+
+  // 🆕 Use keyframeStore — auto-keyframe if clip has ANY keyframes
+  const ks = window.__keyframeStore;
+  if (!ks || typeof ks.autoKeyframeIfActive !== 'function') return;
 
   const eng = window.__playbackEngine;
   const t0 = eng && typeof eng.getTime === 'function' ? eng.getTime() : 0;
 
-  let found = false;
-  for (let i = 0; i < kfs.length; i++) {
-    if (Math.abs(kfs[i].time - t0) < 0.05) {
-      kfs[i].value = newValue;
-      found = true;
-      break;
-    }
-  }
-  if (!found) {
-    kfs.push({ time: t0, value: newValue, ease: 'easeInOut' });
-    kfs.sort(function (a, b) { return a.time - b.time; });
-  }
+  ks.autoKeyframeIfActive(clip, kfProp, t0, newValue);
 }
 
 // ═══════════════════════════════════════════════════════════════

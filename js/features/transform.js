@@ -715,7 +715,7 @@ function applyTransform() {
 
   lastState = Object.assign({}, state);
 
-  // 🆕 APPLY TO ALL SELECTED CLIPS
+  // Apply to all selected clips
   const multi = window.__multiSelect;
   const clipsToUpdate = [];
 
@@ -723,26 +723,21 @@ function applyTransform() {
     multi.forEachSelectedClip(function (c) { clipsToUpdate.push(c); });
   }
 
-  // Always include activeClip (in case nothing selected)
   if (clipsToUpdate.indexOf(activeClip) < 0) {
     clipsToUpdate.push(activeClip);
   }
 
-  // Determine the delta (only changed props)
   const changedKeys = Object.keys(changed);
+  const ks = window.__keyframeStore;
 
   for (let i = 0; i < clipsToUpdate.length; i++) {
     const clip = clipsToUpdate[i];
 
-    // Compute new state for this clip:
-    // - First clip (anchor) → use full `state`
-    // - Other clips → apply only the changed props on top of their own base
     let newState;
     if (clip === activeClip) {
       newState = Object.assign({}, state);
     } else {
       const base = Object.assign({}, clip.__transform || {});
-      // If text/sticker, pull current values
       if (clip.__textId && clip.textState) {
         if (base.x == null) base.x = clip.textState.positionX != null ? clip.textState.positionX : 50;
         if (base.y == null) base.y = clip.textState.positionY != null ? clip.textState.positionY : 50;
@@ -756,7 +751,6 @@ function applyTransform() {
         if (base.rotation == null) base.rotation = clip.stickerState.rotation || 0;
       }
       newState = Object.assign({}, base);
-      // Apply only CHANGED props
       for (let k = 0; k < changedKeys.length; k++) {
         newState[changedKeys[k]] = changed[changedKeys[k]];
       }
@@ -777,8 +771,10 @@ function applyTransform() {
       clip.stickerState.rotation = newState.rotation;
     }
 
-    // Auto-keyframe for each clip
-    if (changedKeys.length > 0) {
+    // 🆕 Auto-keyframe ONLY if this clip already has keyframes
+    if (changedKeys.length > 0 &&
+        ks && typeof ks.autoKeyframeIfActive === 'function') {
+
       const eng = window.__playbackEngine;
       const t = eng && typeof eng.getTime === 'function' ? eng.getTime() : 0;
       const clipStart = Number.isFinite(clip.startTime) ? clip.startTime : 0;
@@ -788,7 +784,7 @@ function applyTransform() {
       if (t >= clipStart - 0.001 && t <= clipEnd + 0.001) {
         for (let k = 0; k < changedKeys.length; k++) {
           const prop = changedKeys[k];
-          setKeyframe(clip, prop, t, newState[prop]);
+          ks.autoKeyframeIfActive(clip, prop, t, newState[prop]);
         }
       }
     }
