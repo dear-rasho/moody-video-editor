@@ -72,20 +72,149 @@ const SYNONYMS = {
 
 // 🆕 Transition aliases — ONCE at top
 const TRANSITION_ALIASES = {
+  // ─── Basic ──────────────────────────────────────────────
+  'none': 'none',
   'fade': 'fade',
   'dissolve': 'dissolve',
   'fade black': 'fadeBlack', 'fadeblack': 'fadeBlack',
   'fade white': 'fadeWhite', 'fadewhite': 'fadeWhite',
-  'slide': 'slideLeft', 'slide left': 'slideLeft', 'slideleft': 'slideLeft',
-  'slide right': 'slideRight', 'slideright': 'slideRight',
-  'slide up': 'slideUp', 'slideup': 'slideUp',
-  'slide down': 'slideDown', 'slidedown': 'slideDown',
-  'zoom': 'zoomIn', 'zoom in': 'zoomIn', 'zoomin': 'zoomIn',
-  'zoom out': 'zoomOut', 'zoomout': 'zoomOut',
-  'wipe left': 'wipeLeft', 'wipeleft': 'wipeLeft',
-  'wipe right': 'wipeRight', 'wiperight': 'wipeRight',
-  'circle': 'circleIn', 'circle in': 'circleIn', 'circlein': 'circleIn',
-  'blur': 'blur'
+  'blur': 'blur',
+
+  // ─── Push ───────────────────────────────────────────────
+  'pushleft': 'pushLeft', 'push left': 'pushLeft',
+  'pushright': 'pushRight', 'push right': 'pushRight',
+  'pushup': 'pushUp', 'push up': 'pushUp',
+  'pushdown': 'pushDown', 'push down': 'pushDown',
+
+  // ─── Slide Over ─────────────────────────────────────────
+  'slideoverleft': 'slideOverLeft', 'slide over left': 'slideOverLeft',
+  'slideoverright': 'slideOverRight', 'slide over right': 'slideOverRight',
+  'slideovertop': 'slideOverTop', 'slide over top': 'slideOverTop',
+  'slideoverbottom': 'slideOverBottom', 'slide over bottom': 'slideOverBottom',
+
+  // ─── Slide In ───────────────────────────────────────────
+  'slide': 'slideLeft',
+  'slideleft': 'slideLeft', 'slide left': 'slideLeft',
+  'slideright': 'slideRight', 'slide right': 'slideRight',
+  'slideup': 'slideUp', 'slide up': 'slideUp',
+  'slidedown': 'slideDown', 'slide down': 'slideDown',
+
+  // ─── Wipes ──────────────────────────────────────────────
+  'wipeleft': 'wipeLeft', 'wipe left': 'wipeLeft',
+  'wiperight': 'wipeRight', 'wipe right': 'wipeRight',
+  'wipehorizontal': 'wipeHorizontal', 'wipe horizontal': 'wipeHorizontal',
+  'wipevertical': 'wipeVertical', 'wipe vertical': 'wipeVertical',
+  'wipedigonaltl': 'wipeDiagonalTL', 'wipe diagonal tl': 'wipeDiagonalTL',
+  'wipedigonalbr': 'wipeDiagonalBR', 'wipe diagonal br': 'wipeDiagonalBR',
+  'splitwipevertical': 'splitWipeVertical', 'split wipe vertical': 'splitWipeVertical',
+  'splitwipehorizontal': 'splitWipeHorizontal', 'split wipe horizontal': 'splitWipeHorizontal',
+  'checkerboardwipe': 'checkerboardWipe', 'checkerboard': 'checkerboardWipe',
+  'venetianblinds': 'venetianBlinds', 'venetian': 'venetianBlinds', 'blinds': 'venetianBlinds',
+  'clockwipe': 'clockWipe', 'clock': 'clockWipe',
+  'wedgewipe': 'wedgeWipe', 'wedge': 'wedgeWipe',
+  'irisbox': 'irisBox', 'iris box': 'irisBox',
+  'iriscross': 'irisCross', 'iris cross': 'irisCross',
+  'iris': 'irisBox',
+  'circlein': 'circleIn', 'circle in': 'circleIn', 'circle': 'circleIn',
+
+  // ─── Zooms ──────────────────────────────────────────────
+  'zoom': 'zoomIn',
+  'zoomin': 'zoomIn', 'zoom in': 'zoomIn',
+  'zoomout': 'zoomOut', 'zoom out': 'zoomOut',
+  'smoothzoomin': 'smoothZoomIn', 'smooth zoom in': 'smoothZoomIn',
+  'smoothzoomout': 'smoothZoomOut', 'smooth zoom out': 'smoothZoomOut',
+  'crosszoom': 'crossZoom', 'cross zoom': 'crossZoom',
+  'zoomblur': 'zoomBlur', 'zoom blur': 'zoomBlur',
+
+  // ─── Spins ──────────────────────────────────────────────
+  'spin': 'spinCW',
+  'spincw': 'spinCW', 'spin cw': 'spinCW',
+  'spinccw': 'spinCCW', 'spin ccw': 'spinCCW',
+  'spinzoomcombo': 'spinZoomCombo', 'spin zoom combo': 'spinZoomCombo',
+  'radialblurspin': 'radialBlurSpin', 'radial blur spin': 'radialBlurSpin',
+  'swirldistort': 'swirlDistort', 'swirl distort': 'swirlDistort', 'swirl': 'swirlDistort',
+
+  // ─── 3D ─────────────────────────────────────────────────
+  'cubeflipleft': 'cubeFlipLeft', 'cube flip left': 'cubeFlipLeft',
+  'cubeflipright': 'cubeFlipRight', 'cube flip right': 'cubeFlipRight',
+  'cube': 'cubeFlipLeft',
+  'pageflip': 'pageFlip', 'page flip': 'pageFlip',
+  'doorswing': 'doorSwing', 'door swing': 'doorSwing', 'door': 'doorSwing',
+  'cardflip': 'cardFlip', 'card flip': 'cardFlip', 'card': 'cardFlip',
+  'flyby': 'flyBy', 'fly by': 'flyBy', 'fly': 'flyBy',
+  'ztumble': 'zTumble', 'z tumble': 'zTumble',
+  'elasticzoomspin': 'elasticZoomSpin', 'elastic zoom spin': 'elasticZoomSpin',
+  'elastic': 'elasticZoomSpin',
+
+  // ─── Glitch ─────────────────────────────────────────────
+  'rgbsplit': 'rgbSplit', 'rgb split': 'rgbSplit', 'rgb': 'rgbSplit',
+  'hlinejitter': 'hLineJitter', 'h-line jitter': 'hLineJitter', 'h line jitter': 'hLineJitter',
+  'digitalblock': 'digitalBlock', 'digital block': 'digitalBlock', 'digital': 'digitalBlock',
+  'vcrstatic': 'vcrStatic', 'vcr static': 'vcrStatic', 'vcr': 'vcrStatic',
+  'datamosh': 'dataMosh', 'data mosh': 'dataMosh', 'moshing': 'dataMosh',
+  'flickerflash': 'flickerFlash', 'flicker flash': 'flickerFlash', 'flicker': 'flickerFlash',
+  'slicedistort': 'sliceDistort', 'slice distort': 'sliceDistort', 'slice': 'sliceDistort',
+  'matrixscanline': 'matrixScanline', 'matrix scanline': 'matrixScanline', 'matrix': 'matrixScanline',
+  'signalloss': 'signalLoss', 'signal loss': 'signalLoss', 'signal': 'signalLoss',
+  'pixelsortwipe': 'pixelSortWipe', 'pixel sort wipe': 'pixelSortWipe',
+  'hwfreezejitter': 'hwFreezeJitter', 'hw freeze jitter': 'hwFreezeJitter', 'freezejitter': 'hwFreezeJitter',
+  'chromaticdisp': 'chromaticDisp', 'chromatic': 'chromaticDisp',
+  'waveglitch': 'waveGlitch', 'wave glitch': 'waveGlitch',
+  'microstrobe': 'microStrobe', 'micro strobe': 'microStrobe', 'strobe': 'microStrobe',
+  'glitchdissolve': 'glitchDissolve', 'glitch dissolve': 'glitchDissolve', 'glitch': 'glitchDissolve',
+
+  // ─── Fades ──────────────────────────────────────────────
+  'diptocolor': 'dipToColor', 'dip to color': 'dipToColor', 'dip': 'dipToColor',
+  'gaussianblurcross': 'gaussianBlurCross', 'gaussian blur': 'gaussianBlurCross', 'gaussian': 'gaussianBlurCross',
+  'dirblurleft': 'dirBlurLeft', 'dir blur left': 'dirBlurLeft',
+  'dirblurright': 'dirBlurRight', 'dir blur right': 'dirBlurRight',
+  'bokehblurdissolve': 'bokehBlurDissolve', 'bokeh dissolve': 'bokehBlurDissolve', 'bokeh': 'bokehBlurDissolve',
+  'nonadditivedissolve': 'nonAdditiveDissolve', 'non additive': 'nonAdditiveDissolve',
+  'filmdissolve': 'filmDissolve', 'film dissolve': 'filmDissolve',
+  'randomblocksdissolve': 'randomBlocksDissolve', 'random blocks': 'randomBlocksDissolve',
+  'meltdissolve': 'meltDissolve', 'melt dissolve': 'meltDissolve', 'melt': 'meltDissolve',
+  'softsmudge': 'softSmudge', 'soft smudge': 'softSmudge', 'smudge': 'softSmudge',
+
+  // ─── Light ──────────────────────────────────────────────
+  'lensflareflash': 'lensFlareFlash', 'lens flare': 'lensFlareFlash',
+  'lightleakorange': 'lightLeakOrange', 'light leak': 'lightLeakOrange',
+  'neonglowburn': 'neonGlowBurn', 'neon glow': 'neonGlowBurn',
+  'filmburn': 'filmBurn', 'film burn': 'filmBurn',
+  'exposureflash': 'exposureFlash', 'exposure flash': 'exposureFlash', 'exposure': 'exposureFlash',
+  'colorinvertflash': 'colorInvertFlash', 'color invert': 'colorInvertFlash',
+  'rainbowprism': 'rainbowPrism', 'rainbow prism': 'rainbowPrism', 'rainbow': 'rainbowPrism', 'prism': 'rainbowPrism',
+  'softvignettefade': 'softVignetteFade', 'soft vignette': 'softVignetteFade', 'vignette': 'softVignetteFade',
+  'solarizewipe': 'solarizeWipe', 'solarize wipe': 'solarizeWipe', 'solarize': 'solarizeWipe',
+  'lightwipe': 'lightWipe', 'light wipe': 'lightWipe',
+
+  // ─── Liquid ─────────────────────────────────────────────
+  'waterripple': 'waterRipple', 'water ripple': 'waterRipple', 'ripple': 'waterRipple',
+  'acidmelt': 'acidMelt', 'acid melt': 'acidMelt', 'acid': 'acidMelt',
+  'turbulentswirl': 'turbulentSwirl', 'turbulent swirl': 'turbulentSwirl', 'turbulent': 'turbulentSwirl',
+  'wavewarph': 'waveWarpH', 'wave warp': 'waveWarpH',
+  'liquidfluidwipe': 'liquidFluidWipe', 'liquid fluid wipe': 'liquidFluidWipe', 'liquid wipe': 'liquidFluidWipe', 'liquid': 'liquidFluidWipe',
+  'magnifyingwave': 'magnifyingWave', 'magnifying wave': 'magnifyingWave', 'magnify': 'magnifyingWave',
+  'glassshatter': 'glassShatter', 'glass shatter': 'glassShatter', 'shatter': 'glassShatter',
+  'fractalnoisetwist': 'fractalNoiseTwist', 'fractal twist': 'fractalNoiseTwist', 'fractal': 'fractalNoiseTwist',
+  'twirlzoom': 'twirlZoom', 'twirl zoom': 'twirlZoom', 'twirl': 'twirlZoom',
+  'stretchdistort': 'stretchDistort', 'stretch distort': 'stretchDistort', 'stretch': 'stretchDistort',
+  'morphtrans': 'morphTrans', 'morph': 'morphTrans',
+  'pageroll': 'pageRoll', 'page roll': 'pageRoll',
+  'rippledissolve': 'rippleDissolve', 'ripple dissolve': 'rippleDissolve',
+  'vortexpull': 'vortexPull', 'vortex pull': 'vortexPull', 'vortex': 'vortexPull',
+  'sphericalwarp': 'sphericalWarp', 'spherical warp': 'sphericalWarp', 'spherical': 'sphericalWarp',
+
+  // ─── Shapes ─────────────────────────────────────────────
+  'heartexpand': 'heartExpand', 'heart expand': 'heartExpand', 'heart': 'heartExpand',
+  'starwipe': 'starWipe', 'star wipe': 'starWipe', 'star': 'starWipe',
+  'diamondmask': 'diamondMask', 'diamond': 'diamondMask',
+  'multicirclegrid': 'multiCircleGrid', 'multi circle': 'multiCircleGrid',
+  'hexagontiles': 'hexagonTiles', 'hexagon': 'hexagonTiles', 'hex': 'hexagonTiles',
+  'diagonalslats': 'diagonalSlats', 'diagonal slats': 'diagonalSlats', 'slats': 'diagonalSlats',
+  'trianglefan': 'triangleFan', 'triangle fan': 'triangleFan', 'triangle': 'triangleFan',
+  'spiralmatrix': 'spiralMatrix', 'spiral matrix': 'spiralMatrix', 'spiral': 'spiralMatrix',
+  'paintbrush': 'paintBrush', 'paint brush': 'paintBrush', 'brush': 'paintBrush',
+  'inksplash': 'inkSplash', 'ink splash': 'inkSplash', 'ink': 'inkSplash', 'splash': 'inkSplash'
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -1506,21 +1635,88 @@ export function parsePrompt(rawPrompt) {
     }
   }
 
-  // ═══════════════════════════════════════════════════════════
-  //  🆕 LAYER TRANSITIONS — scan raw prompt
+   // ═══════════════════════════════════════════════════════════
+  //  🆕 INLINE EXTRACTION — layer transitions (permissive, 100+ names)
   // ═══════════════════════════════════════════════════════════
   {
-    const re = /(?:^|\n|,)\s*((?:layer\s+[a-z]\d+\s+)?transitions?\s+(?:(?:fade\s*black|fade\s*white|fade|dissolve|slide(?:\s+(?:left|right|up|down))?|zoom(?:\s+(?:in|out))?|wipe(?:\s+(?:left|right))?|circle(?:\s+in)?|blur|null|none|skip|-)(?:\s+\d+(?:\.\d+)?)?)(?:\s*,\s*(?:(?:fade\s*black|fade\s*white|fade|dissolve|slide(?:\s+(?:left|right|up|down))?|zoom(?:\s+(?:in|out))?|wipe(?:\s+(?:left|right))?|circle(?:\s+in)?|blur|null|none|skip|-)(?:\s+\d+(?:\.\d+)?)?))*)(\s+loop)?/i;
-    const m = prompt.match(re);
-    if (m) {
-      const cmd = (m[1] + (m[2] || '')).trim();
-      const parsed = parseLayerTransitions(cmd);
-      if (parsed && parsed.list && parsed.list.length) {
-        state.layerTransitions = parsed;
-        prompt = (
-          prompt.slice(0, m.index) +
-          prompt.slice(m.index + m[0].length)
-        ).trim();
+    const markerRe = /(?:^|\n|,)\s*((?:layer\s+([a-z]\d+)\s+)?transitions?\s+)([^\n]*)/i;
+    const mm = prompt.match(markerRe);
+    if (mm) {
+      const layerKey = mm[2] ? mm[2].toUpperCase() : null;
+      const afterMarker = mm[3] || '';
+
+      // Skip "transition all" / "transition at" (different commands)
+      const firstWord = (afterMarker.match(/^\w+/i) || [''])[0].toLowerCase();
+      if (firstWord !== 'all' && firstWord !== 'at') {
+
+        // Handle trailing "loop"
+        let loop = false;
+        let body = afterMarker.trim();
+        const loopM = body.match(/\s+loop\s*$/i);
+        if (loopM) {
+          loop = true;
+          body = body.slice(0, loopM.index).trim();
+        }
+
+        // Split by comma and keep only VALID transition items
+        const parts = body.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+        const validParts = [];
+
+        for (let i = 0; i < parts.length; i++) {
+          const part = parts[i];
+          const dm = part.match(/^(.+?)(?:\s+(\d+(?:\.\d+)?))?$/);
+          if (!dm) break;
+
+          const rawName = dm[1].trim();
+          const keySpaced = rawName.toLowerCase().replace(/\s+/g, ' ');
+          const key = rawName.toLowerCase().replace(/\s+/g, '');
+
+          // Allow null/none/skip/- and auto/random/mix
+          if (key === 'null' || key === 'none' || key === 'skip' || key === '-' ||
+              key === 'auto' || key === 'random' || key === 'mix') {
+            validParts.push(part);
+            continue;
+          }
+
+          // Valid transition name?
+          if (TRANSITION_ALIASES[key] !== undefined ||
+              TRANSITION_ALIASES[keySpaced] !== undefined) {
+            validParts.push(part);
+            continue;
+          }
+
+          // Stop at first invalid item
+          break;
+        }
+
+        if (validParts.length) {
+          const reconstructed = (layerKey ? 'layer ' + layerKey + ' ' : '') +
+                                'transitions ' + validParts.join(', ') +
+                                (loop ? ' loop' : '');
+
+          const parsed = parseLayerTransitions(reconstructed);
+          if (parsed) {
+            state.layerTransitions = parsed;
+
+            // Compute leftover (unused items after transitions)
+            const leftoverParts = parts.slice(validParts.length);
+            const leftover = leftoverParts.join(', ');
+
+            // Compute positions in original prompt
+            const candidateStart = mm.index + mm[0].length - afterMarker.length;
+            const candidateEnd = candidateStart + afterMarker.length;
+
+            const before = prompt.slice(0, mm.index);
+            const after = prompt.slice(candidateEnd);
+
+            prompt = (before +
+                      (leftover ? ' ' + leftover + ' ' : ' ') +
+                      after)
+                      .replace(/[ \t]+/g, ' ')
+                      .replace(/^[\s,]+|[\s,]+$/g, '')
+                      .trim();
+          }
+        }
       }
     }
   }

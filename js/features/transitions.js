@@ -11,8 +11,11 @@ import { TRANSITIONS, getTransition } from '../workspace/transitionEngine.js';
 export const featureKey = 'transitions';
 export const featureLabel = 'Transitions';
 export const featureIcon = '⇄';
-
 const ADJACENCY_TOLERANCE = 0.5;
+
+// 🆕 Persist scroll + last-used transition across re-renders
+let _savedShelfScroll = 0;
+let _lastUsedKey = null;
 
 const CSS_ID = 'transitions-styles';
 
@@ -176,9 +179,13 @@ function resolveTransitionTarget() {
 
 // ═══════════════════════════════════════════════════════════════
 //  RENDER
-// ═══════════════════════════════════════════════════════════════
 export function renderTo(container) {
   injectStyles();
+
+  // 🆕 Save scroll of previous shelf BEFORE replacing
+  const oldShelf = container.querySelector('.tr-shelf');
+  if (oldShelf) _savedShelfScroll = oldShelf.scrollLeft;
+
   container.replaceChildren();
 
   const panel = document.createElement('div');
@@ -227,8 +234,11 @@ export function renderTo(container) {
   // ─── Transition shelf ────────────────────────────────────
   const shelf = document.createElement('div');
   shelf.className = 'tr-shelf';
-
-  const currentKey = rightClip.__transitionIn ? rightClip.__transitionIn.key : 'none';
+  // 🆕 Prefer clip's own transition; fall back to last-used for highlighting
+  let currentKey = rightClip.__transitionIn ? rightClip.__transitionIn.key : null;
+  if (!currentKey || currentKey === 'none') {
+    currentKey = _lastUsedKey || 'none';
+  }
 
   TRANSITIONS.forEach(function (tr) {
     const card = document.createElement('button');
@@ -245,7 +255,12 @@ export function renderTo(container) {
     lb.textContent = tr.label;
 
     card.append(ic, lb);
-    card.addEventListener('click', function () {
+     card.addEventListener('click', function () {
+      // 🆕 Save scroll before applying
+      const s = container.querySelector('.tr-shelf');
+      if (s) _savedShelfScroll = s.scrollLeft;
+
+      _lastUsedKey = tr.key;
       applyTransition(rightClip, tr.key);
       renderTo(container);
     });
@@ -314,8 +329,26 @@ export function renderTo(container) {
   panel.appendChild(hint);
 
   container.appendChild(panel);
-}
 
+  // 🆕 Restore scroll + auto-scroll to highlighted card if no saved scroll
+  requestAnimationFrame(function () {
+    const newShelf = container.querySelector('.tr-shelf');
+    if (!newShelf) return;
+
+    if (_savedShelfScroll > 0) {
+      newShelf.scrollLeft = _savedShelfScroll;
+    } else {
+      const activeCard = newShelf.querySelector('.tr-card.active');
+      if (activeCard) {
+        const shelfW = newShelf.clientWidth;
+        const cardLeft = activeCard.offsetLeft;
+        const cardW = activeCard.offsetWidth;
+        const target = cardLeft - shelfW / 2 + cardW / 2;
+        newShelf.scrollLeft = Math.max(0, target);
+      }
+    }
+  });
+}
 // ═══════════════════════════════════════════════════════════════
 //  APPLY / REMOVE
 // ═══════════════════════════════════════════════════════════════
