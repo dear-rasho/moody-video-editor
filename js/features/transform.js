@@ -1,7 +1,8 @@
 // ================================================================
 //  js/features/transform.js
-//  Transform panel — horizontal property cards + easing graph shelf.
-//  🆕 Scroll position preserved across re-renders.
+//  Transform panel — every property has:
+//   [−] [value input] [+]   (type or tap)
+//  Scroll position preserved across re-renders.
 // ================================================================
 
 import { featuresRouter } from './featuresRouter.js';
@@ -21,14 +22,32 @@ export const featureIcon = '🔲';
 //  PROPERTY GROUPS
 // ═══════════════════════════════════════════════════════════════
 const PROP_GROUPS = [
-  { id: 'position', label: 'Position',     fields: ['x', 'y'],              suffix: '',  step: 0.5 },
-  { id: 'anchor',   label: 'Anchor Point', fields: ['anchorX', 'anchorY'],  suffix: '',  step: 1   },
-  { id: 'scale',    label: 'Scale',        fields: ['scale'],               suffix: '%', step: 1   },
-  { id: 'rotation', label: 'Rotation',     fields: ['rotation'],            suffix: '°', step: 1   },
-  { id: 'cropL',    label: 'Crop Left',    fields: ['cropL'],               suffix: '%', step: 1   },
-  { id: 'cropR',    label: 'Crop Right',   fields: ['cropR'],               suffix: '%', step: 1   },
-  { id: 'cropT',    label: 'Crop Top',     fields: ['cropT'],               suffix: '%', step: 1   },
-  { id: 'cropB',    label: 'Crop Bottom',  fields: ['cropB'],               suffix: '%', step: 1   }
+  { id: 'position', label: 'Position',     fields: [
+      { key: 'x', short: 'X', step: 1 },
+      { key: 'y', short: 'Y', step: 1 }
+    ]},
+  { id: 'anchor',   label: 'Anchor Point', fields: [
+      { key: 'anchorX', short: 'AX', step: 1 },
+      { key: 'anchorY', short: 'AY', step: 1 }
+    ]},
+  { id: 'scale',    label: 'Scale',        fields: [
+      { key: 'scale', short: 'S', step: 1 }
+    ], suffix: '%' },
+  { id: 'rotation', label: 'Rotation',     fields: [
+      { key: 'rotation', short: 'R', step: 1 }
+    ], suffix: '°' },
+  { id: 'cropL',    label: 'Crop Left',    fields: [
+      { key: 'cropL', short: 'L', step: 1 }
+    ], suffix: '%' },
+  { id: 'cropR',    label: 'Crop Right',   fields: [
+      { key: 'cropR', short: 'R', step: 1 }
+    ], suffix: '%' },
+  { id: 'cropT',    label: 'Crop Top',     fields: [
+      { key: 'cropT', short: 'T', step: 1 }
+    ], suffix: '%' },
+  { id: 'cropB',    label: 'Crop Bottom',  fields: [
+      { key: 'cropB', short: 'B', step: 1 }
+    ], suffix: '%' }
 ];
 
 const EASING_OPTIONS = [
@@ -116,11 +135,13 @@ function injectStyles() {
 
     .tf-bottom-spacer{flex:0 0 auto;height:200px;width:100%;pointer-events:none;}
 
+    /* ═══ INFO ═══ */
     .tf-info{display:flex;flex-direction:column;gap:4px;padding:8px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;font-size:11px;color:var(--muted);}
     .tf-info-row{display:flex;align-items:center;gap:6px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
     .tf-info-row b{color:var(--text);font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px;}
     .tf-info-badge{padding:2px 8px;background:rgba(79,157,255,0.2);color:#4f9dff;border-radius:10px;font-size:10px;font-weight:700;}
 
+    /* ═══ PROPERTY SHELF ═══ */
     .tf-props-shelf{
       display:flex;gap:10px;width:100%;min-width:0;
       overflow-x:auto;overflow-y:hidden;
@@ -169,15 +190,75 @@ function injectStyles() {
     .tf-kf-status.on{color:#4f9dff;}
     .tf-kf-status.has-selected{color:#ff3b3b;}
 
-    .tf-values{display:flex;gap:6px;}
-    .tf-value-wrap{position:relative;flex:1 1 0;min-width:0;display:flex;align-items:center;}
+    /* ═══ CONTROL ROWS ═══ */
+    .tf-ctrl-row{
+      display:flex;
+      align-items:center;
+      gap:6px;
+      padding:4px 0;
+    }
+    .tf-ctrl-label{
+      flex:0 0 26px;
+      font-size:11px;
+      font-weight:800;
+      color:#4f9dff;
+      text-align:center;
+      letter-spacing:0.05em;
+      font-variant-numeric:tabular-nums;
+    }
 
+    /* − / + buttons */
+    .tf-step-btn{
+      flex:0 0 32px;
+      width:32px;
+      height:32px;
+      padding:0;
+      border-radius:8px;
+      border:1px solid var(--border);
+      background:var(--surface);
+      color:var(--text);
+      cursor:pointer;
+      font-size:16px;
+      font-weight:800;
+      font-family:inherit;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      -webkit-tap-highlight-color:transparent;
+      user-select:none;
+      -webkit-user-select:none;
+      transition:all 0.1s ease;
+      line-height:1;
+    }
+    .tf-step-btn:active{
+      background:linear-gradient(135deg, #4f9dff 0%, #7c3aed 100%);
+      color:#fff;
+      border-color:#4f9dff;
+      transform:scale(0.94);
+    }
+    .tf-step-btn.minus{color:#ff6b6b;}
+    .tf-step-btn.plus{color:#00FF87;}
+
+    /* Value input */
+    .tf-value-wrap{
+      flex:1 1 auto;
+      min-width:0;
+      position:relative;
+      display:flex;
+      align-items:center;
+    }
     .tf-value{
-      width:100%;padding:6px 8px;
+      width:100%;
+      padding:6px 22px 6px 8px;
       background:rgba(79,157,255,0.08);
-      border:1px solid transparent;border-radius:6px;
-      color:#4f9dff;font-size:12px;font-weight:700;
-      font-variant-numeric:tabular-nums;text-align:right;outline:none;
+      border:1px solid transparent;
+      border-radius:8px;
+      color:#4f9dff;
+      font-size:13px;
+      font-weight:800;
+      font-variant-numeric:tabular-nums;
+      text-align:center;
+      outline:none;
       font-family:inherit;
       transition:background 0.12s ease, border-color 0.12s ease;
     }
@@ -188,12 +269,19 @@ function injectStyles() {
     .tf-value[type=number]{ -moz-appearance:textfield; }
 
     .tf-value-suffix{
-      position:absolute;right:8px;top:50%;transform:translateY(-50%);
-      font-size:10px;color:var(--muted);pointer-events:none;
-      font-weight:700;opacity:0.7;
+      position:absolute;
+      right:8px;
+      top:50%;
+      transform:translateY(-50%);
+      font-size:10px;
+      color:var(--muted);
+      pointer-events:none;
+      font-weight:700;
+      opacity:0.7;
     }
     .tf-value-wrap.has-suffix .tf-value{padding-right:20px;}
 
+    /* ═══ KEYFRAME PANEL ═══ */
     .tf-kf-panel{
       display:flex;flex-direction:column;gap:8px;
       padding:10px 12px;
@@ -260,9 +348,10 @@ function injectStyles() {
     @media (max-width:380px){
       .tf-panel{padding-bottom:220px;}
       .tf-bottom-spacer{height:220px;}
-      .tf-prop-card{flex:0 0 170px;width:170px;padding:8px 10px;}
+      .tf-prop-card{flex:0 0 180px;width:180px;padding:8px 10px;}
       .tf-label{font-size:11px;}
-      .tf-value{font-size:11px;padding:5px 6px;}
+      .tf-step-btn{flex:0 0 30px;width:30px;height:30px;font-size:15px;}
+      .tf-value{font-size:12px;padding:5px 20px 5px 6px;}
       .tf-ease-card{flex:0 0 96px;width:96px;height:76px;}
       .tf-ease-card-curve{height:36px;}
       .tf-ease-card-name{font-size:8px;}
@@ -291,7 +380,7 @@ export function open({ router }) {
 export function renderTo(container) {
   injectStyles();
 
-  // 🆕 SAVE scroll positions BEFORE replacing content
+  // Save scroll positions BEFORE replacing content
   if (activeContainer) {
     const oldPropsShelf = activeContainer.querySelector('.tf-props-shelf');
     if (oldPropsShelf) savedShelfScrollLeft = oldPropsShelf.scrollLeft;
@@ -382,7 +471,8 @@ export function renderTo(container) {
   // ─── Easing graph panel ───────────────────────────────────
   const kfPanel = buildKeyframeGraphPanel(found.clip);
   if (kfPanel) panel.appendChild(kfPanel);
-    // ─── 🆕 Graph button ──────────────────────────────────────
+
+  // ─── Graph button ─────────────────────────────────────────
   if (hasAnyKeyframes(found.clip)) {
     const graphBtn = document.createElement('button');
     graphBtn.type = 'button';
@@ -394,7 +484,6 @@ export function renderTo(container) {
     });
     panel.appendChild(graphBtn);
   }
-
 
   // ─── Reset all ────────────────────────────────────────────
   const resetAll = document.createElement('button');
@@ -432,7 +521,7 @@ export function renderTo(container) {
   panel.appendChild(buildBottomSpacer());
   container.appendChild(panel);
 
-  // 🆕 RESTORE scroll positions AFTER render
+  // Restore scroll positions AFTER render
   requestAnimationFrame(function () {
     const newPropsShelf = container.querySelector('.tf-props-shelf');
     if (newPropsShelf && savedShelfScrollLeft > 0) {
@@ -447,7 +536,7 @@ export function renderTo(container) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  PROPERTY CARD
+//  PROPERTY CARD — new layout: [−] [value] [+]
 // ═══════════════════════════════════════════════════════════════
 function buildPropCard(group, clip) {
   const card = document.createElement('div');
@@ -456,10 +545,12 @@ function buildPropCard(group, clip) {
   const eng = window.__playbackEngine;
   const t = eng && typeof eng.getTime === 'function' ? eng.getTime() : 0;
 
-  const kfCount = group.fields.filter(f => hasKeyframeAt(clip, f, t)).length;
+  const fieldKeys = group.fields.map(f => f.key);
+  const kfCount = fieldKeys.filter(f => hasKeyframeAt(clip, f, t)).length;
   const hasAny = kfCount > 0;
-  const hasAll = kfCount === group.fields.length;
+  const hasAll = kfCount === fieldKeys.length;
 
+  // ─── Card head ─────────────────────────────────────────
   const head = document.createElement('div');
   head.className = 'tf-card-head';
 
@@ -488,55 +579,138 @@ function buildPropCard(group, clip) {
   const sel = getSelectedKeyframe();
   if (sel && sel.clip === clip && Math.abs(sel.time - t) < 0.05) {
     const selProps = getPropsWithKeyframeAt(clip, t);
-    const selInGroup = group.fields.some(f => selProps.indexOf(f) >= 0);
+    const selInGroup = fieldKeys.some(f => selProps.indexOf(f) >= 0);
     if (selInGroup) status.classList.add('has-selected');
   }
   head.appendChild(status);
 
   card.appendChild(head);
 
-  const valuesBox = document.createElement('div');
-  valuesBox.className = 'tf-values';
-
-  group.fields.forEach(fieldKey => {
-    const wrap = document.createElement('div');
-    wrap.className = 'tf-value-wrap' + (group.suffix ? ' has-suffix' : '');
-
-    const inp = document.createElement('input');
-    inp.type = 'number';
-    inp.className = 'tf-value';
-    inp.step = String(group.step || 1);
-    inp.value = formatNum(state[fieldKey]);
-
-    inp.addEventListener('change', () => {
-      const v = parseFloat(inp.value);
-      if (!Number.isFinite(v)) { inp.value = formatNum(state[fieldKey]); return; }
-      state[fieldKey] = v;
-      applyTransform();
-    });
-    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') inp.blur(); });
-
-    wrap.appendChild(inp);
-    if (group.suffix) {
-      const suf = document.createElement('span');
-      suf.className = 'tf-value-suffix';
-      suf.textContent = group.suffix;
-      wrap.appendChild(suf);
-    }
-    valuesBox.appendChild(wrap);
+  // ─── Control rows ──────────────────────────────────────
+  group.fields.forEach(fieldDef => {
+    card.appendChild(buildCtrlRow(fieldDef, group, clip));
   });
 
-  card.appendChild(valuesBox);
   return card;
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  CONTROL ROW — [−] [value] [+] with label
+// ═══════════════════════════════════════════════════════════════
+function buildCtrlRow(fieldDef, group, clip) {
+  const row = document.createElement('div');
+  row.className = 'tf-ctrl-row';
+
+  // Label on left (X, Y, AX, AY, S, R, L, R, T, B)
+  const lbl = document.createElement('span');
+  lbl.className = 'tf-ctrl-label';
+  lbl.textContent = fieldDef.short;
+  row.appendChild(lbl);
+
+  // − button
+  const decBtn = document.createElement('button');
+  decBtn.type = 'button';
+  decBtn.className = 'tf-step-btn minus';
+  decBtn.textContent = '−';
+  decBtn.title = 'Decrease';
+  row.appendChild(decBtn);
+
+  // Value input
+  const wrap = document.createElement('div');
+  wrap.className = 'tf-value-wrap' + (group.suffix ? ' has-suffix' : '');
+
+  const inp = document.createElement('input');
+  inp.type = 'number';
+  inp.className = 'tf-value';
+  inp.step = String(fieldDef.step || 1);
+  inp.value = formatNum(state[fieldDef.key]);
+  wrap.appendChild(inp);
+
+  if (group.suffix) {
+    const suf = document.createElement('span');
+    suf.className = 'tf-value-suffix';
+    suf.textContent = group.suffix;
+    wrap.appendChild(suf);
+  }
+
+  row.appendChild(wrap);
+
+  // + button
+  const incBtn = document.createElement('button');
+  incBtn.type = 'button';
+  incBtn.className = 'tf-step-btn plus';
+  incBtn.textContent = '+';
+  incBtn.title = 'Increase';
+  row.appendChild(incBtn);
+
+  // ═══ Change handlers ═══
+  function commitValue(v) {
+    if (!Number.isFinite(v)) {
+      inp.value = formatNum(state[fieldDef.key]);
+      return;
+    }
+    const min = TRANSFORM_RANGES[fieldDef.key] ? TRANSFORM_RANGES[fieldDef.key][0] : -99999;
+    const max = TRANSFORM_RANGES[fieldDef.key] ? TRANSFORM_RANGES[fieldDef.key][1] : 99999;
+    const clamped = Math.max(min, Math.min(max, v));
+    state[fieldDef.key] = clamped;
+    inp.value = formatNum(clamped);
+    applyTransform();
+  }
+
+  decBtn.addEventListener('click', () => {
+    const step = fieldDef.step || 1;
+    commitValue((Number(state[fieldDef.key]) || 0) - step);
+  });
+
+  incBtn.addEventListener('click', () => {
+    const step = fieldDef.step || 1;
+    commitValue((Number(state[fieldDef.key]) || 0) + step);
+  });
+
+  inp.addEventListener('change', () => {
+    const v = parseFloat(inp.value);
+    commitValue(v);
+  });
+
+  inp.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      inp.blur();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      commitValue((Number(state[fieldDef.key]) || 0) + (fieldDef.step || 1));
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      commitValue((Number(state[fieldDef.key]) || 0) - (fieldDef.step || 1));
+    }
+  });
+
+  return row;
+}
+
+const TRANSFORM_RANGES = {
+  scale:    [10, 500],
+  rotation: [-360, 360],
+  x:        [-9999, 9999],
+  y:        [-9999, 9999],
+  anchorX:  [0, 100],
+  anchorY:  [0, 100],
+  cropL:    [0, 95],
+  cropR:    [0, 95],
+  cropT:    [0, 95],
+  cropB:    [0, 95]
+};
+
+// ═══════════════════════════════════════════════════════════════
+//  KEYFRAME TOGGLE FOR GROUP
+// ═══════════════════════════════════════════════════════════════
 function toggleKeyframeForGroup(clip, group, time) {
-  const existing = group.fields.filter(f => hasKeyframeAt(clip, f, time));
+  const fieldKeys = group.fields.map(f => f.key);
+  const existing = fieldKeys.filter(f => hasKeyframeAt(clip, f, time));
   if (existing.length > 0) {
-    group.fields.forEach(f => removeKeyframe(clip, f, time));
+    fieldKeys.forEach(f => removeKeyframe(clip, f, time));
     showToast('Keyframe removed');
   } else {
-    group.fields.forEach(f => setKeyframe(clip, f, time, state[f]));
+    fieldKeys.forEach(f => setKeyframe(clip, f, time, state[f]));
     showToast('Keyframe added');
   }
   document.dispatchEvent(new CustomEvent('keyframe:changed'));
@@ -643,7 +817,6 @@ function buildKeyframeGraphPanel(clip) {
   row.appendChild(shelf);
   wrap.appendChild(row);
 
-  // Auto-scroll to active ease (only on first open)
   setTimeout(() => {
     if (savedEaseShelfScrollLeft === 0) {
       const active = shelf.querySelector('.tf-ease-card.active');
@@ -701,9 +874,7 @@ function autoSelectFirstVisualClip() {
     } catch (_) {}
   }
 }
-// ═══════════════════════════════════════════════════════════════
-//  🆕 APPLY TRANSFORM with AUTO-KEYFRAME
-//
+
 function applyTransform() {
   if (!activeClip) return;
 
@@ -715,7 +886,6 @@ function applyTransform() {
 
   lastState = Object.assign({}, state);
 
-  // Apply to all selected clips
   const multi = window.__multiSelect;
   const clipsToUpdate = [];
 
@@ -771,7 +941,7 @@ function applyTransform() {
       clip.stickerState.rotation = newState.rotation;
     }
 
-    // 🆕 Auto-keyframe ONLY if this clip already has keyframes
+    // Auto-keyframe if clip has keyframes
     if (changedKeys.length > 0 &&
         ks && typeof ks.autoKeyframeIfActive === 'function') {
 
@@ -794,6 +964,8 @@ function applyTransform() {
   document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
   document.dispatchEvent(new CustomEvent('transform:changed'));
 }
+
+// ═══════════════════════════════════════════════════════════════
 //  HELPERS
 // ═══════════════════════════════════════════════════════════════
 function formatNum(v) {
