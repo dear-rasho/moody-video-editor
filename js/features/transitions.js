@@ -1,7 +1,8 @@
 // ================================================================
 //  js/features/transitions.js
-//  Transitions panel — applies transition to selected clip's START.
-//  Requires an adjacent preceding clip on the same track.
+//  Transitions panel — smart targeting:
+//   • Clip selected → transition between it and NEXT clip
+//   • No selection  → use playhead position (nearest edge)
 // ================================================================
 
 import { featuresRouter } from './featuresRouter.js';
@@ -11,7 +12,7 @@ export const featureKey = 'transitions';
 export const featureLabel = 'Transitions';
 export const featureIcon = '⇄';
 
-const ADJACENCY_TOLERANCE = 0.5; // seconds
+const ADJACENCY_TOLERANCE = 0.5;
 
 const CSS_ID = 'transitions-styles';
 
@@ -23,7 +24,8 @@ function injectStyles() {
     .tr-panel{display:flex;flex-direction:column;gap:10px;width:100%;padding:10px 8px 14px;box-sizing:border-box;}
     .tr-panel *{box-sizing:border-box;}
     .tr-warn{padding:10px 12px;background:rgba(255,107,107,0.12);border:1px solid var(--danger);border-radius:8px;font-size:12px;color:var(--danger);font-weight:700;line-height:1.4;}
-    .tr-info{padding:8px 12px;background:rgba(79,157,255,0.15);border:1px solid #4f9dff;border-radius:8px;font-size:11px;color:#7ab5ff;font-weight:700;letter-spacing:.02em;}
+    .tr-info{padding:8px 12px;background:rgba(79,157,255,0.15);border:1px solid #4f9dff;border-radius:8px;font-size:11px;color:#7ab5ff;font-weight:700;letter-spacing:.02em;line-height:1.4;}
+    .tr-info b{color:#fff;}
     .tr-hint{font-size:10px;color:var(--muted);padding:0 4px;line-height:1.4;letter-spacing:.02em;opacity:.75;}
     .tr-shelf{display:flex;gap:8px;width:100%;min-width:0;overflow-x:auto;overflow-y:hidden;padding:2px 2px 10px;scroll-snap-type:x proximity;-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain;scrollbar-width:thin;touch-action:pan-x;}
     .tr-shelf::-webkit-scrollbar{height:5px;}
@@ -68,9 +70,6 @@ function injectStyles() {
 })();
 
 export function open({ router }) {
-  if (!document.querySelector('.clip.selected')) {
-    autoSelectFirstVisualClip();
-  }
   router.openLevel('transitions', [], {
     title: 'Transitions',
     level: 2,
@@ -78,6 +77,106 @@ export function open({ router }) {
   });
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  SMART TARGET RESOLVER
+//  Returns { leftClip, rightClip, trackIdx } or { error }
+// ═══════════════════════════════════════════════════════════════
+function resolveTransitionTarget() {
+  const appState = window.__appState;
+  if (!appState) return { error: 'App state missing' };
+
+  // ─── Case 1: Clip selected → left clip of pair ────────────
+  const sel = findSelectedVisualClip();
+  if (sel) {
+    const track = appState.timeline.visual[sel.trackIdx];
+    if (!Array.isArray(track)) return { error: 'Track missing' };
+
+    const sorted = track.slice().sort(function (a, b) {
+      return (a.startTime || 0) - (b.startTime || 0);
+    });
+    const selIdx = sorted.indexOf(sel.clip);
+    if (selIdx < 0) return { error: 'Selected clip not found' };
+    if (selIdx >= sorted.length - 1) {
+      return { error: 'No clip after this one (last clip selected)' };
+    }
+
+    const leftClip = sel.clip;
+    const rightClip = sorted[selIdx + 1];
+    const leftEnd = (leftClip.startTime || 0) + (leftClip.duration || 0);
+    const rightStart = rightClip.startTime || 0;
+
+    if (Math.abs(leftEnd - rightStart) > ADJACENCY_TOLERANCE) {
+      return {
+        error: 'Selected clip and next clip are not adjacent (' +
+               Math.abs(leftEnd - rightStart).toFixed(2) + 's gap). Close gaps with magnet 🧲 first.'
+      };
+    }
+
+    return { leftClip: leftClip, rightClip: rightClip, trackIdx: sel.trackIdx };
+  }
+
+  // ─── Case 2: No selection → use playhead ──────────────────
+  const eng = window.__playbackEngine;
+  const playhead = eng && typeof eng.getTime === 'function' ? eng.getTime() : 0;
+
+  const vTracks = appState.timeline.visual || [];
+
+  for (let t = 0; t < vTracks.length; t++) {
+    const track = vTracks[t];
+    if (!Array.isArray(track) || !track.length) continue;
+
+    const sorted = track.slice().sort(function (a, b) {
+      return (a.startTime || 0) - (b.startTime || 0);
+    });
+
+    for (let i = 0; i < sorted.length; i++) {
+      const clip = sorted[i];
+      const s = clip.startTime || 0;
+      const d = clip.duration || 0;
+      const e = s + d;
+
+      if (playhead < s || playhead >= e) continue;
+
+      // Playhead is inside this clip
+      const distToStart = playhead - s;
+      const distToEnd = e - playhead;
+
+      if (distToEnd <= distToStart) {
+        // Closer to END → this clip is LEFT, next is RIGHT
+        if (i >= sorted.length - 1) {
+          return { error: 'No clip after playhead position (last clip)' };
+        }
+        const leftClip = clip;
+        const rightClip = sorted[i + 1];
+        const leftEnd = s + d;
+        const rightStart = rightClip.startTime || 0;
+        if (Math.abs(leftEnd - rightStart) > ADJACENCY_TOLERANCE) {
+          return { error: 'Clips at playhead are not adjacent' };
+        }
+        return { leftClip: leftClip, rightClip: rightClip, trackIdx: t };
+      } else {
+        // Closer to START → previous is LEFT, this is RIGHT
+        if (i === 0) {
+          return { error: 'No clip before playhead position (first clip)' };
+        }
+        const leftClip = sorted[i - 1];
+        const rightClip = clip;
+        const leftEnd = (leftClip.startTime || 0) + (leftClip.duration || 0);
+        const rightStart = s;
+        if (Math.abs(leftEnd - rightStart) > ADJACENCY_TOLERANCE) {
+          return { error: 'Clips at playhead are not adjacent' };
+        }
+        return { leftClip: leftClip, rightClip: rightClip, trackIdx: t };
+      }
+    }
+  }
+
+  return { error: 'No clip at playhead position' };
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  RENDER
+// ═══════════════════════════════════════════════════════════════
 export function renderTo(container) {
   injectStyles();
   container.replaceChildren();
@@ -85,48 +184,43 @@ export function renderTo(container) {
   const panel = document.createElement('div');
   panel.className = 'tr-panel';
 
-  const sel = findSelectedVisualClip();
+  const target = resolveTransitionTarget();
 
-  if (!sel) {
+  if (target.error) {
     const warn = document.createElement('div');
     warn.className = 'tr-warn';
-    warn.textContent = '⚠️ Select a clip first';
+    warn.innerHTML = '⚠️ <b>' + target.error + '</b><br><br>' +
+      'Select a clip to apply transition AFTER it, OR position playhead inside a clip.';
     panel.appendChild(warn);
-    container.appendChild(panel);
-    return;
-  }
-
-  // ─── Check for preceding adjacent clip ────────────────────
-  const adjResult = findPrecedingAdjacentClip(sel.clip, sel.trackIdx);
-
-  if (!adjResult.found) {
-    const warn = document.createElement('div');
-    warn.className = 'tr-warn';
-    warn.innerHTML =
-      '⚠️ <b>No adjacent clip before this one.</b><br><br>' +
-      'Select a clip that has another clip ending right before it. ' +
-      'Use the <b>🧲 magnet</b> tool to close gaps — but make sure you ' +
-      'select the <b>right-side clip</b> (not the first clip).';
 
     const hint = document.createElement('div');
     hint.className = 'tr-hint';
-    hint.textContent = 'Debug: ' + adjResult.reason;
-
-    panel.append(warn, hint);
+    hint.textContent = 'Rules: • Selected clip → transition with next clip • No selection → playhead edge decides';
+    panel.appendChild(hint);
     container.appendChild(panel);
     return;
   }
+
+  const leftClip = target.leftClip;
+  const rightClip = target.rightClip;
 
   // ─── Info bar ────────────────────────────────────────────
   const info = document.createElement('div');
   info.className = 'tr-info';
-  const cur = sel.clip.__transitionIn;
+  const cur = rightClip.__transitionIn;
+
+  const leftName = (leftClip.name || 'clip').slice(0, 15);
+  const rightName = (rightClip.name || 'clip').slice(0, 15);
+
   if (cur && cur.key && cur.key !== 'none') {
     const def = getTransition(cur.key);
-    info.textContent = '⇄ ' + (def ? def.label : cur.key) +
-      '  •  ' + (Number(cur.duration) || 0.5).toFixed(2) + 's';
+    info.innerHTML =
+      '⇄ <b>' + (def ? def.label : cur.key) + '</b> · ' +
+      (Number(cur.duration) || 0.5).toFixed(2) + 's<br>' +
+      'Between: <b>' + leftName + '</b> → <b>' + rightName + '</b>';
   } else {
-    info.textContent = 'Ready — clip has adjacent clip before it';
+    info.innerHTML =
+      'Ready<br>Between: <b>' + leftName + '</b> → <b>' + rightName + '</b>';
   }
   panel.appendChild(info);
 
@@ -134,9 +228,9 @@ export function renderTo(container) {
   const shelf = document.createElement('div');
   shelf.className = 'tr-shelf';
 
-  const currentKey = sel.clip.__transitionIn ? sel.clip.__transitionIn.key : 'none';
+  const currentKey = rightClip.__transitionIn ? rightClip.__transitionIn.key : 'none';
 
-  TRANSITIONS.forEach(tr => {
+  TRANSITIONS.forEach(function (tr) {
     const card = document.createElement('button');
     card.type = 'button';
     card.className = 'tr-card';
@@ -151,8 +245,8 @@ export function renderTo(container) {
     lb.textContent = tr.label;
 
     card.append(ic, lb);
-    card.addEventListener('click', () => {
-      applyTransition(sel.clip, tr.key);
+    card.addEventListener('click', function () {
+      applyTransition(rightClip, tr.key);
       renderTo(container);
     });
 
@@ -161,7 +255,7 @@ export function renderTo(container) {
 
   panel.appendChild(shelf);
 
-  // ─── Duration + remove ───────────────────────────────────
+  // ─── Duration + Remove ───────────────────────────────────
   if (cur && cur.key && cur.key !== 'none') {
     const dur = Number(cur.duration) || 0.5;
 
@@ -189,10 +283,10 @@ export function renderTo(container) {
     slider.step = '0.05';
     slider.value = String(dur);
 
-    slider.addEventListener('input', () => {
+    slider.addEventListener('input', function () {
       const v = parseFloat(slider.value);
       val.textContent = v.toFixed(2) + 's';
-      sel.clip.__transitionIn.duration = v;
+      rightClip.__transitionIn.duration = v;
       document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
       document.dispatchEvent(new CustomEvent('transition:changed'));
     });
@@ -204,8 +298,8 @@ export function renderTo(container) {
     removeBtn.type = 'button';
     removeBtn.className = 'tr-remove';
     removeBtn.textContent = '🗑 Remove Transition';
-    removeBtn.addEventListener('click', () => {
-      delete sel.clip.__transitionIn;
+    removeBtn.addEventListener('click', function () {
+      delete rightClip.__transitionIn;
       document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
       document.dispatchEvent(new CustomEvent('transition:changed'));
       renderTo(container);
@@ -213,76 +307,25 @@ export function renderTo(container) {
     panel.appendChild(removeBtn);
   }
 
+  // ─── Rules hint ──────────────────────────────────────────
+  const hint = document.createElement('div');
+  hint.className = 'tr-hint';
+  hint.textContent = 'Transition stored on right clip (' + rightName + ')';
+  panel.appendChild(hint);
+
   container.appendChild(panel);
-}
-
-// ═══════════════════════════════════════════════════════════════
-//  ADJACENCY DETECTION
-// ═══════════════════════════════════════════════════════════════
-function findPrecedingAdjacentClip(clip, trackIdx) {
-  const appState = window.__appState;
-  if (!appState) return { found: false, reason: 'no app state' };
-
-  const track = appState.timeline.visual[trackIdx];
-  if (!Array.isArray(track)) return { found: false, reason: 'no track' };
-
-  const startTime = Number.isFinite(clip.startTime) ? clip.startTime : 0;
-
-  // Nothing can precede a clip that starts at 0
-  if (startTime <= 0.01) {
-    return { found: false, reason: 'clip starts at 0 (no room for preceding clip)' };
-  }
-
-  let closestEnd = -1;
-  let closestDiff = Infinity;
-  let closestName = '';
-
-  for (const other of track) {
-    if (other === clip) continue;
-    const oStart = Number.isFinite(other.startTime) ? other.startTime : 0;
-    const oDur = Number.isFinite(other.duration) ? other.duration : 0;
-    const oEnd = oStart + oDur;
-
-    const diff = Math.abs(oEnd - startTime);
-    if (diff < closestDiff) {
-      closestDiff = diff;
-      closestEnd = oEnd;
-      closestName = other.name || '?';
-    }
-  }
-
-  console.log('[transition] adjacency:', {
-    clipStart: startTime,
-    closestClipEnd: closestEnd,
-    closestName,
-    diff: closestDiff,
-    tolerance: ADJACENCY_TOLERANCE,
-    trackClips: track.map(c => ({
-      name: c.name,
-      start: c.startTime,
-      end: (c.startTime || 0) + (c.duration || 0)
-    }))
-  });
-
-  if (closestDiff <= ADJACENCY_TOLERANCE) {
-    return { found: true, reason: 'adjacent to "' + closestName + '" (diff=' + closestDiff.toFixed(3) + 's)' };
-  }
-
-  return {
-    found: false,
-    reason: 'nearest clip ends ' + closestDiff.toFixed(3) + 's away (tolerance ' + ADJACENCY_TOLERANCE + 's)'
-  };
 }
 
 // ═══════════════════════════════════════════════════════════════
 //  APPLY / REMOVE
 // ═══════════════════════════════════════════════════════════════
-function applyTransition(clip, key) {
+function applyTransition(rightClip, key) {
+  if (!rightClip) return;
   if (key === 'none') {
-    delete clip.__transitionIn;
+    delete rightClip.__transitionIn;
   } else {
-    const prev = clip.__transitionIn || {};
-    clip.__transitionIn = {
+    const prev = rightClip.__transitionIn || {};
+    rightClip.__transitionIn = {
       key: key,
       duration: Number.isFinite(prev.duration) ? prev.duration : 0.5
     };
@@ -308,16 +351,5 @@ function findSelectedVisualClip() {
   if (!Array.isArray(track)) return null;
   const clip = track[clipIdx];
   if (!clip) return null;
-  return { clip, trackIdx, clipIdx, trackLabel, el };
-}
-
-function autoSelectFirstVisualClip() {
-  const el = document.querySelector('.clip[data-track^="V"]');
-  if (el) {
-    try {
-      el.dispatchEvent(new MouseEvent('mousedown', {
-        bubbles: true, cancelable: true, button: 0
-      }));
-    } catch (_) {}
-  }
+  return { clip: clip, trackIdx: trackIdx, clipIdx: clipIdx, trackLabel: trackLabel, el: el };
 }
