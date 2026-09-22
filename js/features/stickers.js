@@ -413,26 +413,32 @@ function injectStyles() {
       width: 100%;
     }
     .sk-overlay {
-      position: absolute;
-      z-index: 46;
+      position: absolute !important;
+      z-index: 200 !important;
       pointer-events: none;
       user-select: none;
       line-height: 1;
       transform-origin: 50% 50%;
       will-change: transform;
+      display: block !important;
+      visibility: visible !important;
+      opacity: 1 !important;
+      font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", "EmojiOne Color", sans-serif !important;
     }
   `;
   document.head.appendChild(style);
 }
 
 export function open({ router }) {
+  // 🆕 Notify timeline renderer that panel is active
+  window.__stickersActiveId = st.sticker.id || null;
+
   router.openLevel('stickers', [], {
     title: 'Stickers',
     level: 2,
     renderMode: 'stickersPanel'
   });
 }
-
 export function renderTo(container) {
   injectStyles();
   container.replaceChildren();
@@ -627,12 +633,27 @@ function renderStickerGrid(gridContainer) {
 
 function addSticker(emoji) {
   if (!st.sticker.id) {
-    st.sticker.id = 'sk-' + Date.now();
+    st.sticker.id = 'sk-' + Date.now() + '-' + Math.random().toString(36).slice(2, 5);
   }
   st.sticker.emoji = emoji;
+
+  // 🆕 Tell timeline renderer to skip this sticker
+  window.__stickersActiveId = st.sticker.id;
+
+  // Force create + render
   ensureOverlay();
   refreshOverlay();
   commitToTimeline();
+
+  // Re-verify after DOM settles
+  requestAnimationFrame(function () {
+    ensureOverlay();
+    refreshOverlay();
+    requestAnimationFrame(function () {
+      ensureOverlay();
+      refreshOverlay();
+    });
+  });
 }
 
 function makeKeyframeSection({ kind, list, easeKey, capture, format, load }) {
@@ -1035,27 +1056,64 @@ function makeSlider(label, min, max, step, value, onChange) {
   row.append(head, wrap);
   return row;
 }
-
 function ensureOverlay() {
   const wrap = document.querySelector('#preview-canvas-wrap');
-  if (!wrap) return;
+  if (!wrap) return null;
 
-  if (!overlayEl || !wrap.contains(overlayEl)) {
+  // 🆕 Robust re-verification every call
+  const stillValid = overlayEl &&
+                     overlayEl.parentNode &&
+                     document.body.contains(overlayEl) &&
+                     wrap.contains(overlayEl);
+
+  if (!stillValid) {
+    // Remove any orphan .sk-overlay elements
+    document.querySelectorAll('.sk-overlay').forEach(function (n) {
+      if (n !== overlayEl) n.remove();
+    });
+
     overlayEl = document.createElement('div');
     overlayEl.className = 'sk-overlay';
     wrap.appendChild(overlayEl);
   }
-}
 
+  // 🆕 Force visibility — defensive
+  overlayEl.style.position = 'absolute';
+  overlayEl.style.zIndex = '200';
+  overlayEl.style.display = 'block';
+  overlayEl.style.visibility = 'visible';
+  overlayEl.style.opacity = '1';
+  overlayEl.style.pointerEvents = 'none';
+
+  return overlayEl;
+}
 function refreshOverlay() {
+  // 🆕 Ensure overlay exists (self-healing)
+  const wrap = document.querySelector('#preview-canvas-wrap');
+  if (!wrap) return;
+
+  if (!overlayEl ||
+      !overlayEl.parentNode ||
+      !wrap.contains(overlayEl)) {
+    ensureOverlay();
+  }
   if (!overlayEl) return;
+
   const s = st.sticker;
-  overlayEl.textContent = s.emoji || '';
+  if (!s || !s.emoji) return;
+
+  overlayEl.textContent = s.emoji;
   overlayEl.style.fontSize = baseFontSize + 'px';
   overlayEl.style.left = s.x + '%';
   overlayEl.style.top  = s.y + '%';
   overlayEl.style.transform =
-    `translate(-50%, -50%) scale(${s.scale / 100}) rotate(${s.rotation}deg)`;
+    'translate(-50%, -50%) scale(' + (s.scale / 100) + ') rotate(' + s.rotation + 'deg)';
+  overlayEl.style.transformOrigin = '50% 50%';
+  overlayEl.style.display = 'block';
+  overlayEl.style.visibility = 'visible';
+  overlayEl.style.opacity = '1';
+  overlayEl.style.zIndex = '200';
+  overlayEl.style.lineHeight = '1';
 }
 
 function removeOverlay() {

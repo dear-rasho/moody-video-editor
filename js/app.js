@@ -30,6 +30,7 @@ import { initMagnetTool } from './workspace/magnetTool.js';
 import { initTransitionMarkers } from './workspace/transitionMarkers.js';
 import { initPreviewDrag } from './workspace/previewDrag.js';
 import { initWaveformRenderer } from './workspace/waveformRenderer.js';
+import { forceRenderStickers } from './workspace/stickerRenderer.js';
   // ─── Multi-select (forward/backward range selection) ───────
   initMultiSelect();
 
@@ -262,13 +263,18 @@ async function bootstrap() {
     audio: document.querySelector('#audio-tracks'),
     state: appState.timeline,
 
-    onVisualVisibility: function (label, visible) {
+     onVisualVisibility: function (label, visible) {
       const trackIdx = Number(label.slice(1)) - 1;
       if (!Number.isFinite(trackIdx)) return;
       if (visible) appState.timeline.hiddenVisualTracks.delete(trackIdx);
       else appState.timeline.hiddenVisualTracks.add(trackIdx);
       if (playbackEngine) playbackEngine.redraw();
       document.dispatchEvent(new CustomEvent('effects:refresh'));
+      document.dispatchEvent(new CustomEvent('editor:timeline-changed'));
+      // 🆕 Force sticker overlay refresh
+      if (typeof window.__forceRenderStickers === 'function') {
+        try { window.__forceRenderStickers(); } catch (_) {}
+      }
     },
 
     onAudioMute: function (label, muted) {
@@ -371,6 +377,13 @@ async function bootstrap() {
     // ─── Waveform renderer (audio clip visualization) ─────────
   initWaveformRenderer();
 
+    // ─── Sticker timeline renderer (auto-installed on import) ─
+  // Force initial render
+  setTimeout(function () {
+    if (typeof forceRenderStickers === 'function') {
+      forceRenderStickers();
+    }
+  }, 500);
   // ─── Register feature modules ──────────────────────────────
   registerFeatures();
   featuresRouter.init({

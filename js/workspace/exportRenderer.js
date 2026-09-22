@@ -325,11 +325,22 @@ export function renderFrameToCanvas(ctx, W, H, source, sourceTime, timelineTime,
     try { drawTextOverlay(ctx, W, H, textClips[i].clip.textState, timelineTime, textClips[i].clip); }
     catch (_) {}
   }
-  // Stickers
+  // Stickers — with effects above their track
   for (let i = 0; i < active.length; i++) {
     const c = active[i].clip;
     if (c.__stickerId && c.stickerState) {
-      try { drawStickerOverlay(ctx, W, H, c.stickerState, c, timelineTime); } catch (_) {}
+      // 🆕 Gather effects above this sticker's track
+      const stickerTrackIdx = active[i].trackIndex;
+      const stickerEffects = [];
+      for (let k = 0; k < active.length; k++) {
+        const e = active[k];
+        if (e.clip.__effectId && e.trackIndex > stickerTrackIdx) {
+          stickerEffects.push(e.clip);
+        }
+      }
+      try {
+        drawStickerOverlay(ctx, W, H, c.stickerState, c, timelineTime, stickerEffects);
+      } catch (_) {}
     }
   }
 
@@ -647,7 +658,7 @@ function easeOutBounce(t) {
 // ═══════════════════════════════════════════════════════════════
 //  STICKER OVERLAY
 // ═══════════════════════════════════════════════════════════════
-function drawStickerOverlay(ctx, W, H, s, clip, timelineTime) {
+function drawStickerOverlay(ctx, W, H, s, clip, timelineTime, effectsAbove) {
   if (!s || !s.emoji) return;
 
   let sx = s.x != null ? s.x : 50;
@@ -664,18 +675,66 @@ function drawStickerOverlay(ctx, W, H, s, clip, timelineTime) {
     sRot = sampled.rotation;
   }
 
+  // 🆕 Build filter + motion from effects above this sticker
+  let cssFilter = '';
+  let motionT = null;
+
+  if (Array.isArray(effectsAbove)) {
+    for (let i = 0; i < effectsAbove.length; i++) {
+      const st = effectsAbove[i].effectState;
+      if (!st) continue;
+
+      if ((st.kind === 'filter' || st.kind === 'effect') && st.filters) {
+        const part = buildCssFilter(st.filters);
+        if (part) cssFilter = cssFilter ? cssFilter + ' ' + part : part;
+      }
+      if (st.kind === 'adjustment' && st.adjustments) {
+        const a = st.adjustments;
+        const parts = [];
+        if (a.brightness) parts.push('brightness(' + (100 + a.brightness) + '%)');
+        if (a.contrast)   parts.push('contrast(' + (100 + a.contrast) + '%)');
+        if (a.saturation) parts.push('saturate(' + (100 + a.saturation) + '%)');
+        if (parts.length) cssFilter = (cssFilter ? cssFilter + ' ' : '') + parts.join(' ');
+      }
+      if (st.motion) {
+        const m = computeMotionRaw(st.motion, timelineTime);
+        if (m) {
+          if (!motionT) motionT = { tx: 0, ty: 0, scale: 1, rot: 0 };
+          motionT.tx += m.tx || 0;
+          motionT.ty += m.ty || 0;
+          if (m.scale != null && m.scale !== 1) motionT.scale *= m.scale;
+          motionT.rot += m.rot || 0;
+        }
+      }
+    }
+  }
+
   const scaleFactor = W / 400;
   const fontSize = 96 * scaleFactor * (sScale / 100);
+
   ctx.save();
+  if (cssFilter) { try { ctx.filter = cssFilter; } catch (_) {} }
+
   const x = W * (sx / 100);
   const y = H * (sy / 100);
   ctx.translate(x, y);
+
+  // Apply motion (translate → scale → rotate)
+  if (motionT) {
+    ctx.translate(motionT.tx || 0, motionT.ty || 0);
+    if (motionT.scale && motionT.scale !== 1) ctx.scale(motionT.scale, motionT.scale);
+    if (motionT.rot) ctx.rotate(motionT.rot * Math.PI / 180);
+  }
+
   if (sRot) ctx.rotate(sRot * Math.PI / 180);
+
   ctx.font = fontSize + 'px "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   try { ctx.fillText(s.emoji, 0, 0); } catch (_) {}
+
   ctx.restore();
+  try { ctx.filter = 'none'; } catch (_) {}
 }
 
 // ═══════════════════════════════════════════════════════════════
