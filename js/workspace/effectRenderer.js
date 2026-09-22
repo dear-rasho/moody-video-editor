@@ -1,13 +1,7 @@
 // ================================================================
 //  js/workspace/effectRenderer.js
 //  Visual effects on preview canvas — HIERARCHY-AWARE.
-//  Rule: Effect at track Ti applies to ALL display clips BELOW it.
-//
-//  Supports:
-//   - CSS filters (from effect/filter layers)
-//   - Motion (shake, pulse, zoom, etc.) — combined from stacked layers
-//   - Pixel effects (adjustment, colorWheel, chroma)
-//   - Overlay effects (rain, snow, noise, light leaks, etc.)
+//  Robust keyframe transform application.
 // ================================================================
 
 import { isIdentity } from './transformApplier.js';
@@ -44,13 +38,29 @@ export function initEffectRenderer() {
   injectStyles();
   window.__applyVisualEffects = applyVisualEffects;
 
-  document.addEventListener('editor:timeline-changed', onPausedRefresh);
-  document.addEventListener('effects:refresh', onPausedRefresh);
-  document.addEventListener('transform:changed', onPausedRefresh);
-  document.addEventListener('keyframe:changed', onPausedRefresh);
-  document.addEventListener('ratio:changed', onPausedRefresh);
+  // 🆕 Force reset caches on timeline/keyframe changes
+  document.addEventListener('editor:timeline-changed', () => {
+    currentLayerTransformKey = '';
+    onPausedRefresh();
+  });
+  document.addEventListener('effects:refresh', () => {
+    currentLayerTransformKey = '';
+    onPausedRefresh();
+  });
+  document.addEventListener('keyframe:changed', () => {
+    currentLayerTransformKey = '';
+    onPausedRefresh();
+  });
+  document.addEventListener('transform:changed', () => {
+    currentLayerTransformKey = '';
+    onPausedRefresh();
+  });
+  document.addEventListener('ratio:changed', () => {
+    currentLayerTransformKey = '';
+    onPausedRefresh();
+  });
 
-  requestAnimationFrame(function () {
+  requestAnimationFrame(() => {
     const eng = window.__playbackEngine;
     const t = eng ? eng.getTime() : 0;
     applyVisualEffects(t);
@@ -74,7 +84,7 @@ function onPausedRefresh() {
   if (pendingRefresh) return;
   pendingRefresh = true;
 
-  requestAnimationFrame(function () {
+  requestAnimationFrame(() => {
     pendingRefresh = false;
 
     const preview2 = window.__previewCanvasInstance;
@@ -91,14 +101,6 @@ function onPausedRefresh() {
 // ═══════════════════════════════════════════════════════════════
 //  HELPERS
 // ═══════════════════════════════════════════════════════════════
-function isDisplayClip(c) {
-  if (!c) return false;
-  if (c.__textId) return true;
-  if (c.__stickerId) return true;
-  if (c.type && (c.type.indexOf('video/') === 0 || c.type.indexOf('image/') === 0)) return true;
-  return false;
-}
-
 function isEffectClip(c) {
   return !!(c && c.__effectId);
 }
@@ -165,9 +167,7 @@ function applyVisualEffects(time) {
 
   const topDisplayTrack = getTopDisplayTrackIndex(time);
 
-  // ═══════════════════════════════════════════════════════════
-  //  🆕 ALWAYS draw overlays first — independent of display track
-  // ═══════════════════════════════════════════════════════════
+  // ALWAYS compute active overlays (independent of display track)
   const allActive = getActiveVisualClips(time);
   const activeOverlays = [];
   for (let i = 0; i < allActive.length; i++) {
@@ -179,7 +179,6 @@ function applyVisualEffects(time) {
     }
   }
 
-  // If NO display track and NO overlays → clear and return
   if (topDisplayTrack < 0) {
     if (currentCssFilter !== '') {
       canvas.style.removeProperty('filter');
@@ -190,7 +189,7 @@ function applyVisualEffects(time) {
       currentMotionKey = '';
     }
 
-    // But still draw overlays on top
+    // Draw overlays even without a display clip
     if (activeOverlays.length > 0) {
       let octx = null;
       try { octx = canvas.getContext('2d', { willReadFrequently: true }); }
@@ -238,35 +237,43 @@ function applyVisualEffects(time) {
     currentMotionKey = motionStr;
   }
 
-  // 3) LAYER TRANSFORM
+  // ═══════════════════════════════════════════════════════════
+  //  3) LAYER TRANSFORM — ROBUST keyframe-aware
+  // ═══════════════════════════════════════════════════════════
   const preview = window.__previewCanvasInstance;
   if (preview && typeof preview.setLayerTransform === 'function') {
+    // Find top display clip (video/image)
+    let topClip = null;
     const active = getActiveVisualClips(time);
-    let topVideoOrImageClip = null;
     for (let i = active.length - 1; i >= 0; i--) {
       const c = active[i].clip;
       if (!c || !c.type) continue;
       const isV = c.type.indexOf('video/') === 0;
       const isI = c.type.indexOf('image/') === 0;
-      if (isV || isI) { topVideoOrImageClip = c; break; }
+      if (isV || isI) { topClip = c; break; }
     }
 
-    let layerXform = topVideoOrImageClip && topVideoOrImageClip.__transform
-      ? topVideoOrImageClip.__transform
-      : null;
-
-    if (topVideoOrImageClip && hasAnyKeyframes(topVideoOrImageClip)) {
-      layerXform = sampleAll(topVideoOrImageClip, time, layerXform || {});
+    let sampled = null;
+    if (topClip) {
+      const baseXform = topClip.__transform ? topClip.__transform : {};
+      if (hasAnyKeyframes(topClip)) {
+        // 🆕 Sample keyframes at current time — every frame
+        sampled = sampleAll(topClip, time, baseXform);
+      } else if (baseXform && !isIdentity(baseXform)) {
+        sampled = baseXform;
+      }
     }
 
-    const key = layerXform && !isIdentity(layerXform)
-      ? JSON.stringify(layerXform)
-      : '';
+    // 🆕 Force apply — build key from sampled (or '')
+    const key = sampled ? JSON.stringify(sampled) : '';
+
+    // Check if transform is meaningful (non-identity)
+    const meaningful = sampled && !isIdentity(sampled);
+    const shouldApply = meaningful ? sampled : null;
+
     if (key !== currentLayerTransformKey) {
       currentLayerTransformKey = key;
-      preview.setLayerTransform(
-        layerXform && !isIdentity(layerXform) ? layerXform : null
-      );
+      preview.setLayerTransform(shouldApply);
       if (typeof preview.redraw === 'function') {
         try { preview.redraw(); } catch (_) {}
       }
@@ -283,9 +290,9 @@ function applyVisualEffects(time) {
     }
   }
 
-  const topClip = getTopDisplayClipObject(time);
-  if (topClip && topClip.__grading) {
-    const g = topClip.__grading;
+  const topClipForGrading = getTopDisplayClipObject(time);
+  if (topClipForGrading && topClipForGrading.__grading) {
+    const g = topClipForGrading.__grading;
     if (g.adjustments && Object.keys(g.adjustments).length > 0) {
       pixelEffects.push({
         clip: { effectState: { kind: 'adjustment', adjustments: g.adjustments } }
@@ -323,7 +330,7 @@ function applyVisualEffects(time) {
     }
   }
 
-  // 5) OVERLAYS — draw ALL active overlays (from any track)
+  // 5) OVERLAYS
   if (activeOverlays.length > 0) {
     let octx = null;
     try { octx = canvas.getContext('2d', { willReadFrequently: true }); }
@@ -365,27 +372,16 @@ function computeMotion(m, time) {
   const I = (m.intensity != null ? m.intensity : 100) / 100;
   const t = time * speed;
   switch (m.type) {
-    case 'shake': {
-      const dx = Math.sin(t * 37) * 6 * I;
-      const dy = Math.cos(t * 41) * 6 * I;
-      return 'translate(' + dx.toFixed(2) + 'px,' + dy.toFixed(2) + 'px)';
-    }
-    case 'bounce': {
-      const s = 1 + Math.abs(Math.sin(t * 4)) * 0.12 * I;
-      return 'scale(' + s.toFixed(3) + ')';
-    }
-    case 'pulse': {
-      const s = 1 + Math.sin(t * 3) * 0.08 * I;
-      return 'scale(' + s.toFixed(3) + ')';
-    }
-    case 'zoomPulse': {
-      const s = 1 + (Math.sin(t * 2) * 0.5 + 0.5) * 0.35 * I;
-      return 'scale(' + s.toFixed(3) + ')';
-    }
-    case 'rotate': {
-      const a = Math.sin(t * 2) * 6 * I;
-      return 'rotate(' + a.toFixed(2) + 'deg)';
-    }
+    case 'shake':
+      return 'translate(' + (Math.sin(t * 37) * 6 * I).toFixed(2) + 'px,' + (Math.cos(t * 41) * 6 * I).toFixed(2) + 'px)';
+    case 'bounce':
+      return 'scale(' + (1 + Math.abs(Math.sin(t * 4)) * 0.12 * I).toFixed(3) + ')';
+    case 'pulse':
+      return 'scale(' + (1 + Math.sin(t * 3) * 0.08 * I).toFixed(3) + ')';
+    case 'zoomPulse':
+      return 'scale(' + (1 + (Math.sin(t * 2) * 0.5 + 0.5) * 0.35 * I).toFixed(3) + ')';
+    case 'rotate':
+      return 'rotate(' + (Math.sin(t * 2) * 6 * I).toFixed(2) + 'deg)';
     case 'glitch': {
       const dx = (Math.random() - 0.5) * 14 * I;
       const dy = (Math.random() - 0.5) * 8 * I;
@@ -490,10 +486,10 @@ function applyAdjustment(data, w, h, s) {
     r = clamp(r); g = clamp(g); b = clamp(b);
 
     if (hasColorChannels) {
-      const [hue, sat, lightness] = rgbToHsl(r, g, b);
+      const hsl = rgbToHsl(r, g, b);
+      const hue = hsl[0], sat = hsl[1], lightness = hsl[2];
       if (sat > 2) {
-        let satMul = 1;
-        let hueShift = 0;
+        let satMul = 1, hueShift = 0;
         for (const ch of COLOR_CHANNELS) {
           const val = colorVals[ch.key];
           if (Math.abs(val) < 0.01) continue;
@@ -519,7 +515,7 @@ function applyAdjustment(data, w, h, s) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  COLOR WHEEL — HSL-based real grading
+//  COLOR WHEEL
 // ═══════════════════════════════════════════════════════════════
 function applyColorWheel(data, w, h, cw) {
   if (!cw) return;
@@ -542,36 +538,22 @@ function applyColorWheel(data, w, h, cw) {
 
     const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
 
-    let weightSum = 0;
-    let targetHueSum = 0;
-    let targetSatSum = 0;
+    let weightSum = 0, targetHueSum = 0, targetSatSum = 0;
 
     if (useShadows) {
       const tw = Math.max(0, 1 - lum * 2);
       const w2 = tw * (tones.shadows.intensity / 100);
-      if (w2 > 0) {
-        targetHueSum += tones.shadows.h * w2;
-        targetSatSum += tones.shadows.s * w2;
-        weightSum += w2;
-      }
+      if (w2 > 0) { targetHueSum += tones.shadows.h * w2; targetSatSum += tones.shadows.s * w2; weightSum += w2; }
     }
     if (useMidtones) {
       const tw = Math.max(0, 1 - Math.abs(lum - 0.5) * 2);
       const w2 = tw * (tones.midtones.intensity / 100);
-      if (w2 > 0) {
-        targetHueSum += tones.midtones.h * w2;
-        targetSatSum += tones.midtones.s * w2;
-        weightSum += w2;
-      }
+      if (w2 > 0) { targetHueSum += tones.midtones.h * w2; targetSatSum += tones.midtones.s * w2; weightSum += w2; }
     }
     if (useHighlights) {
       const tw = Math.max(0, lum * 2 - 1);
       const w2 = tw * (tones.highlights.intensity / 100);
-      if (w2 > 0) {
-        targetHueSum += tones.highlights.h * w2;
-        targetSatSum += tones.highlights.s * w2;
-        weightSum += w2;
-      }
+      if (w2 > 0) { targetHueSum += tones.highlights.h * w2; targetSatSum += tones.highlights.s * w2; weightSum += w2; }
     }
 
     if (weightSum > 0.001) {
@@ -586,7 +568,6 @@ function applyColorWheel(data, w, h, cw) {
       while (hDiff > 180) hDiff -= 360;
       while (hDiff < -180) hDiff += 360;
       const newHue = ph + hDiff * strength * 0.85;
-
       const satMul = 1 + (avgSat / 100) * strength * 0.9;
       const newSat = Math.min(100, ps * satMul);
 
@@ -597,55 +578,6 @@ function applyColorWheel(data, w, h, cw) {
     data[i]     = Math.max(0, Math.min(255, r));
     data[i + 1] = Math.max(0, Math.min(255, g));
     data[i + 2] = Math.max(0, Math.min(255, b));
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════
-//  CHROMA KEY
-// ═══════════════════════════════════════════════════════════════
-function applyChroma(data, w, h, c) {
-  if (!c || !c.keyColor) return;
-
-  const kr = c.keyColor.r;
-  const kg = c.keyColor.g;
-  const kb = c.keyColor.b;
-
-  const sim = (c.similarity != null ? c.similarity : 30) / 100;
-  const sm = (c.smoothness != null ? c.smoothness : 20) / 100;
-  const inten = (c.intensity != null ? c.intensity : 100) / 100;
-  const sp = (c.spill != null ? c.spill : 50) / 100;
-
-  const maxDist = Math.sqrt(3 * 255 * 255) || 1;
-  const simEnd = sim;
-  const softEnd = sim + sm;
-
-  for (let i = 0; i < data.length; i += 4) {
-    const r = data[i], g = data[i + 1], b = data[i + 2];
-
-    const dr = r - kr, dg = g - kg, db = b - kb;
-    const dist = Math.sqrt(dr * dr + dg * dg + db * db) / maxDist;
-
-    let removal = 0;
-    if (dist <= simEnd) removal = 1;
-    else if (sm > 0 && dist <= softEnd) removal = 1 - (dist - simEnd) / sm;
-    removal *= inten;
-
-    if (removal > 0) {
-      const keep = 1 - removal;
-      data[i]     = Math.round(r * keep);
-      data[i + 1] = Math.round(g * keep);
-      data[i + 2] = Math.round(b * keep);
-      data[i + 3] = Math.round(data[i + 3] * keep);
-    }
-
-    if (sp > 0 && removal < 1 && dist < softEnd + 0.15) {
-      const prox = 1 - Math.min(1, dist / (softEnd + 0.15));
-      const bl = sp * prox * 0.8;
-      const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-      data[i]     = Math.round(data[i]     * (1 - bl) + gray * bl);
-      data[i + 1] = Math.round(data[i + 1] * (1 - bl) + gray * bl);
-      data[i + 2] = Math.round(data[i + 2] * (1 - bl) + gray * bl);
-    }
   }
 }
 

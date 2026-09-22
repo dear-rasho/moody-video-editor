@@ -2196,6 +2196,19 @@ export async function executePrompt(state) {
     }
     results.push('keyframes');
     if (_autoOpenGraph) setTimeout(() => openKeyframeGraph(), 150);
+
+    // 🆕 Force transform reset + redraw so keyframes apply immediately
+    setTimeout(function () {
+      const preview = window.__previewCanvasInstance;
+      if (preview && typeof preview.redraw === 'function') {
+        try { preview.redraw(); } catch (_) {}
+      }
+      const eng2 = window.__playbackEngine;
+      const t2 = eng2 && typeof eng2.getTime === 'function' ? eng2.getTime() : 0;
+      if (typeof window.__applyVisualEffects === 'function') {
+        try { window.__applyVisualEffects(t2); } catch (_) {}
+      }
+    }, 30);
   }
 
   if (state.speed != null && targetClip) {

@@ -1,10 +1,11 @@
 // ================================================================
 //  js/workspace/previewCanvas.js
-//  Preview canvas — contain-fit + transform.
+//  Preview canvas — contain-fit + LIVE keyframe transform.
 //  Supports video AND image as top display layer.
 // ================================================================
 
 import { isTransitionActive, getTransitionProgress, renderTransitionBlend } from './transitionEngine.js';
+import { hasAnyKeyframes, sampleAll } from './keyframeStore.js';
 
 export function initPreviewCanvas({ canvas, video, empty }) {
   if (!canvas || !video) {
@@ -27,11 +28,9 @@ export function initPreviewCanvas({ canvas, video, empty }) {
   let layerTransform = null;
   function setLayerTransform(t) { layerTransform = t; }
 
-  // 🆕 Currently loaded image (for image-only clips)
   let currentImage = null;
   let currentImageUrl = null;
 
-  // 🆕 Prev frame buffer for transitions
   const prevFrameBuffer = document.createElement('canvas');
   let prevFrameValid = false;
 
@@ -85,79 +84,6 @@ export function initPreviewCanvas({ canvas, video, empty }) {
     else { h = dstH; w = dstH * srcAR; }
     return { x: (dstW - w) / 2, y: (dstH - h) / 2, w, h };
   }
-  // 🆕 Contain-fit draw (no black fill — for compositing)
-function drawClipContainFit(ctx, source, W, H, xform) {
-  if (!source) return;
-  const sw = source.naturalWidth || source.videoWidth || source.width;
-  const sh = source.naturalHeight || source.videoHeight || source.height;
-  if (!sw || !sh) return;
-
-  let sx = 0, sy = 0, scw = sw, sch = sh;
-  if (xform) {
-    const cropL = (xform.cropL || 0) / 100;
-    const cropR = (xform.cropR || 0) / 100;
-    const cropT = (xform.cropT || 0) / 100;
-    const cropB = (xform.cropB || 0) / 100;
-    if (cropL || cropR || cropT || cropB) {
-      sx = sw * cropL;
-      sy = sh * cropT;
-      scw = sw * (1 - cropL - cropR);
-      sch = sh * (1 - cropT - cropB);
-    }
-  }
-  if (scw <= 0 || sch <= 0) return;
-
-  const srcAR = scw / sch;
-  const dstAR = W / H;
-  let dw, dh;
-  if (srcAR > dstAR) { dw = W; dh = W / srcAR; }
-  else { dh = H; dw = H * srcAR; }
-  const dx = (W - dw) / 2;
-  const dy = (H - dh) / 2;
-
-  try { ctx.drawImage(source, sx, sy, scw, sch, dx, dy, dw, dh); } catch (_) {}
-}
-
-// 🆕 Chroma on raw pixel data (reduces alpha)
-function applyChromaOnData(data, w, h, c) {
-  if (!c || !c.keyColor) return;
-  const kr = c.keyColor.r, kg = c.keyColor.g, kb = c.keyColor.b;
-  const sim = (c.similarity != null ? c.similarity : 30) / 100;
-  const sm = (c.smoothness != null ? c.smoothness : 20) / 100;
-  const inten = (c.intensity != null ? c.intensity : 100) / 100;
-  const sp = (c.spill != null ? c.spill : 50) / 100;
-  const maxDist = Math.sqrt(3 * 255 * 255) || 1;
-  const simEnd = sim;
-  const softEnd = sim + sm;
-
-  for (let i = 0; i < data.length; i += 4) {
-    const r = data[i], g = data[i + 1], b = data[i + 2];
-    const dr = r - kr, dg = g - kg, db = b - kb;
-    const dist = Math.sqrt(dr * dr + dg * dg + db * db) / maxDist;
-
-    let removal = 0;
-    if (dist <= simEnd) removal = 1;
-    else if (sm > 0 && dist <= softEnd) removal = 1 - (dist - simEnd) / sm;
-    removal *= inten;
-
-    if (removal > 0) {
-      const keep = 1 - removal;
-      data[i]     = Math.round(r * keep);
-      data[i + 1] = Math.round(g * keep);
-      data[i + 2] = Math.round(b * keep);
-      data[i + 3] = Math.round(data[i + 3] * keep);
-    }
-
-    if (sp > 0 && removal < 1 && dist < softEnd + 0.15) {
-      const prox = 1 - Math.min(1, dist / (softEnd + 0.15));
-      const bl = sp * prox * 0.8;
-      const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-      data[i]     = Math.round(data[i]     * (1 - bl) + gray * bl);
-      data[i + 1] = Math.round(data[i + 1] * (1 - bl) + gray * bl);
-      data[i + 2] = Math.round(data[i + 2] * (1 - bl) + gray * bl);
-    }
-  }
-}
 
   window.__previewContainRect = containRect;
 
@@ -174,7 +100,6 @@ function applyChromaOnData(data, w, h, c) {
     } catch (_) {}
   };
 
-  // ─── Get current top display clip ─────────────────────────
   function getCurrentClip() {
     const appState = window.__appState;
     if (!appState) return null;
@@ -205,7 +130,6 @@ function applyChromaOnData(data, w, h, c) {
     return eng && typeof eng.getTime === 'function' ? eng.getTime() : 0;
   }
 
-  // ─── Load image if needed ─────────────────────────────────
   function ensureImage(clip) {
     if (!clip || clip.type.indexOf('image/') !== 0) {
       currentImage = null;
@@ -221,10 +145,39 @@ function applyChromaOnData(data, w, h, c) {
     currentImage.src = clip.url;
   }
 
-  // ─── Draw current display frame into ctx ─────────────────
+  // ═══════════════════════════════════════════════════════════════
+  //  🆕 LIVE TRANSFORM SAMPLING — this is the core fix.
+  //  Every frame, check if the current clip has keyframes. If yes,
+  //  sample them at the current time. This makes the animation
+  //  work during playback (previously transform was stale).
+  // ═══════════════════════════════════════════════════════════════
+  function resolveLiveTransform(clip) {
+    if (!clip) return null;
+
+    // Base transform stored on the clip
+    const base = clip.__transform || {};
+
+    // If clip has keyframes → sample at current time
+    if (typeof hasAnyKeyframes === 'function' && hasAnyKeyframes(clip)) {
+      const t = getTime();
+      const baseCopy = Object.assign({}, base);
+      try {
+        const sampled = sampleAll(clip, t, baseCopy);
+        return sampled;
+      } catch (_) {}
+    }
+
+    // No keyframes → use base or the layerTransform set externally
+    if (base && Object.keys(base).length > 0) return base;
+    return layerTransform;
+  }
+
   function drawCurrentInto(c, W, H, clip) {
     c.save();
-    if (layerTransform) applyCtxTransform(c, W, H, layerTransform);
+
+    // 🆕 Resolve transform LIVE
+    const liveTransform = resolveLiveTransform(clip);
+    if (liveTransform) applyCtxTransform(c, W, H, liveTransform);
 
     let srcW = 0, srcH = 0;
     let isImage = false;
@@ -241,8 +194,8 @@ function applyChromaOnData(data, w, h, c) {
     if (!srcW || !srcH) { c.restore(); return; }
 
     let sx = 0, sy = 0, sw = srcW, sh = srcH;
-    if (layerTransform) {
-      const t = layerTransform;
+    if (liveTransform) {
+      const t = liveTransform;
       const cropL = (t.cropL || 0) / 100;
       const cropR = (t.cropR || 0) / 100;
       const cropT = (t.cropT || 0) / 100;
@@ -269,171 +222,43 @@ function applyChromaOnData(data, w, h, c) {
     c.restore();
   }
 
-  // ─── Draw video frame (main renderer) ─────────────────────
-function drawVideoFrame() {
-  const appState = window.__appState;
-  if (!appState) {
+  function drawVideoFrame() {
+    const clip = getCurrentClip();
+    if (!clip) {
+      syncCanvasSize();
+      const c = getCtx();
+      if (!c) return;
+      c.setTransform(1, 0, 0, 1, 0, 0);
+      c.fillStyle = '#000';
+      c.fillRect(0, 0, canvas.width, canvas.height);
+      return;
+    }
+
+    if (clip.type.indexOf('image/') === 0) ensureImage(clip);
+
     syncCanvasSize();
     const c = getCtx();
-    if (c) { c.fillStyle = '#000'; c.fillRect(0, 0, canvas.width, canvas.height); }
-    return;
-  }
+    if (!c) return;
+    const W = canvas.width;
+    const H = canvas.height;
 
-  const time = getTime();
-  const tracks = appState.timeline.visual || [];
-  const hidden = appState.timeline.hiddenVisualTracks || new Set();
-
-  syncCanvasSize();
-  const c = getCtx();
-  if (!c) return;
-  const W = canvas.width;
-  const H = canvas.height;
-
-  c.setTransform(1, 0, 0, 1, 0, 0);
-  c.globalAlpha = 1;
-  c.fillStyle = '#000';
-  c.fillRect(0, 0, W, H);
-
-  // 🆕 Get all active display clips bottom → top
-  const displayClips = [];
-  for (let t = 0; t < tracks.length; t++) {
-    if (hidden.has(t)) continue;
-    const track = tracks[t];
-    if (!Array.isArray(track)) continue;
-    for (let k = 0; k < track.length; k++) {
-      const clip = track[k];
-      if (!clip || !clip.type) continue;
-      const isV = clip.type.indexOf('video/') === 0;
-      const isI = clip.type.indexOf('image/') === 0;
-      if (!isV && !isI) continue;
-      const s = Number.isFinite(clip.startTime) ? clip.startTime : 0;
-      const d = Number.isFinite(clip.duration) ? clip.duration : 0;
-      if (time >= s && time < s + d) {
-        displayClips.push({ clip, trackIndex: t });
-        break;
-      }
+    const transitioning = isTransitionActive(clip, getTime());
+    if (transitioning && prevFrameValid) {
+      const progress = getTransitionProgress(clip, getTime());
+      const type = clip.__transitionIn.key;
+      renderTransitionBlend(c, W, H, prevFrameBuffer,
+        (cx, cw, ch) => drawCurrentInto(cx, cw, ch, clip),
+        progress, type);
+      return;
     }
-  }
-  displayClips.sort((a, b) => a.trackIndex - b.trackIndex);
 
-  if (!displayClips.length) {
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    c.fillStyle = '#000';
+    c.fillRect(0, 0, W, H);
+    drawCurrentInto(c, W, H, clip);
+
     captureToBuffer();
-    return;
   }
-
-  // 🆕 Find chroma for TOP clip
-  let topChroma = null;
-  {
-    const topTrack = displayClips[displayClips.length - 1].trackIndex;
-    // Hierarchy effects above top
-    for (let t = topTrack + 1; t < tracks.length; t++) {
-      if (hidden.has(t)) continue;
-      const track = tracks[t];
-      if (!Array.isArray(track)) continue;
-      for (const eff of track) {
-        if (eff && eff.__effectId && eff.effectState &&
-            eff.effectState.kind === 'chroma' && eff.effectState.chroma) {
-          const s = Number.isFinite(eff.startTime) ? eff.startTime : 0;
-          const d = Number.isFinite(eff.duration) ? eff.duration : 0;
-          if (time >= s && time < s + d) topChroma = eff.effectState.chroma;
-        }
-      }
-    }
-    // Clip-attached grading
-    const topClip = displayClips[displayClips.length - 1].clip;
-    if (topClip.__grading && topClip.__grading.chroma) {
-      topChroma = topClip.__grading.chroma;
-    }
-  }
-
-  // 🆕 Draw lower clips (all except top) OPAQUE
-  for (let i = 0; i < displayClips.length - 1; i++) {
-    const dc = displayClips[i];
-    const clip = dc.clip;
-    let src = null;
-
-    if (clip.type.indexOf('image/') === 0) {
-      ensureImage(clip);
-      if (currentImageUrl === clip.url && currentImage) {
-        src = currentImage;
-      }
-    }
-    // Lower video clips: only if this is the top-most video (usually not in lower)
-    if (!src && clip.type.indexOf('video/') === 0) {
-      if (video && video.readyState >= 2) {
-        // Only if this is the CURRENT loaded video
-        const curUrl = video.currentSrc || video.src || '';
-        if (curUrl === clip.url) src = video;
-      }
-    }
-    if (!src) continue;
-
-    const xf = clip.__transform;
-    c.save();
-    if (xf) applyCtxTransform(c, W, H, xf);
-    drawClipContainFit(c, src, W, H, xf);
-    c.restore();
-  }
-
-  // 🆕 Draw top clip WITH chroma if needed
-  {
-    const topClip = displayClips[displayClips.length - 1].clip;
-    let topSrc = null;
-
-    if (topClip.type.indexOf('image/') === 0) {
-      ensureImage(topClip);
-      if (currentImageUrl === topClip.url && currentImage) {
-        topSrc = currentImage;
-      }
-    } else if (topClip.type.indexOf('video/') === 0) {
-      if (video && video.readyState >= 2) topSrc = video;
-    }
-
-    if (topSrc) {
-      const xf = topClip.__transform;
-      const transitioning = isTransitionActive(topClip, time);
-
-      function drawTopFrame(cx, cw, ch) {
-        cx.save();
-        if (xf) applyCtxTransform(cx, cw, ch, xf);
-        drawClipContainFit(cx, topSrc, cw, ch, xf);
-        cx.restore();
-      }
-
-      if (topChroma) {
-        // 🆕 Temp canvas approach — chroma reduces alpha → lower layers show
-        const tc = document.createElement('canvas');
-        tc.width = W;
-        tc.height = H;
-        const tctx = tc.getContext('2d', { willReadFrequently: true });
-
-        // Draw top clip on temp with chroma
-        tctx.save();
-        if (xf) applyCtxTransform(tctx, W, H, xf);
-        drawClipContainFit(tctx, topSrc, W, H, xf);
-        tctx.restore();
-
-        try {
-          const id = tctx.getImageData(0, 0, W, H);
-          applyChromaOnData(id.data, W, H, topChroma);
-          tctx.putImageData(id, 0, 0);
-        } catch (_) {}
-
-        // Composite onto main canvas (source-over → alpha respected)
-        c.drawImage(tc, 0, 0);
-      } else if (transitioning && prevFrameValid) {
-        const progress = getTransitionProgress(topClip, time);
-        const type = topClip.__transitionIn.key;
-        renderTransitionBlend(c, W, H, prevFrameBuffer,
-          (cx, cw, ch) => drawTopFrame(cx, cw, ch), progress, type);
-      } else {
-        drawTopFrame(c, W, H);
-      }
-    }
-  }
-
-  captureToBuffer();
-}
 
   let rafId = null;
   function startLoop() {
@@ -479,6 +304,12 @@ function drawVideoFrame() {
   document.addEventListener('transform:changed', () => { if (!isBlocked()) drawVideoFrame(); });
   document.addEventListener('transition:changed', () => { if (!isBlocked()) drawVideoFrame(); });
   document.addEventListener('editor:timeline-changed', () => { if (!isBlocked()) drawVideoFrame(); });
+
+  // 🆕 Also redraw on every playback tick — ensures keyframes animate
+  document.addEventListener('playback:tick', () => {
+    if (isBlocked()) return;
+    drawVideoFrame();
+  });
 
   if (typeof ResizeObserver !== 'undefined') {
     new ResizeObserver(() => {
