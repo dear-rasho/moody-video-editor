@@ -472,22 +472,35 @@ function renderAlignment(panel) {
   const row = document.createElement('div');
   row.className = 'tx-align-row';
 
+  // 🆕 Each alignment also syncs anchorX so text actually moves
   const ALIGNS = [
-    { key: 'left',   label: '⬅ Left' },
-    { key: 'center', label: '⬌ Center' },
-    { key: 'right',  label: '➡ Right' }
+    { key: 'left',   label: '⬅ Left',   anchorX: 0   },
+    { key: 'center', label: '⬌ Center', anchorX: 50  },
+    { key: 'right',  label: '➡ Right',  anchorX: 100 }
   ];
+
+  // 🆕 Detect current alignment from either ts.alignment or ts.anchorX
+  let currentKey = ts.alignment || 'center';
+  if (ts.anchorX != null) {
+    if (ts.anchorX <= 16) currentKey = 'left';
+    else if (ts.anchorX >= 84) currentKey = 'right';
+    else currentKey = 'center';
+  }
 
   ALIGNS.forEach(a => {
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.className = 'tx-align-btn' + (ts.alignment === a.key ? ' active' : '');
+    btn.className = 'tx-align-btn' + (currentKey === a.key ? ' active' : '');
     btn.textContent = a.label;
     btn.addEventListener('click', () => {
+      // 🆕 Set both alignment + anchorX
       ts.alignment = a.key;
+      ts.anchorX = a.anchorX;
+
       row.querySelectorAll('.tx-align-btn').forEach(x => x.classList.remove('active'));
       btn.classList.add('active');
-      refreshOverlay(); syncToClip();
+      refreshOverlay();
+      syncToClip();
     });
     row.appendChild(btn);
   });

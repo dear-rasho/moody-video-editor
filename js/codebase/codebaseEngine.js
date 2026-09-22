@@ -583,10 +583,16 @@ function parseLayerProps(str) {
 
     m = part.match(/^size\s+(\d+)/i);
     if (m) { props.fontSize = parseInt(m[1], 10); continue; }
-
     m = part.match(/^align(?:ment)?\s+(left|center|right)/i);
-    if (m) { props.alignment = m[1].toLowerCase(); continue; }
-
+    if (m) {
+      const al = m[1].toLowerCase();
+      props.alignment = al;
+      // 🆕 Sync anchorX so text actually moves
+      if (al === 'left')   props.anchorX = 0;
+      else if (al === 'right') props.anchorX = 100;
+      else                 props.anchorX = 50;
+      continue;
+    }
     m = part.match(/^scale\s+(-?\d+)/i);
     if (m) { props.scale = parseInt(m[1], 10); continue; }
 
@@ -1709,9 +1715,16 @@ function parseSegment(seg, state) {
   if (!state.textProps) state.textProps = {};
   let matched = false;
   let m2;
-
   m2 = seg.match(/^align(?:ment)?\s+(left|center|right)$/i);
-  if (m2) { state.textProps.alignment = m2[1].toLowerCase(); matched = true; }
+  if (m2) {
+    const al = m2[1].toLowerCase();
+    state.textProps.alignment = al;
+    // 🆕 Sync anchorX so text actually moves
+    if (al === 'left')   state.textProps.anchorX = 0;
+    else if (al === 'right') state.textProps.anchorX = 100;
+    else                 state.textProps.anchorX = 50;
+    matched = true;
+  }
 
   if (!matched) {
     m2 = seg.match(/^anchor\s+(top-left|top-center|top-right|center-left|center-right|bottom-left|bottom-center|bottom-right|top|bottom|center|middle|left|right)$/i);

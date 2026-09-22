@@ -571,6 +571,20 @@ export function renderAtTime(time) {
     }
 
     const jsAnimActive = isJsAnim && isInside;
+    const shouldRestartJs = isJsAnim && (isNew || changed || justEntered);
+
+    // ═══════════════════════════════════════════════════════
+    //  🆕 For JS animations: ensure the element has the FULL
+    //  content FIRST, then applyAnimation can read it and start
+    //  the progressive typing. Without this, applyAnimation runs
+    //  on an empty element and typewriter/decoder bail out.
+    // ═══════════════════════════════════════════════════════
+    if (shouldRestartJs) {
+      const fullText = ts.content || '';
+      if (fullText && entry.inner.textContent !== fullText) {
+        entry.inner.textContent = fullText;
+      }
+    }
 
     if (hasCssAnim && isInside) {
       if (isNew || changed || justEntered) {
@@ -579,8 +593,9 @@ export function renderAtTime(time) {
       const relTime = Math.max(0, Math.min(animDur, time - clipStart));
       seekCssAnimation(entry.inner, animDur, relTime);
     } else if (jsAnimActive) {
-      if (isNew || changed || justEntered) {
-        applyAnimation(entry.inner, animKey, animDur);
+      if (shouldRestartJs) {
+        // 🆕 Pass the content so typewriter/decoder don't rely on DOM state
+        applyAnimation(entry.inner, animKey, animDur, ts.content || '');
       }
       entry.inner.style.animationPlayState = '';
       entry.inner.style.animationDelay = '';

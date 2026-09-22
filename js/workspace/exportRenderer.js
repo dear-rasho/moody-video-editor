@@ -608,7 +608,22 @@ function computeTextAnimState(anim, elapsed, dur, fullText) {
   const state = { opacity: 1, tx: 0, ty: 0, scale: 1, rot: 0, blur: 0, visibleChars: null };
   if (!anim || anim === 'none') return state;
   const p = Math.max(0, Math.min(1, elapsed / Math.max(0.1, dur)));
+
+  // helpers
+  const easeOutBack = (t) => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); };
+  const easeOutBounce = (t) => {
+    const n1 = 7.5625, d1 = 2.75;
+    if (t < 1 / d1) return n1 * t * t;
+    if (t < 2 / d1) return n1 * (t -= 1.5 / d1) * t + 0.75;
+    if (t < 2.5 / d1) return n1 * (t -= 2.25 / d1) * t + 0.9375;
+    return n1 * (t -= 2.625 / d1) * t + 0.984375;
+  };
+  const easeInCubic = (t) => t * t * t;
+  const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
+  const sinPulse = () => Math.sin(elapsed * 3);
+
   switch (anim) {
+    // BASIC
     case 'fadeIn': state.opacity = p; break;
     case 'fadeUp': state.opacity = p; state.ty = (1 - p) * 24; break;
     case 'fadeDown': state.opacity = p; state.ty = (1 - p) * -24; break;
@@ -616,28 +631,121 @@ function computeTextAnimState(anim, elapsed, dur, fullText) {
     case 'slideRight': state.opacity = p; state.tx = (1 - p) * 80; break;
     case 'slideUp': state.opacity = p; state.ty = (1 - p) * 80; break;
     case 'slideDown': state.opacity = p; state.ty = (1 - p) * -80; break;
-    case 'popIn': { const eo = easeOutBack(p); state.scale = Math.max(0.01, eo); state.opacity = Math.min(1, p * 2.5); break; }
-    case 'bounceIn': { const eo = easeOutBounce(p); state.scale = Math.max(0.01, eo); state.opacity = Math.min(1, p * 2.5); break; }
-    case 'zoomIn': state.opacity = p; state.scale = 0.3 + 0.7 * p; break;
-    case 'zoomOut': state.opacity = p; state.scale = 2 - p; break;
-    case 'flip3DX':
-    case 'flip3DY': { state.scale = 0.01 + 0.99 * Math.abs(Math.cos((1 - p) * Math.PI / 2)); state.opacity = Math.min(1, p * 2); break; }
-    case 'rotate3D': state.rot = p * 360; break;
-    case 'pulse': state.scale = 1 + Math.sin(elapsed * 3) * 0.1; break;
-    case 'shake': state.tx = Math.sin(elapsed * 40) * 6; break;
+    case 'popIn': state.scale = Math.max(0.01, easeOutBack(p)); state.opacity = Math.min(1, p * 2.5); break;
+    case 'bounceIn': state.scale = Math.max(0.01, easeOutBounce(p)); state.opacity = Math.min(1, p * 2.5); break;
+    case 'flicker': { const vals = [1, 0.25, 1, 0.5, 1, 0.15, 1, 0.4, 1, 0.2, 1]; state.opacity = vals[Math.min(vals.length - 1, Math.floor(p * vals.length))]; break; }
+    case 'cinematicBlur': { const e = Math.min(1, p / 0.6); state.blur = (1 - e) * 18; state.opacity = Math.min(1, p * 1.5); break; }
+
+    // REVEALS
+    case 'wordReveal': state.scale = 0.6 + 0.4 * easeOutBack(p); state.opacity = Math.min(1, p * 2); state.blur = (1 - p) * 6; state.ty = (1 - p) * 10; break;
+    case 'characterRise': state.opacity = p; state.ty = (1 - p) * 40; break;
+    case 'maskVertical':
+    case 'maskHorizontal':
+    case 'lineDraw': state.opacity = Math.min(1, p * 3); break;
+    case 'centerOut': state.opacity = Math.min(1, p * 3); break;
+    case 'blurryReveal': state.blur = (1 - p) * 20; state.opacity = p; state.scale = 1.2 - 0.2 * p; break;
+    case 'smokeDissolve': state.blur = (1 - p) * 30; state.opacity = p; state.scale = 1.4 - 0.4 * p; break;
+    case 'trailFade': state.opacity = p; break;
+
+    // GLITCH
+    case 'glitch': state.tx = (Math.random() - 0.5) * 6; state.ty = (Math.random() - 0.5) * 4; break;
+    case 'rgbSplit': state.tx = Math.sin(elapsed * 30) * 6 * (1 - p); break;
+    case 'sliceGlitch': state.tx = Math.sin(elapsed * 40) * 10 * (1 - p); break;
+    case 'blockGlitch': state.opacity = Math.min(1, p * 2); break;
+    case 'staticNoise': state.tx = (Math.random() - 0.5) * 4; state.ty = (Math.random() - 0.5) * 4; state.opacity = Math.min(1, p * 2); break;
+    case 'vcrDistort': state.tx = Math.sin(elapsed * 20) * 4; state.opacity = Math.min(1, p * 2); break;
+    case 'shakeJitter': state.tx = Math.sin(elapsed * 40) * 1.5; state.ty = Math.cos(elapsed * 38) * 1.5; break;
+    case 'cyberpunk': state.opacity = 0.8 + Math.sin(elapsed * 15) * 0.2; break;
+    case 'matrixRain': state.ty = (1 - p) * -30; state.opacity = p; state.blur = (1 - p) * 8; break;
+    case 'decoder': state.visibleChars = Math.min(fullText.length, Math.floor(p * fullText.length * 1.3)); break;
+    case 'interlaced': state.opacity = Math.min(1, p * 2); break;
+
+    // WAVES
     case 'wave': state.ty = Math.sin(elapsed * 6) * 8; break;
     case 'bounceWave': state.ty = -Math.abs(Math.sin(elapsed * 4)) * 18; break;
-    case 'flicker': {
-      const vals = [1, 0.25, 1, 0.5, 1, 0.15, 1, 0.4, 1, 0.2, 1];
-      const i = Math.min(vals.length - 1, Math.floor(p * vals.length));
-      state.opacity = vals[i];
-      break;
-    }
-    case 'cinematicBlur': { const e = Math.min(1, p / 0.6); state.blur = (1 - e) * 18; state.opacity = Math.min(1, p * 1.5); break; }
-    case 'glitch': { state.tx = (Math.random() - 0.5) * 6; state.ty = (Math.random() - 0.5) * 4; break; }
-    case 'typewriter': state.visibleChars = Math.floor(p * fullText.length); break;
-    case 'decoder': state.visibleChars = Math.min(fullText.length, Math.floor(p * fullText.length * 1.3)); break;
+    case 'sineWave': state.ty = Math.sin(elapsed * 6) * 10; state.rot = Math.sin(elapsed * 6) * 3; break;
+    case 'liquidMelt': state.ty = Math.sin(elapsed * 3) * 10; state.scale = 1 + Math.sin(elapsed * 3) * 0.1; break;
+    case 'flagWave': state.scale = 1 + Math.sin(elapsed * 5) * 0.05; break;
+    case 'waterRipple': state.scale = 1 + Math.sin(elapsed * 8) * 0.05; break;
+    case 'heatWave': state.tx = Math.sin(elapsed * 12) * 2; state.blur = Math.abs(Math.sin(elapsed * 6)) * 1; break;
+    case 'elasticWave': state.ty = (1 - easeOutBack(p)) * 30; state.opacity = Math.min(1, p * 2); break;
+    case 'pulsingWave': state.scale = 1 + Math.sin(elapsed * 4) * 0.06; state.ty = Math.sin(elapsed * 4) * 4; break;
+    case 'turbulent': state.tx = Math.sin(elapsed * 8) * 3; state.ty = Math.cos(elapsed * 10) * 3; state.rot = Math.sin(elapsed * 6) * 2; break;
+    case 'circularWave': state.rot = p * 360; state.opacity = p; break;
+
+    // BOUNCES
+    case 'overshootPop': state.scale = Math.max(0.01, easeOutBack(p)); state.opacity = Math.min(1, p * 2.5); break;
+    case 'elasticDrop': state.ty = (1 - easeOutBounce(p)) * -200; state.opacity = Math.min(1, p * 3); break;
+    case 'jellyBounce': { const sq = 1 - easeOutBack(p); state.scale = 1 - sq * 0.3; state.opacity = Math.min(1, p * 3); break; }
+    case 'microBounce': state.scale = 0.85 + 0.15 * easeOutBack(p); state.opacity = Math.min(1, p * 3); break;
+    case 'stompBounce': state.scale = 2.5 - 1.5 * easeOutBack(p); state.opacity = Math.min(1, p * 3); state.blur = (1 - p) * 8; break;
+    case 'squeezeStretch': state.scale = 1 + Math.sin(elapsed * 8) * 0.2 * (1 - p); state.opacity = Math.min(1, p * 2); break;
+    case 'float': state.ty = Math.sin(elapsed * 3) * 8; break;
+    case 'diagonalJump': state.tx = -(1 - easeOutBack(p)) * 100; state.ty = (1 - easeOutBack(p)) * 100; state.rot = -(1 - p) * 15; state.opacity = Math.min(1, p * 2); break;
+    case 'gravityFall': state.ty = p * 300; state.rot = p * 45; state.opacity = 1 - p; break;
+    case 'heavyLanding': state.ty = -(1 - easeOutBounce(p)) * 150; state.opacity = Math.min(1, p * 2); break;
+    case 'doubleBounce': state.ty = -(1 - easeOutBounce(p)) * 100; state.opacity = Math.min(1, p * 2); break;
+    case 'bouncySpin': state.ty = -(1 - easeOutBounce(p)) * 100; state.rot = p * 360; state.opacity = Math.min(1, p * 2); break;
+    case 'snapBack': { const t = p; state.tx = t < 0.4 ? t / 0.4 * 80 : (t < 0.7 ? 80 - (t - 0.4) / 0.3 * 40 : 40 - (t - 0.7) / 0.3 * 40); break; }
+    case 'springString': state.ty = (1 - easeOutBack(p)) * 30; state.rot = (1 - easeOutBack(p)) * -8; state.opacity = Math.min(1, p * 2); break;
+    case 'sideKick': state.tx = -(1 - easeOutBack(p)) * 150; state.rot = -(1 - p) * 25; state.opacity = Math.min(1, p * 2); break;
+
+    // SLIDERS
+    case 'flyDiagonalTL': state.tx = -(1 - easeOutCubic(p)) * 200; state.ty = -(1 - easeOutCubic(p)) * 200; state.rot = -(1 - p) * 30; state.scale = 0.5 + 0.5 * p; state.opacity = Math.min(1, p * 2); break;
+    case 'flyDiagonalBR': state.tx = (1 - easeOutCubic(p)) * 200; state.ty = (1 - easeOutCubic(p)) * 200; state.rot = (1 - p) * 30; state.scale = 0.5 + 0.5 * p; state.opacity = Math.min(1, p * 2); break;
+    case 'crossSlide': state.tx = -(1 - easeOutCubic(p)) * 20; state.opacity = Math.min(1, p * 2); break;
+    case 'accelSlide': state.tx = -(1 - easeInCubic(p)) * 200; state.opacity = Math.min(1, p * 3); break;
+    case 'decelSlide': state.tx = -(1 - easeOutCubic(p)) * 200; state.opacity = Math.min(1, p * 3); break;
+    case 'splitSlide': state.opacity = Math.min(1, p * 2); break;
+    case 'zigzagSlide': state.tx = -(1 - easeOutCubic(p)) * 150; state.ty = Math.sin(p * Math.PI * 2) * 25 * (1 - p); state.rot = -(1 - p) * 10; state.opacity = Math.min(1, p * 2); break;
+    case 'smoothGlide': state.tx = -(1 - easeOutCubic(p)) * 60; state.opacity = p; state.blur = (1 - p) * 4; break;
+    case 'infiniteScroll': state.tx = -((elapsed * 30) % 50); break;
+    case 'pushSlide': state.tx = (1 - easeOutCubic(p)) * 30; state.scale = 1.1 - 0.1 * p; state.opacity = Math.min(1, p * 2); break;
+
+    // ROTATIONS
+    case 'flip3DX': state.scale = 0.01 + 0.99 * Math.abs(Math.cos((1 - p) * Math.PI / 2)); state.opacity = Math.min(1, p * 2); break;
+    case 'flip3DY': state.scale = 0.01 + 0.99 * Math.abs(Math.cos((1 - p) * Math.PI / 2)); state.opacity = Math.min(1, p * 2); break;
+    case 'rotate3D': state.rot = p * 360; break;
+    case 'yAxisFlip': state.scale = 0.01 + 0.99 * Math.abs(Math.cos((1 - p) * Math.PI)); state.opacity = Math.min(1, p * 2); break;
+    case 'xAxisFlip': state.scale = 0.01 + 0.99 * Math.abs(Math.cos((1 - p) * Math.PI)); state.opacity = Math.min(1, p * 2); break;
+    case 'vortexSpin': { const e = easeOutBack(p); state.scale = Math.max(0.01, e); state.rot = p * 720; state.opacity = Math.min(1, p * 2.5); break; }
+    case 'zAxisSpin': state.rot = p * 360; break;
+    case 'spiralIn': { const e = easeOutCubic(p); state.scale = e; state.rot = (1 - p) * 720; state.ty = (1 - e) * 100; state.opacity = e; break; }
+    case 'tornado': { const e = easeOutBack(p); state.scale = 0.3 + 0.7 * e; state.rot = p * 720; state.opacity = Math.min(1, p * 2); break; }
+    case 'skewSpin': { const e = easeOutCubic(p); state.scale = 0.5 + 0.5 * e; state.rot = -(1 - e) * 90; state.opacity = e; break; }
+    case 'pendulum': state.rot = Math.sin(elapsed * 3) * 8; break;
+    case 'propeller': { const e = easeOutCubic(p); state.rot = e * 1440; state.scale = 0.3 + 0.7 * e; state.opacity = Math.min(1, p * 2); break; }
+    case 'barrelRoll': { const e = easeOutCubic(p); state.rot = e * 720; state.tx = Math.sin(e * Math.PI) * 100; state.opacity = Math.min(1, p * 2); break; }
+    case 'cubeRoll': state.scale = 0.01 + 0.99 * Math.abs(Math.cos((1 - p) * Math.PI / 2)); state.opacity = Math.min(1, p * 2); break;
+    case 'gentleTilt': state.rot = Math.sin(elapsed * 3) * 5; break;
+    case 'twister': state.scale = easeOutCubic(p); state.opacity = Math.min(1, p * 2); break;
+
+    // ZOOMS
+    case 'zoomIn': state.opacity = p; state.scale = 0.3 + 0.7 * p; break;
+    case 'zoomOut': state.opacity = p; state.scale = 2 - p; break;
+    case 'cinematicZoom': { const e = easeOutCubic(p); state.scale = 1.6 - 0.6 * e; state.opacity = Math.min(1, p * 2); state.blur = (1 - e) * 10; break; }
+    case 'hyperZoomOut': { const e = easeOutCubic(Math.min(1, p / 0.7)); state.scale = 8 - 7 * e; state.opacity = Math.min(1, p * 2); state.blur = (1 - e) * 20; break; }
+    case 'pulseScale': { const e = easeOutBack(p); state.scale = 0.7 + 0.3 * e + (p > 0.4 ? Math.sin(elapsed * 6) * 0.03 : 0); state.opacity = Math.min(1, p * 2); break; }
+    case 'elasticZoom': { const e = easeOutBack(p); state.scale = 0.1 + 0.9 * e; state.opacity = Math.min(1, p * 2.5); break; }
+    case 'lensFlareZoom': { const e = easeOutCubic(p); state.scale = 0.2 + 0.8 * e; state.opacity = Math.min(1, p * 2); break; }
+    case 'shrinkReveal': { const e = easeOutCubic(p); state.scale = 6 - 5 * e; state.opacity = e; state.blur = (1 - e) * 12; break; }
+    case 'popScale': { const e = easeOutBack(p); state.scale = Math.max(0.01, e); state.opacity = Math.min(1, p * 2.5); break; }
+    case 'depthZoom': state.scale = 0.5 + 0.5 * easeOutCubic(p); state.opacity = Math.min(1, p * 2); break;
+    case 'snapZoom': { const e = easeOutCubic(Math.min(1, p / 0.5)); state.scale = 3 - 2 * e; state.opacity = Math.min(1, p * 3); state.blur = (1 - e) * 8; break; }
+
+    // SPECIAL
     case 'scribble': state.opacity = 0.2 + 0.8 * p; break;
+    case 'neonGlow': state.opacity = 0.85 + Math.sin(elapsed * 6) * 0.15; break;
+    case 'gradientShift': state.opacity = 1; break;
+    case 'ghostTrail': state.opacity = p; state.tx = -(1 - p) * 40; break;
+    case 'silhouette': state.opacity = 0.3 + 0.7 * p; break;
+    case 'explosion': { const e = easeInCubic(p); state.scale = 1 + 1.5 * e; state.rot = e * 20; state.opacity = 1 - e; state.blur = e * 15; break; }
+    case 'implosion': { const e = easeOutCubic(p); state.scale = 3 - 2 * e; state.rot = -(1 - e) * 20; state.opacity = e; state.blur = (1 - e) * 15; break; }
+    case 'pulse': state.scale = 1 + Math.sin(elapsed * 3) * 0.1; break;
+    case 'shake': state.tx = Math.sin(elapsed * 40) * 6; break;
+
+    // JS animations
+    case 'typewriter': state.visibleChars = Math.floor(p * fullText.length); break;
   }
   return state;
 }
