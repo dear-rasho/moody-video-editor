@@ -1,19 +1,12 @@
-// ═══════════════════════════════════════════════════════════════
+// ================================================================
 //  js/workspace/textRenderer.js
-//  Text renderer with:
-//   - Canvas-relative font sizing (auto-scales with ratio)
-//   - Anchor points (anchorX / anchorY)
-//   - Independent positionX / positionY
-//   - Bounds clamping (text never disappears)
-//   - Per-segment animation
-// ═══════════════════════════════════════════════════════════════
+//  Text renderer — anchor, per-seg, live typewriter, all fonts.
+// ================================================================
 
 import { applyAnimation } from '../features/animations.js';
 import { hasAnyKeyframes, sample } from './keyframeStore.js';
 import { loadGoogleFont } from '../codebase/fontLibrary.js';
 
-// Font size reference — a font-size of 36 on a 400px canvas = 36px.
-// On 1080px canvas = ~97px. Consistent across all ratios.
 const REFERENCE_DIM = 400;
 
 const overlays = new Map();
@@ -68,9 +61,6 @@ function ensureWrap() {
   return wrapEl;
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  CANVAS SCALE — reference to smaller dimension
-// ═══════════════════════════════════════════════════════════════
 function getCanvasScale() {
   if (!wrapEl) return 1;
   const w = wrapEl.clientWidth || REFERENCE_DIM;
@@ -80,7 +70,7 @@ function getCanvasScale() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  SYNC / APPLY SEGMENT ELEMENTS
+//  SEGMENTS
 // ═══════════════════════════════════════════════════════════════
 function syncSegmentElements(inner, segments) {
   const existing = inner.querySelectorAll('.tx-seg-line');
@@ -115,7 +105,7 @@ function applySegmentStyles(inner, segments, cScale) {
     const seg = segments[i];
     if (!seg) continue;
 
-    lineEl.style.fontFamily = '"' + (seg.fontFamily || 'Arial') + '", sans-serif';
+    lineEl.style.fontFamily = '"' + (seg.fontFamily || 'Arial') + '", "Segoe UI", Arial, sans-serif';
     lineEl.style.fontSize = ((seg.fontSize || 36) * cScale) + 'px';
     lineEl.style.fontWeight = seg.fontWeight || 'normal';
     lineEl.style.fontStyle = seg.fontStyle || 'normal';
@@ -178,7 +168,7 @@ function applySegmentStyles(inner, segments, cScale) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  APPLY TEXT STYLE (with canvas-relative sizing + anchor)
+//  APPLY TEXT STYLE
 // ═══════════════════════════════════════════════════════════════
 export function applyTextStyle(el, ts, skipContent) {
   if (!el || !ts) return;
@@ -189,7 +179,9 @@ export function applyTextStyle(el, ts, skipContent) {
 
   if (ts.fontFamily) loadGoogleFont(ts.fontFamily);
   if (ts.__segments) {
-    ts.__segments.forEach(s => { if (s.fontFamily) loadGoogleFont(s.fontFamily); });
+    ts.__segments.forEach(function (s) {
+      if (s.fontFamily) loadGoogleFont(s.fontFamily);
+    });
   }
 
   const cScale = getCanvasScale();
@@ -200,7 +192,7 @@ export function applyTextStyle(el, ts, skipContent) {
       applySegmentStyles(inner, ts.__segments, cScale);
     } else {
       inner.textContent = ts.content || '';
-      inner.style.fontFamily = '"' + (ts.fontFamily || 'Arial') + '", sans-serif';
+      inner.style.fontFamily = '"' + (ts.fontFamily || 'Arial') + '", "Segoe UI", Arial, sans-serif';
       inner.style.fontSize = ((ts.fontSize || 36) * cScale) + 'px';
       inner.style.fontWeight = ts.fontWeight || 'normal';
       inner.style.fontStyle = ts.fontStyle || 'normal';
@@ -236,7 +228,6 @@ export function applyTextStyle(el, ts, skipContent) {
     }
   }
 
-  // 🆕 POSITION + ANCHOR
   const posX = ts.positionX != null ? ts.positionX : 50;
   const posY = ts.positionY != null ? ts.positionY : 50;
   const anchX = ts.anchorX != null ? ts.anchorX : 50;
@@ -244,14 +235,9 @@ export function applyTextStyle(el, ts, skipContent) {
 
   outer.style.left = posX + '%';
   outer.style.top = posY + '%';
-
-  // Anchor: 0=left/top edge, 50=center, 100=right/bottom edge
-  outer.style.transform =
-    'translate(' + (-anchX) + '%, ' + (-anchY) + '%)';
-
+  outer.style.transform = 'translate(' + (-anchX) + '%, ' + (-anchY) + '%)';
   outer.style.opacity = String(Math.max(0, Math.min(100, ts.opacity != null ? ts.opacity : 100)) / 100);
 
-  // User scale + rotation on mid
   const userScale = (ts.scale != null ? ts.scale : 100) / 100;
   const rot = ts.rotation || 0;
   mid.style.transform = 'scale(' + userScale + ') rotate(' + rot + 'deg)';
@@ -259,7 +245,7 @@ export function applyTextStyle(el, ts, skipContent) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  AUTO-FIT + CLAMP — text never disappears
+//  AUTO-FIT + CLAMP
 // ═══════════════════════════════════════════════════════════════
 function autoFitTextToCanvas(entry, ts) {
   if (!wrapEl || !entry || !entry.mid || !entry.inner) return;
@@ -325,25 +311,20 @@ function autoFitTextToCanvas(entry, ts) {
   mid.style.transform = 'scale(' + finalScale + ') rotate(' + rot + 'deg)';
   mid.style.transformOrigin = '50% 50%';
 
-  // 🆕 CLAMP — keep text fully inside canvas
   void outer.offsetWidth;
   const rect = outer.getBoundingClientRect();
-  const wrapRect = wrapEl.getBoundingClientRect();
   const elW = rect.width;
   const elH = rect.height;
   if (elW <= 0 || elH <= 0) return;
 
-  // Current desired center (in canvas px) — using anchor
   const posX = ts.positionX != null ? ts.positionX : 50;
   const posY = ts.positionY != null ? ts.positionY : 50;
   const anchX = ts.anchorX != null ? ts.anchorX : 50;
   const anchY = ts.anchorY != null ? ts.anchorY : 50;
 
-  // Element's top-left in canvas px
   const leftPx = canvasW * (posX / 100) - elW * (anchX / 100);
   const topPx  = canvasH * (posY / 100) - elH * (anchY / 100);
 
-  // Adjust so full element stays inside
   let adjLeft = leftPx;
   let adjTop  = topPx;
   const MARGIN = 2;
@@ -353,7 +334,6 @@ function autoFitTextToCanvas(entry, ts) {
   if (adjLeft + elW > canvasW - MARGIN) adjLeft = canvasW - MARGIN - elW;
   if (adjTop  + elH > canvasH - MARGIN) adjTop  = canvasH - MARGIN - elH;
 
-  // Convert back to position % with same anchor
   const newPosX = ((adjLeft + elW * (anchX / 100)) / canvasW) * 100;
   const newPosY = ((adjTop  + elH * (anchY / 100)) / canvasH) * 100;
 
@@ -362,7 +342,7 @@ function autoFitTextToCanvas(entry, ts) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  HIERARCHY HELPERS
+//  HIERARCHY
 // ═══════════════════════════════════════════════════════════════
 function getTopDisplayTrackIndexAt(time) {
   const appState = window.__appState;
@@ -403,7 +383,7 @@ export function getActiveTextClipsAt(time) {
       const s = Number.isFinite(clip.startTime) ? clip.startTime : 0;
       const d = Number.isFinite(clip.duration) ? clip.duration : 0;
       if (time >= s && time < s + d) {
-        result.push({ clip, trackIndex: t });
+        result.push({ clip: clip, trackIndex: t });
         break;
       }
     }
@@ -441,7 +421,7 @@ function clearCssAnimation(el) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  PER-SEGMENT ANIMATIONS
+//  SEGMENT ANIMATIONS
 // ═══════════════════════════════════════════════════════════════
 function applySegmentAnimations(entry, ts, clipStart, animDur, time, isInside) {
   if (!ts.__segments || !ts.__segments.length) return;
@@ -512,7 +492,9 @@ export function renderAtTime(time) {
   const seen = new Set();
 
   for (let i = 0; i < active.length; i++) {
-    const { clip, trackIndex } = active[i];
+    const item = active[i];
+    const clip = item.clip;
+    const trackIndex = item.trackIndex;
     const id = clip.__textId;
     seen.add(id);
 
@@ -533,7 +515,9 @@ export function renderAtTime(time) {
       wrap.appendChild(outer);
 
       entry = {
-        el: outer, mid, inner,
+        el: outer,
+        mid: mid,
+        inner: inner,
         lastAnimKey: null,
         lastPlayheadTime: -9999,
         segAnimState: {},
@@ -573,12 +557,7 @@ export function renderAtTime(time) {
     const jsAnimActive = isJsAnim && isInside;
     const shouldRestartJs = isJsAnim && (isNew || changed || justEntered);
 
-    // ═══════════════════════════════════════════════════════
-    //  🆕 For JS animations: ensure the element has the FULL
-    //  content FIRST, then applyAnimation can read it and start
-    //  the progressive typing. Without this, applyAnimation runs
-    //  on an empty element and typewriter/decoder bail out.
-    // ═══════════════════════════════════════════════════════
+    // Set content first for JS anims
     if (shouldRestartJs) {
       const fullText = ts.content || '';
       if (fullText && entry.inner.textContent !== fullText) {
@@ -594,7 +573,6 @@ export function renderAtTime(time) {
       seekCssAnimation(entry.inner, animDur, relTime);
     } else if (jsAnimActive) {
       if (shouldRestartJs) {
-        // 🆕 Pass the content so typewriter/decoder don't rely on DOM state
         applyAnimation(entry.inner, animKey, animDur, ts.content || '');
       }
       entry.inner.style.animationPlayState = '';

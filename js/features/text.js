@@ -1,6 +1,6 @@
 // ================================================================
 //  js/features/text.js
-//  Text panel — all state handled via panelState.js.
+//  Text panel — Text with local + system + Google fonts.
 // ================================================================
 
 import { featuresRouter } from './featuresRouter.js';
@@ -14,15 +14,39 @@ import {
   forceRerender,
   getTopTextClipAt
 } from '../workspace/textRenderer.js';
+import { LOCAL_FONTS } from '../codebase/localFonts.js';
 
 export const featureKey = 'text';
 
-const FONTS = [
+// ═══════════════════════════════════════════════════════════════
+//  FONTS — Local (offline) first, then system
+// ═══════════════════════════════════════════════════════════════
+var LOCAL_NAMES = [];
+try {
+  if (Array.isArray(LOCAL_FONTS)) {
+    for (var _li = 0; _li < LOCAL_FONTS.length; _li++) {
+      if (LOCAL_FONTS[_li] && LOCAL_FONTS[_li].family) {
+        LOCAL_NAMES.push(LOCAL_FONTS[_li].family);
+      }
+    }
+  }
+} catch (e) {
+  console.warn('[text.js] local fonts failed:', e);
+}
+
+var SYSTEM_FONTS = [
   'Arial', 'Helvetica', 'Georgia', 'Times New Roman', 'Courier New',
   'Verdana', 'Tahoma', 'Trebuchet MS', 'Impact', 'Comic Sans MS',
   'Palatino Linotype', 'Garamond', 'Lucida Console', 'Arial Black',
-  'Segoe UI', 'Roboto', 'Open Sans', 'Montserrat', 'Poppins', 'Lato'
+  'Segoe UI', 'Roboto', 'Open Sans', 'Montserrat', 'Poppins', 'Lato',
+  'Cambria', 'Calibri', 'Candara', 'Corbel', 'Consolas',
+  'Menlo', 'Monaco', 'Optima', 'Avenir', 'Futura', 'Gill Sans',
+  'Book Antiqua', 'Constantia', 'Franklin Gothic Medium', 'Rockwell'
 ];
+
+var FONTS = LOCAL_NAMES.concat(SYSTEM_FONTS);
+
+console.log('[text.js] Local fonts:', LOCAL_NAMES.length, '| Total:', FONTS.length);
 
 const OPTIONS = [
   { key: 'addText',    label: 'Add Text',   icon: '➕' },
@@ -44,7 +68,8 @@ function makeDefaults() {
     gradientEnabled: false, gradientColor1: '#ff0066', gradientColor2: '#0066ff',
     gradientAngle: 90, shadowEnabled: false, shadowColor: '#000000',
     shadowBlur: 8, shadowOffsetX: 2, shadowOffsetY: 2, alignment: 'center',
-    positionX: 50, positionY: 50, scale: 100, rotation: 0, opacity: 100,
+    positionX: 50, positionY: 50, anchorX: 50, anchorY: 50,
+    scale: 100, rotation: 0, opacity: 100,
     animation: 'none', animationDuration: 0.6
   };
 }
@@ -189,12 +214,13 @@ function createNewTextClip() {
 function refreshOverlay() {
   if (editingClipId) {
     const tracks = appState.timeline.visual || [];
-    for (const track of tracks) {
+    for (let i = 0; i < tracks.length; i++) {
+      const track = tracks[i];
       if (!Array.isArray(track)) continue;
-      for (const clip of track) {
+      for (let j = 0; j < track.length; j++) {
+        const clip = track[j];
         if (clip && clip.__textId === editingClipId) {
           clip.textState = Object.assign({}, ts);
-          break;
         }
       }
     }
@@ -202,12 +228,8 @@ function refreshOverlay() {
   try { refreshCurrent(); } catch (_) {}
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  OPEN — restore sub-view from panelState
-// ═══════════════════════════════════════════════════════════════
 export function open({ router }) {
   loadFromSelection();
-
   const saved = panelState.onFeatureOpen('text');
   currentSubView = saved.subView || 'options';
 
@@ -221,14 +243,11 @@ export function open({ router }) {
 export function renderTo(container) {
   injectStyles();
 
-  // Register back interceptor ONCE per feature panel open
   panelState.registerBackInterceptor('text', function () {
     if (currentSubView === 'options') {
-      // Let router handle it (exit to grid)
       panelState.unregisterBackInterceptor('text');
       return false;
     }
-    // Sub-view → back to options
     stopPreview();
     currentSubView = 'options';
     panelState.setFeatureState('text', { subView: 'options' });
@@ -342,7 +361,7 @@ function renderFonts(panel) {
 
   const title = document.createElement('div');
   title.className = 'tx-card-title';
-  title.textContent = 'Choose Font';
+  title.textContent = 'Choose Font (' + FONTS.length + ')';
 
   const scroll = document.createElement('div');
   scroll.className = 'tx-fonts-scroll';
@@ -352,7 +371,8 @@ function renderFonts(panel) {
     btn.type = 'button';
     btn.className = 'tx-font-card';
     btn.textContent = font;
-    btn.style.fontFamily = '"' + font + '", sans-serif';
+    btn.style.fontFamily = '"' + font + '", "Segoe UI", Arial, sans-serif';
+
     if (ts.fontFamily === font) btn.classList.add('active');
 
     btn.addEventListener('click', () => {
@@ -472,14 +492,12 @@ function renderAlignment(panel) {
   const row = document.createElement('div');
   row.className = 'tx-align-row';
 
-  // 🆕 Each alignment also syncs anchorX so text actually moves
   const ALIGNS = [
     { key: 'left',   label: '⬅ Left',   anchorX: 0   },
     { key: 'center', label: '⬌ Center', anchorX: 50  },
     { key: 'right',  label: '➡ Right',  anchorX: 100 }
   ];
 
-  // 🆕 Detect current alignment from either ts.alignment or ts.anchorX
   let currentKey = ts.alignment || 'center';
   if (ts.anchorX != null) {
     if (ts.anchorX <= 16) currentKey = 'left';
@@ -493,10 +511,8 @@ function renderAlignment(panel) {
     btn.className = 'tx-align-btn' + (currentKey === a.key ? ' active' : '');
     btn.textContent = a.label;
     btn.addEventListener('click', () => {
-      // 🆕 Set both alignment + anchorX
       ts.alignment = a.key;
       ts.anchorX = a.anchorX;
-
       row.querySelectorAll('.tx-align-btn').forEach(x => x.classList.remove('active'));
       btn.classList.add('active');
       refreshOverlay();
